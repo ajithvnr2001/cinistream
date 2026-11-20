@@ -1,0 +1,6 @@
+{
+  "name": "CineStream",
+  "description": "Universal Android video player for MKV, MP4, M3U/M3U8, and HLS streams with external and embedded subtitle support across all formats.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

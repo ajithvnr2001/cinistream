@@ -1,0 +1,60 @@
+{
+  "title": "CineStream IMDb Showcase",
+  "items": [
+    {
+      "id": "hidden-face-2011",
+      "title": "The Hidden Face",
+      "url": "https://multicloud-s3-index.ajithvnr2001.workers.dev/pub/9f712691f8937399bfe52e34c80a450d/rustfs-demo-2/The.hidden.face.2011-hls/master.m3u8",
+      "format": "HLS",
+      "group": "Mystery · Thriller",
+      "imdbId": "tt1772240",
+      "imdbUrl": "https://www.imdb.com/title/tt1772240/",
+      "year": "2011",
+      "description": "A Spanish orchestra conductor investigates the mysterious disappearance of his girlfriend, uncovering a hidden secret inside their house."
+    },
+    {
+      "id": "tears-of-steel-2012",
+      "title": "Tears of Steel",
+      "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
+      "format": "HLS",
+      "group": "Sci-Fi",
+      "imdbId": "tt2285752",
+      "imdbUrl": "https://www.imdb.com/title/tt2285752/",
+      "year": "2012",
+      "description": "In an apocalyptic Amsterdam future, a group of warriors and scientists gather to stage a crucial event from the past."
+    },
+    {
+      "id": "sintel-2010",
+      "title": "Sintel",
+      "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8",
+      "format": "M3U8",
+      "group": "Fantasy · Animation",
+      "imdbId": "tt1727587",
+      "imdbUrl": "https://www.imdb.com/title/tt1727587/",
+      "year": "2010",
+      "description": "A lonely young woman helps and befriends a young dragon named Scales, and embarks on a perilous quest to find him."
+    },
+    {
+      "id": "big-buck-bunny-2008",
+      "title": "Big Buck Bunny",
+      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+      "format": "MP4",
+      "group": "Animation · Comedy",
+      "imdbId": "tt1254207",
+      "imdbUrl": "https://www.imdb.com/title/tt1254207/",
+      "year": "2008",
+      "description": "A giant, gentle rabbit confronts three mischievous rodents in a colorful woodland comedy."
+    },
+    {
+      "id": "elephants-dream-2006",
+      "title": "Elephants Dream",
+      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+      "format": "MP4",
+      "group": "Sci-Fi · Animation",
+      "imdbId": "tt0807840",
+      "imdbUrl": "https://www.imdb.com/title/tt0807840/",
+      "year": "2006",
+      "description": "Two travelers explore a bizarre and surreal mechanical world built from memories and giant gears."
+    }
+  ]
+}

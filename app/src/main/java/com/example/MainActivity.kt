@@ -1,0 +1,219 @@
+package com.example
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.example.ai.configureAppCheck
+import com.example.ui.home.HomeScreen
+import com.example.ui.player.JsonPlaylistSheet
+import com.example.ui.player.M3uPlaylistSheet
+import com.example.ui.player.PlayerScreen
+import com.example.ui.theme.CineStreamTheme
+import com.example.viewmodel.CineNavigationEvent
+import com.example.viewmodel.CineStreamViewModel
+
+const val ROUTE_HOME = "home"
+const val ROUTE_PLAYER = "player"
+
+class MainActivity : ComponentActivity() {
+
+    private val viewModel: CineStreamViewModel by viewModels()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Configure Firebase App Check before any UI, ViewModel, or Firebase operations
+        configureAppCheck(this, intent)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
+
+        handleIncomingIntent(intent)
+
+        setContent {
+            CineStreamTheme {
+                CineStreamApp(viewModel = viewModel)
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW) {
+            intent.data?.let { uri ->
+                viewModel.handleExternalIntentUri(uri)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CineStreamApp(viewModel: CineStreamViewModel) {
+    val navController = rememberNavController()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val jsonPlaylistState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
+    val sampleStreams by viewModel.sampleStreams.collectAsStateWithLifecycle()
+    val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
+    val history by viewModel.history.collectAsStateWithLifecycle()
+    val subtitleAppearance by viewModel.subtitleAppearance.collectAsStateWithLifecycle()
+    val aspectRatioMode by viewModel.aspectRatioMode.collectAsStateWithLifecycle()
+    val aiSubtitleState by viewModel.aiSubtitleState.collectAsStateWithLifecycle()
+    val rateLimitSnapshot by viewModel.rateLimitSnapshot.collectAsStateWithLifecycle()
+
+    var showHomeM3uSheet by remember { mutableStateOf(false) }
+    var showHomeJsonSheet by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        viewModel.navEvents.collect { event ->
+            when (event) {
+                CineNavigationEvent.OpenPlayer -> {
+                    if (navController.currentDestination?.route != ROUTE_PLAYER) {
+                        navController.navigate(ROUTE_PLAYER) {
+                            launchSingleTop = true
+                        }
+                    }
+                }
+                CineNavigationEvent.OpenM3uSheet -> {
+                    showHomeM3uSheet = true
+                }
+                CineNavigationEvent.OpenJsonSheet -> {
+                    showHomeJsonSheet = true
+                }
+            }
+        }
+    }
+
+    NavHost(
+        navController = navController,
+        startDestination = ROUTE_HOME
+    ) {
+        composable(ROUTE_HOME) {
+            HomeScreen(
+                uiState = uiState,
+                jsonPlaylistState = jsonPlaylistState,
+                sampleStreams = sampleStreams,
+                history = history,
+                onUrlChanged = viewModel::onUrlInputChanged,
+                onClearUrl = viewModel::clearUrlInput,
+                onFormatSelected = viewModel::onFormatSelected,
+                onPlayUrl = viewModel::launchFromUrlInput,
+                onPickLocalVideo = viewModel::openLocalVideo,
+                onPickLocalM3u = viewModel::openLocalM3uPlaylist,
+                onPickLocalJson = viewModel::loadJsonPlaylistFromUri,
+                onLoadJsonUrl = { url -> viewModel.loadJsonPlaylistFromUrl(url) },
+                onRefreshJsonPlaylist = viewModel::refreshJsonPlaylist,
+                onClearJsonPlaylist = viewModel::clearJsonPlaylist,
+                onOpenJsonSheet = { showHomeJsonSheet = true },
+                onPlayJsonItem = viewModel::playJsonPlaylistItem,
+                onStageLocalSubtitle = viewModel::stageLocalSubtitle,
+                onStageRemoteSubtitle = viewModel::stageRemoteSubtitle,
+                onClearStagedSubtitle = viewModel::clearStagedSubtitle,
+                onPlaySample = viewModel::playSampleStream,
+                onPlayHistoryItem = viewModel::playHistoryItem,
+                onTogglePin = viewModel::togglePinHistoryItem,
+                onDeleteHistory = viewModel::deleteHistoryItem,
+                onOpenM3uSheet = { showHomeM3uSheet = true },
+                onResumeActiveSession = {
+                    if (uiState.activeSession != null) {
+                        navController.navigate(ROUTE_PLAYER) {
+                            launchSingleTop = true
+                        }
+                    }
+                },
+                onToastShown = viewModel::consumeToast
+            )
+        }
+
+        composable(ROUTE_PLAYER) {
+            PlayerScreen(
+                player = viewModel.playerManager.player,
+                session = uiState.activeSession,
+                playbackState = playbackState,
+                subtitleAppearance = subtitleAppearance,
+                aspectRatioMode = aspectRatioMode,
+                aiSubtitleState = aiSubtitleState,
+                rateLimitSnapshot = rateLimitSnapshot,
+                m3uEntries = uiState.m3uEntries,
+                activeM3uEntryId = uiState.activeM3uEntryId,
+                jsonPlaylistLabel = jsonPlaylistState.sourceLabel,
+                jsonPlaylistItems = jsonPlaylistState.items,
+                activeJsonItemId = jsonPlaylistState.activeItemId,
+                isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
+                canRefreshJson = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
+                toastMessage = uiState.toastMessage,
+                onBack = {
+                    navController.popBackStack()
+                },
+                onPauseAndSave = viewModel::pauseAndPersistProgress,
+                onTogglePlayPause = viewModel.playerManager::togglePlayPause,
+                onSeekTo = viewModel.playerManager::seekTo,
+                onSeekBy = viewModel.playerManager::seekBy,
+                onSetSpeed = viewModel.playerManager::setPlaybackSpeed,
+                onSetVolumePercent = viewModel::setVolumePercent,
+                onCycleAspectRatio = viewModel::cycleAspectRatio,
+                onLoadSubtitleFile = viewModel::loadExternalSubtitleFileIntoPlayer,
+                onLoadSubtitleUrl = viewModel::loadExternalSubtitleUrlIntoPlayer,
+                onSelectSubtitleTrack = viewModel::selectSubtitleTrack,
+                onDisableSubtitles = viewModel::disableSubtitles,
+                onAdjustSubtitleOffset = viewModel::adjustSubtitleOffset,
+                onResetSubtitleOffset = viewModel::resetSubtitleOffset,
+                onUpdateSubtitleSize = viewModel::updateSubtitleTextSize,
+                onUpdateSubtitleColor = viewModel::updateSubtitleColor,
+                onUpdateSubtitleBg = viewModel::updateSubtitleBg,
+                onSelectAiTier = viewModel::selectPreferredAiTier,
+                onGenerateAiClipNow = viewModel::generateAiEnglishSubtitleClipNow,
+                onToggleAutoAi = viewModel::toggleAutoAiSubtitles,
+                onApplyAiAsSrt = viewModel::applyAiSubtitlesAsNativeSrtTrack,
+                onClearAiSubtitles = viewModel::clearAiSubtitles,
+                onSelectVideoTrack = viewModel::selectVideoTrack,
+                onSelectAudioTrack = viewModel::selectAudioTrack,
+                onRetryFormat = viewModel::retryWithFormat,
+                onSelectM3uEntry = viewModel::playM3uEntry,
+                onSelectJsonItem = viewModel::playJsonPlaylistItem,
+                onRefreshJsonPlaylist = viewModel::refreshJsonPlaylist,
+                onToastShown = viewModel::consumeToast
+            )
+        }
+    }
+
+    if (showHomeM3uSheet && uiState.m3uEntries.isNotEmpty()) {
+        M3uPlaylistSheet(
+            entries = uiState.m3uEntries,
+            activeEntryId = uiState.activeM3uEntryId,
+            onDismiss = { showHomeM3uSheet = false },
+            onSelectEntry = viewModel::playM3uEntry
+        )
+    }
+
+    if (showHomeJsonSheet && jsonPlaylistState.items.isNotEmpty()) {
+        JsonPlaylistSheet(
+            sourceLabel = jsonPlaylistState.sourceLabel,
+            items = jsonPlaylistState.items,
+            activeItemId = jsonPlaylistState.activeItemId,
+            isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
+            canRefreshUrl = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
+            onRefresh = viewModel::refreshJsonPlaylist,
+            onDismiss = { showHomeJsonSheet = false },
+            onSelectItem = viewModel::playJsonPlaylistItem
+        )
+    }
+}

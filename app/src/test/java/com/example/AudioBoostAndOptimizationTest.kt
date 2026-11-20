@@ -72,8 +72,15 @@ class AudioBoostAndOptimizationTest {
         processor.queueInput(input)
         // Ensure entire inputBuffer was consumed for downstream ExoPlayer AudioSink pass-through
         assertEquals(0, input.remaining())
-        val out = processor.getOutput()
-        assertEquals(sampleCount * 2, out.remaining())
+        val out1 = processor.getOutput()
+        assertEquals(sampleCount * 2, out1.remaining())
+
+        // Feed a second frame of equal size and verify the exact same direct ByteBuffer is reused
+        input.rewind()
+        processor.queueInput(input)
+        val out2 = processor.getOutput()
+        assertEquals(sampleCount * 2, out2.remaining())
+        assertTrue("PcmAudioCaptureProcessor must reuse its direct ByteBuffer across callbacks", out1 === out2)
 
         val clip = processor.snapshotWavClip(requestedSeconds = 2, currentPlaybackPositionMs = 2_000L)
         assertNotNull(clip)
@@ -82,6 +89,33 @@ class AudioBoostAndOptimizationTest {
         assertEquals("RIFF", String(clip.wavBytes, 0, 4, Charsets.US_ASCII))
         assertEquals("WAVE", String(clip.wavBytes, 8, 4, Charsets.US_ASCII))
         assertEquals("data", String(clip.wavBytes, 36, 4, Charsets.US_ASCII))
+    }
+
+    @Test
+    fun memorySafeTargetBufferBytesClampsCorrectlyForTvAndLargeHeap() {
+        // 80 MB constrained TV heap -> 16 MB buffer cap (20%)
+        assertEquals(
+            16 * 1024 * 1024,
+            com.example.player.CinePlayerManager.computeSafeTargetBufferBytes(80L * 1024L * 1024L)
+        )
+        // Tiny 48 MB heap -> clamped to 12 MB minimum
+        assertEquals(
+            com.example.player.CinePlayerManager.MIN_TARGET_BUFFER_BYTES,
+            com.example.player.CinePlayerManager.computeSafeTargetBufferBytes(48L * 1024L * 1024L)
+        )
+        // 384 MB largeHeap -> clamped to 32 MB maximum
+        assertEquals(
+            com.example.player.CinePlayerManager.MAX_TARGET_BUFFER_BYTES,
+            com.example.player.CinePlayerManager.computeSafeTargetBufferBytes(384L * 1024L * 1024L)
+        )
+
+        val appInfo = androidx.test.core.app.ApplicationProvider
+            .getApplicationContext<android.content.Context>()
+            .applicationInfo
+        assertTrue(
+            "AndroidManifest must declare android:largeHeap=\"true\"",
+            (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_LARGE_HEAP) != 0
+        )
     }
 
     @Test

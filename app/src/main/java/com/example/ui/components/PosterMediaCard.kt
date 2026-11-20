@@ -35,7 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import coil.compose.SubcomposeAsyncImage
+import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.model.StreamFormat
 import com.example.ui.theme.CinemaAmber
@@ -89,7 +89,9 @@ fun ImdbBadgePill(
 fun PosterImageThumbnail(
     imageUrl: String?,
     contentDescription: String?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    decodeWidthPx: Int = 320,
+    decodeHeightPx: Int = 480
 ) {
     val context = LocalContext.current
     Box(
@@ -100,24 +102,19 @@ fun PosterImageThumbnail(
         ),
         contentAlignment = Alignment.Center
     ) {
+        PosterFallbackArt(modifier = Modifier.fillMaxSize())
         if (!imageUrl.isNullOrBlank()) {
-            SubcomposeAsyncImage(
+            AsyncImage(
                 model = ImageRequest.Builder(context)
                     .data(imageUrl)
-                    .crossfade(true)
+                    .size(decodeWidthPx, decodeHeightPx)
+                    .allowRgb565(true)
+                    .crossfade(false)
                     .build(),
                 contentDescription = contentDescription,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-                loading = {
-                    PosterFallbackArt(modifier = Modifier.fillMaxSize())
-                },
-                error = {
-                    PosterFallbackArt(modifier = Modifier.fillMaxSize())
-                }
+                modifier = Modifier.fillMaxSize()
             )
-        } else {
-            PosterFallbackArt(modifier = Modifier.fillMaxSize())
         }
     }
 }

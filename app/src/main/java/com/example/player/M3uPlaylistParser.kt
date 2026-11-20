@@ -137,10 +137,10 @@ class M3uPlaylistParser(
             if (!response.isSuccessful) return@use null
             val body = response.body ?: return@use null
             val source = body.source()
-            // Cap inspection read at 256 KB so huge media files aren't downloaded
+            // Cap inspection read at 256 KB without cloning the okio buffer
             source.request(262_144L)
-            val bytes = source.buffer.clone().readByteArray(minOf(source.buffer.size, 262_144L))
-            bytes.toString(Charsets.UTF_8)
+            val toRead = minOf(source.buffer.size, 262_144L)
+            source.readByteArray(toRead).toString(Charsets.UTF_8)
         }
     }
 }

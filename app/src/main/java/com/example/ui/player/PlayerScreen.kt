@@ -19,60 +19,23 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.VolumeOff
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.AspectRatio
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.ErrorOutline
-import androidx.compose.material.icons.rounded.Forward10
-import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.PlaylistPlay
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Replay10
-import androidx.compose.material.icons.rounded.ScreenRotation
-import androidx.compose.material.icons.rounded.Speed
-import androidx.compose.material.icons.rounded.Subtitles
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.VideoLibrary
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -88,7 +51,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -99,9 +61,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -116,7 +76,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
-import com.example.R
 import com.example.ai.AiModelTier
 import com.example.ai.RateLimitSnapshot
 import com.example.model.AspectRatioMode
@@ -129,21 +88,16 @@ import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
 import com.example.model.TrackOption
 import com.example.player.AudioBoostMath
+import com.example.player.PlaybackProgressState
 import com.example.player.PlayerPlaybackState
-import com.example.ui.components.FormatBadge
-import com.example.ui.components.formatDuration
 import com.example.ui.components.rememberIsAndroidTv
 import com.example.ui.components.rememberLocalFilePicker
-import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
-import com.example.ui.theme.CinemaAmberBright
-import com.example.ui.theme.ObsidianOutline
-import com.example.ui.theme.ObsidianSurface
-import com.example.ui.theme.SignalRose
-import com.example.ui.theme.SubtitleEmerald
 import com.example.viewmodel.ActiveMediaSession
 import com.example.viewmodel.AiSubtitleUiState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -159,6 +113,7 @@ fun PlayerScreen(
     player: Player,
     session: ActiveMediaSession?,
     playbackState: PlayerPlaybackState,
+    progressStateFlow: StateFlow<PlaybackProgressState> = remember { MutableStateFlow(PlaybackProgressState()) },
     subtitleAppearance: SubtitleAppearance,
     aspectRatioMode: AspectRatioMode,
     aiSubtitleState: AiSubtitleUiState,
@@ -239,8 +194,6 @@ fun PlayerScreen(
     var volumeHudNonce by remember { mutableIntStateOf(0) }
     val currentVolumeState = rememberUpdatedState(playbackState.volumePercent)
     val latestOnSetVolumePercent = rememberUpdatedState(onSetVolumePercent)
-
-    // Scrubber active state (pauses auto-hide while scrubbing)
     var isScrubbing by remember { mutableStateOf(false) }
 
     val subtitleFilePicker = rememberLocalFilePicker(
@@ -259,7 +212,7 @@ fun PlayerScreen(
         if (!isTv) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
-        onPauseAndSave()
+        // onBack frees ExoPlayer buffers before popping the backstack
         onBack()
     }
 
@@ -273,7 +226,7 @@ fun PlayerScreen(
         }
     }
 
-    // Request focus cleanly for TV remotes AND TV boxes / keyboards regardless of touchscreen flags
+    // Focus management for Android TV remotes and keyboards
     LaunchedEffect(
         controlsVisible,
         focusSeekBarOnReveal,
@@ -287,7 +240,9 @@ fun PlayerScreen(
         showSpeedMenu,
         showVolumeBoostDialog
     ) {
-        if (!showSubtitleSheet && !showTracksSheet && !showM3uSheet && !showJsonSheet && !showSpeedMenu && !showVolumeBoostDialog && playbackState.errorMessage == null) {
+        val noModalOpen = !showSubtitleSheet && !showTracksSheet && !showM3uSheet &&
+            !showJsonSheet && !showSpeedMenu && !showVolumeBoostDialog && playbackState.errorMessage == null
+        if (noModalOpen) {
             if (controlsVisible && !isLocked && (isTv || lastInputWasKey)) {
                 delay(60L)
                 val pendingTarget = returnFocusTarget
@@ -309,7 +264,6 @@ fun PlayerScreen(
         }
     }
 
-    // Toast feedback inside player
     LaunchedEffect(toastMessage) {
         if (!toastMessage.isNullOrBlank()) {
             snackbarHostState.showSnackbar(toastMessage)
@@ -317,7 +271,6 @@ fun PlayerScreen(
         }
     }
 
-    // Clear seek indicator
     LaunchedEffect(seekBadgeText) {
         if (seekBadgeText != null) {
             delay(750L)
@@ -325,7 +278,6 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-hide vertical volume / boost HUD
     LaunchedEffect(volumeHudNonce) {
         if (volumeHudNonce > 0) {
             isVolumeHudVisible = true
@@ -334,9 +286,22 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-hide controls while playing
-    LaunchedEffect(controlsVisible, playbackState.isPlaying, isScrubbing, showSubtitleSheet, showTracksSheet, showM3uSheet, showJsonSheet, showSpeedMenu, showVolumeBoostDialog, interactionNonce) {
-        if (controlsVisible && playbackState.isPlaying && !isScrubbing && !showSubtitleSheet && !showTracksSheet && !showM3uSheet && !showJsonSheet && !showSpeedMenu && !showVolumeBoostDialog) {
+    LaunchedEffect(
+        controlsVisible,
+        playbackState.isPlaying,
+        isScrubbing,
+        showSubtitleSheet,
+        showTracksSheet,
+        showM3uSheet,
+        showJsonSheet,
+        showSpeedMenu,
+        showVolumeBoostDialog,
+        interactionNonce
+    ) {
+        val canAutoHide = controlsVisible && playbackState.isPlaying && !isScrubbing &&
+            !showSubtitleSheet && !showTracksSheet && !showM3uSheet && !showJsonSheet &&
+            !showSpeedMenu && !showVolumeBoostDialog
+        if (canAutoHide) {
             delay(if (isTv) 5000L else 4000L)
             controlsVisible = false
         }
@@ -387,6 +352,7 @@ fun PlayerScreen(
     val tvOverscanHorizontal = if (isTv) 28.dp else 12.dp
     val tvOverscanVertical = if (isTv) 20.dp else 10.dp
     val hasActiveSubtitles = !playbackState.subtitlesDisabled && playbackState.subtitleTracks.any { it.isSelected }
+    val aiSubActive = aiSubtitleState.isAutoMode || aiSubtitleState.isEnabled || aiSubtitleState.isGenerating
 
     Box(
         modifier = Modifier
@@ -399,8 +365,6 @@ fun PlayerScreen(
                 if (showSubtitleSheet || showTracksSheet || showM3uSheet || showJsonSheet || showSpeedMenu || showVolumeBoostDialog) {
                     return@onPreviewKeyEvent false
                 }
-
-                // Always keep controls timer fresh and mark D-Pad/keyboard mode on any key press
                 lastInputWasKey = true
                 interactionNonce++
 
@@ -439,42 +403,34 @@ fun PlayerScreen(
                             onSeekBy(-10_000L)
                             seekBadgeText = "-10s"
                             true
-                        } else {
-                            false
-                        }
+                        } else false
                     }
                     Key.DirectionRight -> {
                         if (!controlsVisible && !isLocked) {
                             onSeekBy(10_000L)
                             seekBadgeText = "+10s"
                             true
-                        } else {
-                            false
-                        }
+                        } else false
                     }
                     Key.DirectionDown -> {
                         if (!controlsVisible) {
                             focusSeekBarOnReveal = true
                             controlsVisible = true
                             true
-                        } else {
-                            false
-                        }
+                        } else false
                     }
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.DirectionUp -> {
                         if (!controlsVisible) {
                             focusSeekBarOnReveal = false
                             controlsVisible = true
                             true
-                        } else {
-                            false
-                        }
+                        } else false
                     }
                     else -> false
                 }
             }
     ) {
-        // Video Surface + Native SubtitleView via Media3 PlayerView
+        // Video Surface + Native SubtitleView via Media3 PlayerView (detaches player cleanly onRelease)
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
@@ -519,10 +475,13 @@ fun PlayerScreen(
                         subView.setBottomPaddingFraction(if (isTv) 0.10f else 0.08f)
                     }
                 }
+            },
+            onRelease = { playerView ->
+                playerView.player = null
             }
         )
 
-        // Touch Tap, Double-Tap Seek, and VLC/MX Right-Side Vertical 0-200% Sound Swipe
+        // Touch Tap, Double-Tap Seek, and Right-Side Vertical 0-200% Sound Swipe
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -581,7 +540,7 @@ fun PlayerScreen(
                 }
         )
 
-        // Live AI English Subtitle Overlay (synchronized with playback & user subtitle appearance)
+        // Live AI English Subtitle Overlay
         val liveAiCaption = aiSubtitleState.activeOverlayText
         if (aiSubtitleState.isEnabled && !liveAiCaption.isNullOrBlank()) {
             Box(
@@ -644,7 +603,7 @@ fun PlayerScreen(
             }
         }
 
-        // VLC / MX Player Vertical 0–200% Sound Booster HUD
+        // Vertical 0–200% Sound Booster HUD
         AnimatedVisibility(
             visible = isVolumeHudVisible,
             enter = fadeIn(),
@@ -671,7 +630,7 @@ fun PlayerScreen(
             )
         }
 
-        // Controls Overlay
+        // Controls Overlay (lightweight modular sub-composables; timeline ticks are isolated)
         AnimatedVisibility(
             visible = controlsVisible && playbackState.errorMessage == null,
             enter = fadeIn(),
@@ -679,608 +638,127 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             if (isLocked) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(safeInsets)
-                        .padding(horizontal = tvOverscanHorizontal, vertical = tvOverscanVertical)
-                ) {
-                    Surface(
-                        onClick = {
-                            isLocked = false
-                            interactionNonce++
-                        },
-                        shape = RoundedCornerShape(24.dp),
-                        color = Color.Black.copy(alpha = 0.75f),
-                        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.55f)),
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .minimumInteractiveComponentSize()
-                            .tvFocusHighlight(shape = RoundedCornerShape(24.dp))
-                            .testTag("player_unlock_button")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.LockOpen,
-                                contentDescription = stringResource(R.string.cd_unlock_controls),
-                                tint = CinemaAmber,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = "Unlock",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = Color.White
-                            )
-                        }
+                PlayerLockedOverlay(
+                    safeInsets = safeInsets,
+                    tvOverscanHorizontal = tvOverscanHorizontal,
+                    tvOverscanVertical = tvOverscanVertical,
+                    onUnlock = {
+                        isLocked = false
+                        interactionNonce++
                     }
-                }
+                )
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    // Top Gradient & Header Bar
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.TopCenter)
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(Color.Black.copy(alpha = 0.84f), Color.Transparent)
-                                )
-                            )
-                            .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
-                            .padding(horizontal = tvOverscanHorizontal, vertical = tvOverscanVertical)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            IconButton(
-                                onClick = handleExit,
-                                modifier = Modifier
-                                    .tvFocusHighlight(shape = CircleShape)
-                                    .testTag("player_back_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                    contentDescription = stringResource(R.string.cd_back),
-                                    tint = Color.White
-                                )
-                            }
+                    PlayerTopBar(
+                        title = session?.title ?: "Playing Media",
+                        format = session?.format ?: StreamFormat.AUTO,
+                        videoHeight = playbackState.videoHeight,
+                        hasActiveSubtitles = hasActiveSubtitles,
+                        aiSubActive = aiSubActive,
+                        aiSubGenerating = aiSubtitleState.isGenerating,
+                        hasJsonPlaylist = jsonPlaylistItems.isNotEmpty(),
+                        hasM3uPlaylist = m3uEntries.isNotEmpty(),
+                        isTv = isTv,
+                        tvOverscanHorizontal = tvOverscanHorizontal,
+                        tvOverscanVertical = tvOverscanVertical,
+                        subButtonFocusRequester = subButtonFocusRequester,
+                        jsonButtonFocusRequester = jsonButtonFocusRequester,
+                        m3uButtonFocusRequester = m3uButtonFocusRequester,
+                        tracksButtonFocusRequester = tracksButtonFocusRequester,
+                        onBack = handleExit,
+                        onOpenSubtitles = {
+                            returnFocusTarget = subButtonFocusRequester
+                            showSubtitleSheet = true
+                            interactionNonce++
+                        },
+                        onOpenJsonCatalog = {
+                            returnFocusTarget = jsonButtonFocusRequester
+                            showJsonSheet = true
+                            interactionNonce++
+                        },
+                        onOpenM3uQueue = {
+                            returnFocusTarget = m3uButtonFocusRequester
+                            showM3uSheet = true
+                            interactionNonce++
+                        },
+                        onOpenTracks = {
+                            returnFocusTarget = tracksButtonFocusRequester
+                            showTracksSheet = true
+                            interactionNonce++
+                        },
+                        onLockControls = {
+                            isLocked = true
+                            interactionNonce++
+                        },
+                        modifier = Modifier.align(Alignment.TopCenter)
+                    )
 
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                Text(
-                                    text = session?.title ?: "Playing Media",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    FormatBadge(format = session?.format ?: StreamFormat.AUTO)
-                                    if (playbackState.videoHeight > 0) {
-                                        Text(
-                                            text = "${playbackState.videoHeight}p",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = Color.White.copy(alpha = 0.78f)
-                                        )
-                                    }
-                                    if (hasActiveSubtitles) {
-                                        Text(
-                                            text = "· CC ON",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = SubtitleEmerald
-                                        )
-                                    }
-                                    if (aiSubtitleState.isAutoMode || aiSubtitleState.isEnabled || aiSubtitleState.isGenerating) {
-                                        Text(
-                                            text = if (aiSubtitleState.isGenerating) "· AI EN…" else "· AI EN",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = CinemaAmber
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Subtitle Sheet Button (highlights when native CC or AI EN is active)
-                            val aiSubActive = aiSubtitleState.isAutoMode || aiSubtitleState.isEnabled || aiSubtitleState.isGenerating
-                            val subTint = when {
-                                aiSubActive -> CinemaAmber
-                                hasActiveSubtitles -> SubtitleEmerald
-                                else -> Color.White
-                            }
-                            Surface(
-                                onClick = {
-                                    returnFocusTarget = subButtonFocusRequester
-                                    showSubtitleSheet = true
-                                    interactionNonce++
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                color = when {
-                                    aiSubActive -> CinemaAmber.copy(alpha = 0.24f)
-                                    hasActiveSubtitles -> SubtitleEmerald.copy(alpha = 0.24f)
-                                    else -> Color.White.copy(alpha = 0.14f)
-                                },
-                                border = BorderStroke(
-                                    1.dp,
-                                    when {
-                                        aiSubActive -> CinemaAmber
-                                        hasActiveSubtitles -> SubtitleEmerald
-                                        else -> Color.White.copy(alpha = 0.22f)
-                                    }
-                                ),
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .focusRequester(subButtonFocusRequester)
-                                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                                    .testTag("player_subtitles_button")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Subtitles,
-                                        contentDescription = stringResource(R.string.cd_subtitles),
-                                        tint = subTint,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(
-                                        text = if (aiSubActive) "AI Sub" else "Sub",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = subTint
-                                    )
-                                }
-                            }
-
-                            if (jsonPlaylistItems.isNotEmpty()) {
-                                IconButton(
-                                    onClick = {
-                                        returnFocusTarget = jsonButtonFocusRequester
-                                        showJsonSheet = true
-                                        interactionNonce++
-                                    },
-                                    modifier = Modifier
-                                        .focusRequester(jsonButtonFocusRequester)
-                                        .tvFocusHighlight(shape = CircleShape)
-                                        .testTag("player_json_catalog_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.VideoLibrary,
-                                        contentDescription = stringResource(R.string.cd_json_playlist),
-                                        tint = CinemaAmber
-                                    )
-                                }
-                            }
-
-                            if (m3uEntries.isNotEmpty()) {
-                                IconButton(
-                                    onClick = {
-                                        returnFocusTarget = m3uButtonFocusRequester
-                                        showM3uSheet = true
-                                        interactionNonce++
-                                    },
-                                    modifier = Modifier
-                                        .focusRequester(m3uButtonFocusRequester)
-                                        .tvFocusHighlight(shape = CircleShape)
-                                        .testTag("player_m3u_queue_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.PlaylistPlay,
-                                        contentDescription = stringResource(R.string.cd_playlist),
-                                        tint = Color.White
-                                    )
-                                }
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    returnFocusTarget = tracksButtonFocusRequester
-                                    showTracksSheet = true
-                                    interactionNonce++
-                                },
-                                modifier = Modifier
-                                    .focusRequester(tracksButtonFocusRequester)
-                                    .tvFocusHighlight(shape = CircleShape)
-                                    .testTag("player_tracks_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Tune,
-                                    contentDescription = stringResource(R.string.cd_tracks),
-                                    tint = Color.White
-                                )
-                            }
-
-                            if (!isTv) {
-                                IconButton(
-                                    onClick = {
-                                        isLocked = true
-                                        interactionNonce++
-                                    },
-                                    modifier = Modifier
-                                        .tvFocusHighlight(shape = CircleShape)
-                                        .testTag("player_lock_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Lock,
-                                        contentDescription = stringResource(R.string.cd_lock_controls),
-                                        tint = Color.White
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Center Transport Controls
                     if (!playbackState.isBuffering) {
-                        Row(
-                            modifier = Modifier.align(Alignment.Center),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(32.dp)
-                        ) {
-                            Surface(
-                                onClick = {
-                                    onSeekBy(-10_000L)
-                                    seekBadgeText = "-10s"
-                                    interactionNonce++
-                                },
-                                shape = CircleShape,
-                                color = Color.Black.copy(alpha = 0.55f),
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .tvFocusHighlight(shape = CircleShape, focusedScale = 1.1f)
-                                    .testTag("player_rewind_button")
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Replay10,
-                                        contentDescription = stringResource(R.string.cd_rewind),
-                                        tint = Color.White,
-                                        modifier = Modifier.size(30.dp)
-                                    )
-                                }
-                            }
-
-                            Surface(
-                                onClick = {
-                                    onTogglePlayPause()
-                                    interactionNonce++
-                                },
-                                shape = CircleShape,
-                                color = CinemaAmber,
-                                modifier = Modifier
-                                    .size(74.dp)
-                                    .focusRequester(playPauseFocusRequester)
-                                    .tvFocusHighlight(
-                                        shape = CircleShape,
-                                        borderColor = Color.White,
-                                        borderWidth = 3.dp,
-                                        focusedScale = 1.1f
-                                    )
-                                    .testTag("player_play_pause_button")
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = if (playbackState.isPlaying) {
-                                            Icons.Rounded.Pause
-                                        } else {
-                                            Icons.Rounded.PlayArrow
-                                        },
-                                        contentDescription = stringResource(R.string.cd_play_pause),
-                                        tint = MaterialTheme.colorScheme.onPrimary,
-                                        modifier = Modifier.size(40.dp)
-                                    )
-                                }
-                            }
-
-                            Surface(
-                                onClick = {
-                                    onSeekBy(10_000L)
-                                    seekBadgeText = "+10s"
-                                    interactionNonce++
-                                },
-                                shape = CircleShape,
-                                color = Color.Black.copy(alpha = 0.55f),
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .tvFocusHighlight(shape = CircleShape, focusedScale = 1.1f)
-                                    .testTag("player_forward_button")
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Forward10,
-                                        contentDescription = stringResource(R.string.cd_forward),
-                                        tint = Color.White,
-                                        modifier = Modifier.size(30.dp)
-                                    )
-                                }
-                            }
-                        }
+                        PlayerCenterTransport(
+                            isPlaying = playbackState.isPlaying,
+                            playPauseFocusRequester = playPauseFocusRequester,
+                            onRewind10s = {
+                                onSeekBy(-10_000L)
+                                seekBadgeText = "-10s"
+                                interactionNonce++
+                            },
+                            onTogglePlayPause = {
+                                onTogglePlayPause()
+                                interactionNonce++
+                            },
+                            onForward10s = {
+                                onSeekBy(10_000L)
+                                seekBadgeText = "+10s"
+                                interactionNonce++
+                            },
+                            modifier = Modifier.align(Alignment.Center)
+                        )
                     }
 
-                    // Bottom Scrubber & Utility Bar
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.BottomCenter)
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.88f))
-                                )
-                            )
-                            .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.displayCutout))
-                            .padding(horizontal = if (isTv) 32.dp else 16.dp, vertical = if (isTv) 18.dp else 12.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                if (playbackState.isLiveStream && playbackState.durationMs <= 0L) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = SignalRose.copy(alpha = 0.22f),
-                                        border = BorderStroke(1.dp, SignalRose)
-                                    ) {
-                                        Text(
-                                            text = "● LIVE HLS",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = SignalRose,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
-                                    }
-                                } else {
-                                    Text(
-                                        text = "${formatDuration(playbackState.currentPositionMs)} / ${formatDuration(playbackState.durationMs)}",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = Color.White
-                                    )
-                                }
-
-                                // Quick Bottom Controls: Sound Boost (200%), Speed, Aspect Ratio, (Rotate on Mobile)
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    val volPct = playbackState.volumePercent
-                                    val isBoosted = volPct > AudioBoostMath.NORMAL_MAX_PERCENT
-                                    val volAccent = when {
-                                        volPct >= 160 -> SignalRose
-                                        isBoosted -> CinemaAmberBright
-                                        else -> CinemaAmber
-                                    }
-                                    Surface(
-                                        onClick = {
-                                            returnFocusTarget = volumeButtonFocusRequester
-                                            showVolumeBoostDialog = true
-                                            interactionNonce++
-                                        },
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isBoosted) volAccent.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.14f),
-                                        border = if (isBoosted) BorderStroke(1.dp, volAccent.copy(alpha = 0.65f)) else null,
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .focusRequester(volumeButtonFocusRequester)
-                                            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                                            .testTag("player_volume_boost_button")
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = when {
-                                                    volPct == 0 -> Icons.AutoMirrored.Rounded.VolumeOff
-                                                    isBoosted -> Icons.Rounded.GraphicEq
-                                                    else -> Icons.AutoMirrored.Rounded.VolumeUp
-                                                },
-                                                contentDescription = stringResource(R.string.cd_volume_boost),
-                                                tint = volAccent,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Text(
-                                                text = AudioBoostMath.formatShortLabel(volPct),
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = if (isBoosted) volAccent else Color.White
-                                            )
-                                        }
-                                    }
-
-                                    Box {
-                                        Surface(
-                                            onClick = {
-                                                returnFocusTarget = speedButtonFocusRequester
-                                                showSpeedMenu = true
-                                                interactionNonce++
-                                            },
-                                            shape = RoundedCornerShape(10.dp),
-                                            color = Color.White.copy(alpha = 0.14f),
-                                            modifier = Modifier
-                                                .minimumInteractiveComponentSize()
-                                                .focusRequester(speedButtonFocusRequester)
-                                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                                                .testTag("player_speed_button")
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.Speed,
-                                                    contentDescription = null,
-                                                    tint = CinemaAmber,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                                Text(
-                                                    text = "${playbackState.playbackSpeed}x",
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    color = Color.White
-                                                )
-                                            }
-                                        }
-                                        DropdownMenu(
-                                            expanded = showSpeedMenu,
-                                            onDismissRequest = { showSpeedMenu = false },
-                                            containerColor = ObsidianSurface,
-                                            shape = RoundedCornerShape(14.dp),
-                                            border = BorderStroke(1.5.dp, CinemaAmber.copy(alpha = 0.65f))
-                                        ) {
-                                            val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
-                                            val activeSpeedFocusRequester = remember { FocusRequester() }
-                                            LaunchedEffect(showSpeedMenu) {
-                                                if (showSpeedMenu) {
-                                                    delay(80L)
-                                                    runCatching { activeSpeedFocusRequester.requestFocus() }
-                                                }
-                                            }
-                                            speedOptions.forEach { speed ->
-                                                val isCurrent = speed == playbackState.playbackSpeed
-                                                var isRowFocused by remember { mutableStateOf(false) }
-                                                DropdownMenuItem(
-                                                    modifier = Modifier
-                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                        .then(
-                                                            if (isCurrent) {
-                                                                Modifier.focusRequester(activeSpeedFocusRequester)
-                                                            } else {
-                                                                Modifier
-                                                            }
-                                                        )
-                                                        .tvFocusHighlight(
-                                                            shape = RoundedCornerShape(10.dp),
-                                                            focusedScale = 1.03f,
-                                                            onFocusStateChanged = { isRowFocused = it }
-                                                        )
-                                                        .background(
-                                                            color = when {
-                                                                isRowFocused -> CinemaAmber.copy(alpha = 0.24f)
-                                                                isCurrent -> CinemaAmber.copy(alpha = 0.10f)
-                                                                else -> Color.Transparent
-                                                            },
-                                                            shape = RoundedCornerShape(10.dp)
-                                                        )
-                                                        .testTag("speed_option_${speed}x"),
-                                                    leadingIcon = {
-                                                        when {
-                                                            isRowFocused -> Icon(
-                                                                imageVector = Icons.Rounded.PlayArrow,
-                                                                contentDescription = null,
-                                                                tint = Color.White,
-                                                                modifier = Modifier.size(18.dp)
-                                                            )
-                                                            isCurrent -> Icon(
-                                                                imageVector = Icons.Rounded.Check,
-                                                                contentDescription = null,
-                                                                tint = CinemaAmber,
-                                                                modifier = Modifier.size(18.dp)
-                                                            )
-                                                            else -> Spacer(Modifier.size(18.dp))
-                                                        }
-                                                    },
-                                                    text = {
-                                                        Text(
-                                                            text = "${speed}x",
-                                                            style = MaterialTheme.typography.titleSmall,
-                                                            color = when {
-                                                                isRowFocused -> Color.White
-                                                                isCurrent -> CinemaAmber
-                                                                else -> MaterialTheme.colorScheme.onSurface
-                                                            }
-                                                        )
-                                                    },
-                                                    onClick = {
-                                                        onSetSpeed(speed)
-                                                        showSpeedMenu = false
-                                                        interactionNonce++
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    Surface(
-                                        onClick = {
-                                            onCycleAspectRatio()
-                                            interactionNonce++
-                                        },
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = Color.White.copy(alpha = 0.14f),
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                                            .testTag("player_aspect_button")
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.AspectRatio,
-                                                contentDescription = stringResource(R.string.cd_aspect_ratio),
-                                                tint = Color.White,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Text(
-                                                text = aspectRatioMode.label,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = Color.White
-                                            )
-                                        }
-                                    }
-
-                                    if (!isTv) {
-                                        IconButton(
-                                            onClick = {
-                                                isLandscape = !isLandscape
-                                                activity?.requestedOrientation = if (isLandscape) {
-                                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                                                } else {
-                                                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                                                }
-                                                interactionNonce++
-                                            },
-                                            modifier = Modifier
-                                                .tvFocusHighlight(shape = CircleShape)
-                                                .testTag("player_rotate_button")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.ScreenRotation,
-                                                contentDescription = stringResource(R.string.cd_rotate),
-                                                tint = Color.White
-                                            )
-                                        }
-                                    }
-                                }
+                    PlayerBottomBar(
+                        progressStateFlow = progressStateFlow,
+                        volumePercent = playbackState.volumePercent,
+                        playbackSpeed = playbackState.playbackSpeed,
+                        aspectRatioMode = aspectRatioMode,
+                        isTv = isTv,
+                        showSpeedMenu = showSpeedMenu,
+                        volumeButtonFocusRequester = volumeButtonFocusRequester,
+                        speedButtonFocusRequester = speedButtonFocusRequester,
+                        seekBarFocusRequester = seekBarFocusRequester,
+                        onOpenVolumeBoost = {
+                            returnFocusTarget = volumeButtonFocusRequester
+                            showVolumeBoostDialog = true
+                            interactionNonce++
+                        },
+                        onOpenSpeedMenu = {
+                            returnFocusTarget = speedButtonFocusRequester
+                            showSpeedMenu = true
+                            interactionNonce++
+                        },
+                        onDismissSpeedMenu = { showSpeedMenu = false },
+                        onSelectSpeed = { speed ->
+                            onSetSpeed(speed)
+                            showSpeedMenu = false
+                            interactionNonce++
+                        },
+                        onCycleAspectRatio = {
+                            onCycleAspectRatio()
+                            interactionNonce++
+                        },
+                        onToggleOrientation = {
+                            isLandscape = !isLandscape
+                            activity?.requestedOrientation = if (isLandscape) {
+                                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            } else {
+                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                             }
-
-                            if (!playbackState.isLiveStream || playbackState.durationMs > 0L) {
-                                SelectableCinemaSeekBar(
-                                    currentPositionMs = playbackState.currentPositionMs,
-                                    bufferedPositionMs = playbackState.bufferedPositionMs,
-                                    durationMs = playbackState.durationMs,
-                                    isTv = isTv,
-                                    focusRequester = seekBarFocusRequester,
-                                    onSeekCommit = onSeekTo,
-                                    onScrubbingStateChanged = { scrubbing -> isScrubbing = scrubbing },
-                                    onInteraction = { interactionNonce++ }
-                                )
-                            }
-                        }
-                    }
+                            interactionNonce++
+                        },
+                        onSeekCommit = onSeekTo,
+                        onScrubbingStateChanged = { scrubbing -> isScrubbing = scrubbing },
+                        onInteraction = { interactionNonce++ },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
                 }
             }
         }
@@ -1305,9 +783,7 @@ fun PlayerScreen(
             aiSubtitleState = aiSubtitleState,
             rateLimitSnapshot = rateLimitSnapshot,
             onDismiss = { showSubtitleSheet = false },
-            onPickSubtitleFile = {
-                subtitleFilePicker.pickSubtitle()
-            },
+            onPickSubtitleFile = { subtitleFilePicker.pickSubtitle() },
             onLoadSubtitleUrl = onLoadSubtitleUrl,
             onSelectTrack = onSelectSubtitleTrack,
             onDisableSubtitles = onDisableSubtitles,
@@ -1370,84 +846,6 @@ fun PlayerScreen(
             onDismiss = { showJsonSheet = false },
             onSelectItem = onSelectJsonItem
         )
-    }
-}
-
-@Composable
-private fun PlayerErrorCard(
-    message: String,
-    currentFormat: StreamFormat,
-    onRetry: () -> Unit,
-    onForceHls: () -> Unit,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier.widthIn(max = 420.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = ObsidianSurface,
-        border = BorderStroke(1.dp, SignalRose.copy(alpha = 0.5f))
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.ErrorOutline,
-                contentDescription = null,
-                tint = SignalRose,
-                modifier = Modifier.size(36.dp)
-            )
-            Text(
-                text = "Playback Interrupted",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .weight(1f)
-                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp)),
-                    border = BorderStroke(1.dp, ObsidianOutline)
-                ) {
-                    Text("Back")
-                }
-                Button(
-                    onClick = onRetry,
-                    modifier = Modifier
-                        .weight(1f)
-                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp), borderColor = Color.White)
-                        .testTag("player_error_retry_button"),
-                    colors = ButtonDefaults.buttonColors(containerColor = CinemaAmber)
-                ) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Retry")
-                }
-            }
-            if (currentFormat != StreamFormat.HLS && currentFormat != StreamFormat.M3U8) {
-                OutlinedButton(
-                    onClick = onForceHls,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                        .testTag("player_force_hls_button"),
-                    border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.6f))
-                ) {
-                    Text("Try as HLS / M3U8 Stream", color = CinemaAmber)
-                }
-            }
-        }
     }
 }
 

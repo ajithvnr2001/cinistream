@@ -65,7 +65,7 @@ class ImdbMetadataClient(
         }
 
         if (info != null) {
-            if (cache.size >= 250) {
+            if (cache.size >= 120) {
                 cache.clear()
             }
             cache[info.imdbId] = info
@@ -98,8 +98,12 @@ class ImdbMetadataClient(
                 .build()
             okHttpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@use null
-                val body = resp.body?.string() ?: return@use null
-                parseSuggestionJson(body, expectedImdbId, preferredYear)
+                val body = resp.body ?: return@use null
+                val source = body.source()
+                source.request(262_144L)
+                val toRead = minOf(source.buffer.size, 262_144L)
+                val bodyText = source.readByteArray(toRead).toString(Charsets.UTF_8)
+                parseSuggestionJson(bodyText, expectedImdbId, preferredYear)
             }
         }.getOrNull()
     }
@@ -157,8 +161,25 @@ class ImdbMetadataClient(
                 .build()
             okHttpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@use null
-                val html = resp.body?.string() ?: return@use null
-                parseImdbHtmlJsonLd(html, imdbId)
+                val body = resp.body ?: return@use null
+                // Stream-read at most 512 KB and stop early once the JSON-LD script block completes
+                val sb = StringBuilder(32_768)
+                var totalRead = 0
+                val maxChars = 524_288
+                val buf = CharArray(8_192)
+                body.charStream().use { reader ->
+                    while (totalRead < maxChars) {
+                        val n = reader.read(buf, 0, minOf(buf.size, maxChars - totalRead))
+                        if (n <= 0) break
+                        sb.append(buf, 0, n)
+                        totalRead += n
+                        val ldIdx = sb.indexOf("application/ld+json")
+                        if (ldIdx >= 0 && sb.indexOf("</script>", ldIdx) >= 0) {
+                            break
+                        }
+                    }
+                }
+                parseImdbHtmlJsonLd(sb.toString(), imdbId)
             }
         }.getOrNull()
     }

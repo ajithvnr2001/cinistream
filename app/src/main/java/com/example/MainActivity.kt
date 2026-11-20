@@ -7,6 +7,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -69,16 +71,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun CineStreamApp(viewModel: CineStreamViewModel) {
     val navController = rememberNavController()
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val jsonPlaylistState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
-    val sampleStreams by viewModel.sampleStreams.collectAsStateWithLifecycle()
-    val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
-    val history by viewModel.history.collectAsStateWithLifecycle()
-    val subtitleAppearance by viewModel.subtitleAppearance.collectAsStateWithLifecycle()
-    val aspectRatioMode by viewModel.aspectRatioMode.collectAsStateWithLifecycle()
-    val aiSubtitleState by viewModel.aiSubtitleState.collectAsStateWithLifecycle()
-    val rateLimitSnapshot by viewModel.rateLimitSnapshot.collectAsStateWithLifecycle()
-
     var showHomeM3uSheet by remember { mutableStateOf(false) }
     var showHomeJsonSheet by remember { mutableStateOf(false) }
 
@@ -102,11 +94,27 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
         }
     }
 
+    // Disable crossfade/slide transitions so PlayerScreen & HomeScreen never coexist in memory
     NavHost(
         navController = navController,
-        startDestination = ROUTE_HOME
+        startDestination = ROUTE_HOME,
+        enterTransition = { EnterTransition.None },
+        exitTransition = { ExitTransition.None },
+        popEnterTransition = { EnterTransition.None },
+        popExitTransition = { ExitTransition.None }
     ) {
-        composable(ROUTE_HOME) {
+        composable(
+            route = ROUTE_HOME,
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None }
+        ) {
+            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+            val jsonPlaylistState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
+            val sampleStreams by viewModel.sampleStreams.collectAsStateWithLifecycle()
+            val history by viewModel.history.collectAsStateWithLifecycle()
+
             HomeScreen(
                 uiState = uiState,
                 jsonPlaylistState = jsonPlaylistState,
@@ -132,22 +140,31 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onTogglePin = viewModel::togglePinHistoryItem,
                 onDeleteHistory = viewModel::deleteHistoryItem,
                 onOpenM3uSheet = { showHomeM3uSheet = true },
-                onResumeActiveSession = {
-                    if (uiState.activeSession != null) {
-                        navController.navigate(ROUTE_PLAYER) {
-                            launchSingleTop = true
-                        }
-                    }
-                },
+                onResumeActiveSession = viewModel::resumeActiveSession,
                 onToastShown = viewModel::consumeToast
             )
         }
 
-        composable(ROUTE_PLAYER) {
+        composable(
+            route = ROUTE_PLAYER,
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None }
+        ) {
+            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+            val jsonPlaylistState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
+            val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
+            val subtitleAppearance by viewModel.subtitleAppearance.collectAsStateWithLifecycle()
+            val aspectRatioMode by viewModel.aspectRatioMode.collectAsStateWithLifecycle()
+            val aiSubtitleState by viewModel.aiSubtitleState.collectAsStateWithLifecycle()
+            val rateLimitSnapshot by viewModel.rateLimitSnapshot.collectAsStateWithLifecycle()
+
             PlayerScreen(
                 player = viewModel.playerManager.player,
                 session = uiState.activeSession,
                 playbackState = playbackState,
+                progressStateFlow = viewModel.playbackProgressState,
                 subtitleAppearance = subtitleAppearance,
                 aspectRatioMode = aspectRatioMode,
                 aiSubtitleState = aiSubtitleState,
@@ -161,6 +178,8 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 canRefreshJson = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
                 toastMessage = uiState.toastMessage,
                 onBack = {
+                    // Stop playback and trim ExoPlayer buffers BEFORE popping back to HomeScreen
+                    viewModel.exitPlayerAndReleaseBuffers()
                     navController.popBackStack()
                 },
                 onPauseAndSave = viewModel::pauseAndPersistProgress,
@@ -195,25 +214,31 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
         }
     }
 
-    if (showHomeM3uSheet && uiState.m3uEntries.isNotEmpty()) {
-        M3uPlaylistSheet(
-            entries = uiState.m3uEntries,
-            activeEntryId = uiState.activeM3uEntryId,
-            onDismiss = { showHomeM3uSheet = false },
-            onSelectEntry = viewModel::playM3uEntry
-        )
+    if (showHomeM3uSheet) {
+        val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+        if (uiState.m3uEntries.isNotEmpty()) {
+            M3uPlaylistSheet(
+                entries = uiState.m3uEntries,
+                activeEntryId = uiState.activeM3uEntryId,
+                onDismiss = { showHomeM3uSheet = false },
+                onSelectEntry = viewModel::playM3uEntry
+            )
+        }
     }
 
-    if (showHomeJsonSheet && jsonPlaylistState.items.isNotEmpty()) {
-        JsonPlaylistSheet(
-            sourceLabel = jsonPlaylistState.sourceLabel,
-            items = jsonPlaylistState.items,
-            activeItemId = jsonPlaylistState.activeItemId,
-            isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
-            canRefreshUrl = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
-            onRefresh = viewModel::refreshJsonPlaylist,
-            onDismiss = { showHomeJsonSheet = false },
-            onSelectItem = viewModel::playJsonPlaylistItem
-        )
+    if (showHomeJsonSheet) {
+        val jsonPlaylistState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
+        if (jsonPlaylistState.items.isNotEmpty()) {
+            JsonPlaylistSheet(
+                sourceLabel = jsonPlaylistState.sourceLabel,
+                items = jsonPlaylistState.items,
+                activeItemId = jsonPlaylistState.activeItemId,
+                isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
+                canRefreshUrl = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
+                onRefresh = viewModel::refreshJsonPlaylist,
+                onDismiss = { showHomeJsonSheet = false },
+                onSelectItem = viewModel::playJsonPlaylistItem
+            )
+        }
     }
 }

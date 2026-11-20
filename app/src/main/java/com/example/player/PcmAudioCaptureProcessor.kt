@@ -36,6 +36,7 @@ class PcmAudioCaptureProcessor : AudioProcessor {
     }
 
     private var inputFormat: AudioFormat = AudioFormat.NOT_SET
+    private var reusableBuffer: ByteBuffer = AudioProcessor.EMPTY_BUFFER
     private var outputBuffer: ByteBuffer = AudioProcessor.EMPTY_BUFFER
     private var inputEnded = false
 
@@ -75,13 +76,14 @@ class PcmAudioCaptureProcessor : AudioProcessor {
         }
 
         val remaining = inputBuffer.remaining()
-        if (outputBuffer.capacity() < remaining) {
-            outputBuffer = ByteBuffer.allocateDirect(remaining).order(ByteOrder.nativeOrder())
+        if (reusableBuffer.capacity() < remaining) {
+            reusableBuffer = ByteBuffer.allocateDirect(remaining).order(ByteOrder.nativeOrder())
         } else {
-            outputBuffer.clear()
+            reusableBuffer.clear()
         }
-        outputBuffer.put(inputBuffer)
-        outputBuffer.flip()
+        reusableBuffer.put(inputBuffer)
+        reusableBuffer.flip()
+        outputBuffer = reusableBuffer
     }
 
     override fun queueEndOfStream() {
@@ -103,6 +105,7 @@ class PcmAudioCaptureProcessor : AudioProcessor {
 
     override fun reset() {
         flush()
+        reusableBuffer = AudioProcessor.EMPTY_BUFFER
         inputFormat = AudioFormat.NOT_SET
         clearCapturedAudio()
     }

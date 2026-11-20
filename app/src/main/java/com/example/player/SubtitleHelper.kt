@@ -174,7 +174,13 @@ class SubtitleHelper(
                     .header("User-Agent", CinePlayerManager.DEFAULT_USER_AGENT)
                     .build()
                 okHttpClient.newCall(request).execute().use { resp ->
-                    if (resp.isSuccessful) resp.body?.string() else null
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body ?: return@use null
+                    val source = body.source()
+                    // Cap subtitle download at 2 MB so malformed URLs cannot OOM low-RAM devices
+                    source.request(2_097_152L)
+                    val toRead = minOf(source.buffer.size, 2_097_152L)
+                    source.readByteArray(toRead).toString(Charsets.UTF_8)
                 }
             }
         }.getOrNull() ?: return@withContext originalUri
@@ -274,8 +280,13 @@ class SubtitleHelper(
                 .build()
             okHttpClient.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) return@use null
-                val bytes = resp.body?.bytes() ?: return@use null
-                sniffHeaderBytes(bytes)
+                val body = resp.body ?: return@use null
+                val source = body.source()
+                // Read at most 512 bytes even if the origin server ignores the Range header
+                source.request(512L)
+                val toRead = minOf(source.buffer.size, 512L)
+                if (toRead <= 0L) return@use null
+                sniffHeaderBytes(source.readByteArray(toRead))
             }
         }.getOrNull()
     }

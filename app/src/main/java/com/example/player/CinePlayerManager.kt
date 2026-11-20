@@ -1,5 +1,6 @@
 package com.example.player
 
+import android.app.ActivityManager
 import android.content.Context
 import android.net.Uri
 import androidx.annotation.OptIn
@@ -13,7 +14,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -22,6 +23,8 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.extractor.DefaultExtractorsFactory
 import com.example.CineStreamApplication
 import com.example.model.ExternalSubtitle
@@ -35,6 +38,17 @@ import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+/**
+ * Rapidly-updating timeline position state kept isolated from [PlayerPlaybackState] so 500ms
+ * progress ticks only recompose the seekbar & timestamp instead of the full PlayerScreen.
+ */
+data class PlaybackProgressState(
+    val currentPositionMs: Long = 0L,
+    val bufferedPositionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val isLiveStream: Boolean = false
+)
 
 data class PlayerPlaybackState(
     val isPlaying: Boolean = false,
@@ -61,11 +75,32 @@ class CinePlayerManager(context: Context) {
     companion object {
         const val DEFAULT_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) CineStream/1.0 ExoPlayer"
+
+        const val MIN_TARGET_BUFFER_BYTES = 12 * 1024 * 1024
+        const val MAX_TARGET_BUFFER_BYTES = 32 * 1024 * 1024
+        const val MIN_BUFFER_MS = 10_000
+        const val MAX_BUFFER_MS = 20_000
+        const val BUFFER_FOR_PLAYBACK_MS = 1_500
+        const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 3_000
+        const val TV_SAFE_MAX_VIDEO_WIDTH = 1920
+        const val TV_SAFE_MAX_VIDEO_HEIGHT = 1080
+        const val TV_SAFE_MAX_VIDEO_BITRATE = 12_000_000
+
+        /**
+         * Caps ExoPlayer's Java-heap media buffer to 20% of JVM maxMemory, clamped to 12–32 MB.
+         * Prevents OOM crashes on 32-bit Android TVs (80 MB default heap -> 16 MB; 384 MB largeHeap -> 32 MB).
+         */
+        fun computeSafeTargetBufferBytes(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): Int {
+            return (maxHeapBytes * 0.20)
+                .toLong()
+                .coerceIn(MIN_TARGET_BUFFER_BYTES.toLong(), MAX_TARGET_BUFFER_BYTES.toLong())
+                .toInt()
+        }
     }
 
     val okHttpClient: OkHttpClient = (context.applicationContext as? CineStreamApplication)?.sharedOkHttpClient
         ?: OkHttpClient.Builder()
-            .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+            .connectionPool(ConnectionPool(5, 3, TimeUnit.MINUTES))
             .retryOnConnectionFailure(true)
             .followRedirects(true)
             .followSslRedirects(true)
@@ -73,24 +108,59 @@ class CinePlayerManager(context: Context) {
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
 
-    private val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
+    // Use DefaultHttpDataSource for video streaming to avoid OkHttp HTTP/2 okio.Buffer segment churn on low-RAM TVs
+    private val httpDataSourceFactory = DefaultHttpDataSource.Factory()
         .setUserAgent(DEFAULT_USER_AGENT)
+        .setAllowCrossProtocolRedirects(true)
+        .setConnectTimeoutMs(20_000)
+        .setReadTimeoutMs(30_000)
 
-    // DefaultDataSource wraps OkHttpDataSource so remote http/https streams AND local content://
+    // DefaultDataSource wraps DefaultHttpDataSource so remote http/https streams AND local content://
     // videos/subtitles seamlessly combine inside MergingMediaSource across all formats.
-    private val dataSourceFactory = DefaultDataSource.Factory(context, okHttpDataSourceFactory)
+    private val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
 
     private val extractorsFactory = DefaultExtractorsFactory()
         .setConstantBitrateSeekingEnabled(true)
 
     private val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
-    // Fast startup (1.5s vs default 2.5s) and 15s retained keyframe back-buffer for instant -10s rewind
+    val targetBufferBytes: Int = computeSafeTargetBufferBytes()
+
+    // trimOnReset = true immediately returns 64 KB buffer segments to GC when stopping or switching media
+    private val allocator = DefaultAllocator(
+        /* trimOnReset = */ true,
+        /* individualAllocationSize = */ C.DEFAULT_BUFFER_SEGMENT_SIZE
+    )
+
+    // Strict heap-capped LoadControl: respects targetBufferBytes over time thresholds and frees played frames immediately
     private val loadControl = DefaultLoadControl.Builder()
-        .setBufferDurationsMs(15_000, 45_000, 1_500, 3_000)
-        .setBackBuffer(15_000, true)
-        .setPrioritizeTimeOverSizeThresholds(true)
+        .setAllocator(allocator)
+        .setBufferDurationsMs(
+            /* minBufferMs = */ MIN_BUFFER_MS,
+            /* maxBufferMs = */ MAX_BUFFER_MS,
+            /* bufferForPlaybackMs = */ BUFFER_FOR_PLAYBACK_MS,
+            /* bufferForPlaybackAfterRebufferMs = */ BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+        )
+        .setTargetBufferBytes(targetBufferBytes)
+        .setPrioritizeTimeOverSizeThresholds(false)
+        .setBackBuffer(
+            /* backBufferDurationMs = */ 0,
+            /* retainBackBufferFromKeyframe = */ false
+        )
         .build()
+
+    // Cap adaptive HLS/DASH auto-selection on constrained devices so 4K renditions don't saturate RAM
+    private val trackSelector = DefaultTrackSelector(context).apply {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val isConstrainedDevice = (activityManager?.isLowRamDevice == true) ||
+            Runtime.getRuntime().maxMemory() <= 400L * 1024L * 1024L
+        if (isConstrainedDevice) {
+            parameters = buildUponParameters()
+                .setMaxVideoSize(TV_SAFE_MAX_VIDEO_WIDTH, TV_SAFE_MAX_VIDEO_HEIGHT)
+                .setMaxVideoBitrate(TV_SAFE_MAX_VIDEO_BITRATE)
+                .build()
+        }
+    }
 
     val audioCaptureProcessor = PcmAudioCaptureProcessor()
     private val volumeBooster = AudioVolumeBooster()
@@ -112,6 +182,7 @@ class CinePlayerManager(context: Context) {
     val player: ExoPlayer = ExoPlayer.Builder(context, renderersFactory)
         .setMediaSourceFactory(mediaSourceFactory)
         .setLoadControl(loadControl)
+        .setTrackSelector(trackSelector)
         .setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -129,6 +200,9 @@ class CinePlayerManager(context: Context) {
     private val _state = MutableStateFlow(PlayerPlaybackState())
     val state: StateFlow<PlayerPlaybackState> = _state.asStateFlow()
 
+    private val _progressState = MutableStateFlow(PlaybackProgressState())
+    val progressState: StateFlow<PlaybackProgressState> = _progressState.asStateFlow()
+
     private var currentTracks: Tracks = Tracks.EMPTY
     private var pendingAutoSelectSubtitleId: String? = null
 
@@ -138,12 +212,17 @@ class CinePlayerManager(context: Context) {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            val dur = player.duration.takeIf { d -> d != C.TIME_UNSET && d > 0 } ?: _progressState.value.durationMs
+            val isLive = player.isCurrentMediaItemLive
+            _progressState.update {
+                it.copy(durationMs = dur, isLiveStream = isLive)
+            }
             _state.update {
                 it.copy(
                     playbackState = playbackState,
                     isBuffering = playbackState == Player.STATE_BUFFERING,
-                    durationMs = player.duration.takeIf { d -> d != C.TIME_UNSET && d > 0 } ?: it.durationMs,
-                    isLiveStream = player.isCurrentMediaItemLive,
+                    durationMs = dur,
+                    isLiveStream = isLive,
                     errorMessage = if (playbackState == Player.STATE_READY) null else it.errorMessage
                 )
             }
@@ -172,8 +251,10 @@ class CinePlayerManager(context: Context) {
 
         override fun onPlayerError(error: PlaybackException) {
             val readable = buildString {
-                append(error.errorCodeName.replace('_', ' ').lowercase(Locale.US)
-                    .replaceFirstChar { it.titlecase(Locale.US) })
+                append(
+                    error.errorCodeName.replace('_', ' ').lowercase(Locale.US)
+                        .replaceFirstChar { it.titlecase(Locale.US) }
+                )
                 error.cause?.localizedMessage?.takeIf { it.isNotBlank() }?.let { cause ->
                     append(": ")
                     append(cause)
@@ -235,11 +316,20 @@ class CinePlayerManager(context: Context) {
             mediaItemBuilder.setMimeType(mimeType)
         }
 
+        val safeStart = startPositionMs.coerceAtLeast(0L)
+        _progressState.value = PlaybackProgressState(
+            currentPositionMs = safeStart,
+            bufferedPositionMs = safeStart,
+            durationMs = 0L,
+            isLiveStream = false
+        )
         _state.update {
             it.copy(
                 errorMessage = null,
                 isBuffering = true,
-                subtitlesDisabled = false
+                subtitlesDisabled = false,
+                currentPositionMs = safeStart,
+                bufferedPositionMs = safeStart
             )
         }
 
@@ -251,18 +341,22 @@ class CinePlayerManager(context: Context) {
                 .build()
         }
 
-        player.setMediaItem(mediaItemBuilder.build(), startPositionMs.coerceAtLeast(0L))
+        player.setMediaItem(mediaItemBuilder.build(), safeStart)
         player.prepare()
         setVolumePercent(_state.value.volumePercent)
         player.playWhenReady = autoPlay
     }
 
+    /**
+     * Syncs live position into the isolated [progressState] flow without triggering full-screen
+     * recompositions of [state] subscribers.
+     */
     fun syncPlaybackProgress() {
         val pos = player.currentPosition.coerceAtLeast(0L)
         val buffered = player.bufferedPosition.coerceAtLeast(0L)
         val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
         val isLive = player.isCurrentMediaItemLive
-        val cur = _state.value
+        val cur = _progressState.value
         if (pos == cur.currentPositionMs &&
             buffered == cur.bufferedPositionMs &&
             dur == cur.durationMs &&
@@ -270,15 +364,38 @@ class CinePlayerManager(context: Context) {
         ) {
             return
         }
+        _progressState.value = PlaybackProgressState(
+            currentPositionMs = pos,
+            bufferedPositionMs = buffered,
+            durationMs = dur,
+            isLiveStream = isLive
+        )
+    }
+
+    /**
+     * Immediately stops playback and clears all media items so [DefaultAllocator] (trimOnReset=true)
+     * releases buffered video segments back to GC before navigating back to HomeScreen.
+     */
+    fun stopAndTrimBuffers() {
+        syncPlaybackProgress()
+        player.playWhenReady = false
+        player.stop()
+        player.clearMediaItems()
+        audioCaptureProcessor.clearCapturedAudio()
+        currentTracks = Tracks.EMPTY
         _state.update {
             it.copy(
-                currentPositionMs = pos,
-                bufferedPositionMs = buffered,
-                durationMs = dur,
-                isLiveStream = isLive
+                isPlaying = false,
+                isBuffering = false,
+                playbackState = Player.STATE_IDLE,
+                currentPositionMs = _progressState.value.currentPositionMs,
+                bufferedPositionMs = 0L,
+                durationMs = _progressState.value.durationMs
             )
         }
     }
+
+    fun hasLoadedMedia(): Boolean = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
 
     fun togglePlayPause() {
         if (player.playbackState == Player.STATE_ENDED) {
@@ -295,7 +412,7 @@ class CinePlayerManager(context: Context) {
         val clamped = positionMs.coerceAtLeast(0L)
         audioCaptureProcessor.clearCapturedAudio()
         player.seekTo(clamped)
-        _state.update { it.copy(currentPositionMs = clamped) }
+        _progressState.update { it.copy(currentPositionMs = clamped) }
     }
 
     fun seekBy(deltaMs: Long) {
@@ -368,6 +485,8 @@ class CinePlayerManager(context: Context) {
         volumeBooster.release()
         player.removeAnalyticsListener(analyticsListener)
         player.removeListener(listener)
+        player.stop()
+        player.clearMediaItems()
         player.release()
     }
 

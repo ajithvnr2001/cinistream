@@ -62,10 +62,10 @@ class JsonPlaylistParser(
                     "Empty response from JSON playlist URL"
                 )
                 val source = body.source()
-                // Cap at 4 MB so huge malformed files can't OOM Mobile/TV devices
+                // Cap at 4 MB and read directly without cloning the okio buffer
                 source.request(4_194_304L)
-                source.buffer.clone().readByteArray(minOf(source.buffer.size, 4_194_304L))
-                    .toString(Charsets.UTF_8)
+                val toRead = minOf(source.buffer.size, 4_194_304L)
+                source.readByteArray(toRead).toString(Charsets.UTF_8)
             }
         } catch (e: Exception) {
             return@withContext JsonPlaylistLoadResult.Error(
@@ -83,7 +83,19 @@ class JsonPlaylistParser(
                 else -> context.contentResolver.openInputStream(uri)
             }
             stream?.use { input ->
-                BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() }
+                BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
+                    val maxChars = 4_194_304
+                    val sb = StringBuilder()
+                    val buf = CharArray(8_192)
+                    var total = 0
+                    while (total < maxChars) {
+                        val n = reader.read(buf, 0, minOf(buf.size, maxChars - total))
+                        if (n <= 0) break
+                        sb.append(buf, 0, n)
+                        total += n
+                    }
+                    sb.toString()
+                }
             }
         }.getOrNull()
 

@@ -33,6 +33,7 @@ import com.example.player.JsonPlaylistParser
 import com.example.player.M3uInspectionResult
 import com.example.player.M3uPlaylistParser
 import com.example.player.MediaFormatDetector
+import com.example.player.PlaybackProgressState
 import com.example.player.PlayerPlaybackState
 import com.example.player.SubtitleHelper
 import kotlinx.coroutines.CancellationException
@@ -145,6 +146,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     val rateLimitSnapshot: StateFlow<RateLimitSnapshot> = rateLimiter.snapshot
 
     val playbackState: StateFlow<PlayerPlaybackState> = playerManager.state
+    val playbackProgressState: StateFlow<PlaybackProgressState> = playerManager.progressState
 
     val history: StateFlow<List<MediaHistoryEntity>> = historyRepo.history.stateIn(
         scope = viewModelScope,
@@ -547,7 +549,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
             _jsonPlaylistState.update { it.copy(isEnrichingImdb = true) }
             try {
-                val semaphore = Semaphore(4)
+                val semaphore = Semaphore(2)
                 val updatedMap = coroutineScope {
                     needsEnrichment.map { item ->
                         async {
@@ -592,7 +594,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
     private suspend fun enrichSamplesWithImdb() {
         val current = _sampleStreams.value
-        val semaphore = Semaphore(3)
+        val semaphore = Semaphore(2)
         val enriched = coroutineScope {
             current.map { sample ->
                 async {
@@ -1200,18 +1202,53 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         persistCurrentPosition()
     }
 
+    /**
+     * Stops playback, persists resume progress, and immediately frees ExoPlayer's Java-heap
+     * buffers BEFORE navigating back to HomeScreen so AnimatedContent/HomeScreen never coexist
+     * with live video buffers on constrained Android TVs.
+     */
+    fun exitPlayerAndReleaseBuffers() {
+        stopAutoAiSubtitles()
+        persistCurrentPosition()
+        playerManager.stopAndTrimBuffers()
+    }
+
+    /**
+     * Resumes the active media session from HomeScreen, reloading ExoPlayer at its saved position
+     * if buffers were trimmed on the previous exit.
+     */
+    fun resumeActiveSession() {
+        val session = _uiState.value.activeSession ?: return
+        if (playerManager.hasLoadedMedia()) {
+            playerManager.player.play()
+            _navEvents.tryEmit(CineNavigationEvent.OpenPlayer)
+            return
+        }
+        viewModelScope.launch {
+            val resumeMs = playbackProgressState.value.currentPositionMs.takeIf { it > 0L }
+            startPlayback(
+                title = session.title,
+                sourceUri = session.sourceUri,
+                format = session.format,
+                isLocalFile = session.isLocalFile,
+                initialSubtitles = session.externalSubtitles,
+                resumePositionMs = resumeMs
+            )
+        }
+    }
+
     fun persistCurrentPosition() {
         val session = _uiState.value.activeSession ?: return
         playerManager.syncPlaybackProgress()
-        val state = playbackState.value
-        if (state.currentPositionMs > 0L) {
+        val progress = playbackProgressState.value
+        if (progress.currentPositionMs > 0L) {
             lastSavedProgressUri = session.sourceUri
-            lastSavedProgressMs = state.currentPositionMs
+            lastSavedProgressMs = progress.currentPositionMs
             viewModelScope.launch {
                 historyRepo.saveProgress(
                     sourceUri = session.sourceUri,
-                    positionMs = state.currentPositionMs,
-                    durationMs = state.durationMs
+                    positionMs = progress.currentPositionMs,
+                    durationMs = progress.durationMs
                 )
             }
         }
@@ -1234,22 +1271,22 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                         rateLimiter.refreshSnapshot()
                     }
                     if (tick % 10 == 0 && playbackState.value.isPlaying) {
-                        val ps = playbackState.value
+                        val progress = playbackProgressState.value
                         val movedEnough = session.sourceUri != lastSavedProgressUri ||
-                            abs(ps.currentPositionMs - lastSavedProgressMs) >= 2_000L
-                        if (ps.currentPositionMs > 0L && movedEnough) {
+                            abs(progress.currentPositionMs - lastSavedProgressMs) >= 2_000L
+                        if (progress.currentPositionMs > 0L && movedEnough) {
                             lastSavedProgressUri = session.sourceUri
-                            lastSavedProgressMs = ps.currentPositionMs
+                            lastSavedProgressMs = progress.currentPositionMs
                             historyRepo.saveProgress(
                                 sourceUri = session.sourceUri,
-                                positionMs = ps.currentPositionMs,
-                                durationMs = ps.durationMs
+                                positionMs = progress.currentPositionMs,
+                                durationMs = progress.durationMs
                             )
                         }
                     }
                     delay(500L)
                 } else {
-                    if (session != null) {
+                    if (session != null && playerManager.hasLoadedMedia()) {
                         playerManager.syncPlaybackProgress()
                     }
                     delay(1_000L)
@@ -1262,7 +1299,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         val aiState = _aiSubtitleState.value
         if (!aiState.isEnabled) return
 
-        val posMs = playbackState.value.currentPositionMs
+        val posMs = playbackProgressState.value.currentPositionMs
         val matchedCue = aiState.cues.lastOrNull { posMs in it.startMs..it.endMs }
         val resolvedText = matchedCue?.englishText ?: run {
             if (System.currentTimeMillis() < lastAutoOverlayExpiresAtMs) {

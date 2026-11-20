@@ -4,7 +4,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -86,12 +85,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.R
 import com.example.data.MediaHistoryEntity
 import com.example.model.JsonPlaylistItem
@@ -557,8 +557,14 @@ private fun TvCompactHeroHeader(
         border = BorderStroke(1.dp, ObsidianOutline)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Image(
-                painter = painterResource(id = R.drawable.img_cinema_hero_1795091025530),
+            val heroContext = LocalContext.current
+            AsyncImage(
+                model = ImageRequest.Builder(heroContext)
+                    .data(R.drawable.img_cinema_hero_1795091025530)
+                    .size(640, 360)
+                    .allowRgb565(true)
+                    .crossfade(false)
+                    .build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -671,8 +677,14 @@ private fun CinemaHeroHeader(
             .fillMaxWidth()
             .height(216.dp)
     ) {
-        Image(
-            painter = painterResource(id = R.drawable.img_cinema_hero_1795091025530),
+        val heroContext = LocalContext.current
+        AsyncImage(
+            model = ImageRequest.Builder(heroContext)
+                .data(R.drawable.img_cinema_hero_1795091025530)
+                .size(640, 360)
+                .allowRgb565(true)
+                .crossfade(false)
+                .build(),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

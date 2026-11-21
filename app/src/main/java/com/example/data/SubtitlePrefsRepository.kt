@@ -3,6 +3,7 @@ package com.example.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -12,18 +13,13 @@ import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
 import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
+import com.example.player.VideoDecoderMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.cinePrefsDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "cinestream_prefs"
-)
-
-data class PersistedAiDailyUsage(
-    val dayKey: String = "",
-    val flashRpd: Int = 0,
-    val liteRpd: Int = 0
 )
 
 class SubtitlePrefsRepository(private val context: Context) {
@@ -33,11 +29,10 @@ class SubtitlePrefsRepository(private val context: Context) {
         val COLOR_PRESET = stringPreferencesKey("sub_color_preset")
         val BG_PRESET = stringPreferencesKey("sub_bg_preset")
         val ASPECT_RATIO = stringPreferencesKey("aspect_ratio_mode")
-        val AI_DAY_KEY = stringPreferencesKey("ai_rpd_day_key")
-        val AI_FLASH_RPD = intPreferencesKey("ai_flash_rpd")
-        val AI_LITE_RPD = intPreferencesKey("ai_lite_rpd")
         val JSON_PLAYLIST_URL = stringPreferencesKey("json_playlist_url")
         val VOLUME_BOOST_PERCENT = intPreferencesKey("volume_boost_percent")
+        val STATS_FOR_NERDS_ENABLED = booleanPreferencesKey("stats_for_nerds_enabled")
+        val VIDEO_DECODER_MODE = stringPreferencesKey("video_decoder_mode")
     }
 
     val appearance: Flow<SubtitleAppearance> = context.cinePrefsDataStore.data.map { prefs ->
@@ -64,21 +59,14 @@ class SubtitlePrefsRepository(private val context: Context) {
         (prefs[Keys.VOLUME_BOOST_PERCENT] ?: 100).coerceIn(0, 200)
     }
 
-    suspend fun loadAiDailyUsage(): PersistedAiDailyUsage {
-        val prefs = context.cinePrefsDataStore.data.first()
-        return PersistedAiDailyUsage(
-            dayKey = prefs[Keys.AI_DAY_KEY].orEmpty(),
-            flashRpd = prefs[Keys.AI_FLASH_RPD] ?: 0,
-            liteRpd = prefs[Keys.AI_LITE_RPD] ?: 0
-        )
+    val statsForNerdsEnabled: Flow<Boolean> = context.cinePrefsDataStore.data.map { prefs ->
+        prefs[Keys.STATS_FOR_NERDS_ENABLED] ?: false
     }
 
-    suspend fun saveAiDailyUsage(dayKey: String, flashRpd: Int, liteRpd: Int) {
-        context.cinePrefsDataStore.edit {
-            it[Keys.AI_DAY_KEY] = dayKey
-            it[Keys.AI_FLASH_RPD] = flashRpd
-            it[Keys.AI_LITE_RPD] = liteRpd
-        }
+    val videoDecoderMode: Flow<VideoDecoderMode> = context.cinePrefsDataStore.data.map { prefs ->
+        prefs[Keys.VIDEO_DECODER_MODE]
+            ?.let { runCatching { VideoDecoderMode.valueOf(it) }.getOrNull() }
+            ?: VideoDecoderMode.AUTO
     }
 
     suspend fun updateTextSize(size: SubtitleTextSize) {
@@ -115,5 +103,13 @@ class SubtitlePrefsRepository(private val context: Context) {
     suspend fun updateVolumeBoostPercent(percent: Int) {
         val clamped = percent.coerceIn(0, 200)
         context.cinePrefsDataStore.edit { it[Keys.VOLUME_BOOST_PERCENT] = clamped }
+    }
+
+    suspend fun updateStatsForNerdsEnabled(enabled: Boolean) {
+        context.cinePrefsDataStore.edit { it[Keys.STATS_FOR_NERDS_ENABLED] = enabled }
+    }
+
+    suspend fun updateVideoDecoderMode(mode: VideoDecoderMode) {
+        context.cinePrefsDataStore.edit { it[Keys.VIDEO_DECODER_MODE] = mode.name }
     }
 }

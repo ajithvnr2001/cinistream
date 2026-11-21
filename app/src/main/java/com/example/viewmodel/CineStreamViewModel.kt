@@ -4,12 +4,6 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.ai.AiModelTier
-import com.example.ai.AiSubtitleCue
-import com.example.ai.AiSubtitleGenerationResult
-import com.example.ai.AiSubtitleGenerator
-import com.example.ai.GeminiRateLimiter
-import com.example.ai.RateLimitSnapshot
 import com.example.data.AppDatabase
 import com.example.data.MediaHistoryEntity
 import com.example.data.MediaHistoryRepository
@@ -20,6 +14,7 @@ import com.example.model.JsonPlaylistItem
 import com.example.model.M3uEntry
 import com.example.model.SampleStream
 import com.example.model.SampleStreamsCatalog
+import com.example.model.SeriesEpisode
 import com.example.model.StreamFormat
 import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
@@ -32,16 +27,20 @@ import com.example.player.JsonPlaylistLoadResult
 import com.example.player.JsonPlaylistParser
 import com.example.player.M3uInspectionResult
 import com.example.player.M3uPlaylistParser
+import com.example.player.MediaEdgeCache
 import com.example.player.MediaFormatDetector
 import com.example.player.PlaybackProgressState
+import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerPlaybackState
 import com.example.player.SubtitleHelper
-import kotlinx.coroutines.CancellationException
+import com.example.player.VideoDecoderMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -64,20 +63,13 @@ data class ActiveMediaSession(
     val format: StreamFormat,
     val isLocalFile: Boolean = false,
     val externalSubtitles: List<ExternalSubtitle> = emptyList(),
-    val subtitleOffsetMs: Long = 0L
-)
-
-data class AiSubtitleUiState(
-    val isEnabled: Boolean = false,
-    val isAutoMode: Boolean = false,
-    val isGenerating: Boolean = false,
-    val preferredTier: AiModelTier = AiModelTier.FLASH_3_8,
-    val lastModelUsed: AiModelTier? = null,
-    val detectedLanguage: String? = null,
-    val statusMessage: String? = null,
-    val errorMessage: String? = null,
-    val cues: List<AiSubtitleCue> = emptyList(),
-    val activeOverlayText: String? = null
+    val subtitleOffsetMs: Long = 0L,
+    val mirrors: List<String> = emptyList(),
+    val headers: Map<String, String> = emptyMap(),
+    val seriesItemId: String? = null,
+    val seriesTitle: String? = null,
+    val episodeId: String? = null,
+    val episodeCodeLabel: String? = null
 )
 
 data class JsonPlaylistUiState(
@@ -85,6 +77,8 @@ data class JsonPlaylistUiState(
     val sourceUrl: String? = null,
     val items: List<JsonPlaylistItem> = emptyList(),
     val activeItemId: String? = null,
+    val activeEpisodeId: String? = null,
+    val selectedSeriesForSheet: JsonPlaylistItem? = null,
     val isLoading: Boolean = false,
     val isEnrichingImdb: Boolean = false,
     val errorMessage: String? = null
@@ -121,16 +115,6 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private val jsonParser = JsonPlaylistParser(application, playerManager.okHttpClient)
     private val imdbClient = ImdbMetadataClient(playerManager.okHttpClient)
 
-    private val rateLimiter = GeminiRateLimiter(
-        onDailyUsageChanged = { dayKey, flashRpd, liteRpd ->
-            viewModelScope.launch {
-                prefsRepo.saveAiDailyUsage(dayKey, flashRpd, liteRpd)
-            }
-        }
-    )
-
-    private val aiSubtitleGenerator = AiSubtitleGenerator(application, rateLimiter)
-
     private val _uiState = MutableStateFlow(CineStreamUiState())
     val uiState: StateFlow<CineStreamUiState> = _uiState.asStateFlow()
 
@@ -140,13 +124,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private val _sampleStreams = MutableStateFlow(SampleStreamsCatalog.items)
     val sampleStreams: StateFlow<List<SampleStream>> = _sampleStreams.asStateFlow()
 
-    private val _aiSubtitleState = MutableStateFlow(AiSubtitleUiState())
-    val aiSubtitleState: StateFlow<AiSubtitleUiState> = _aiSubtitleState.asStateFlow()
-
-    val rateLimitSnapshot: StateFlow<RateLimitSnapshot> = rateLimiter.snapshot
-
     val playbackState: StateFlow<PlayerPlaybackState> = playerManager.state
     val playbackProgressState: StateFlow<PlaybackProgressState> = playerManager.progressState
+    val networkStats: StateFlow<PlayerNetworkStats> = playerManager.networkStats
 
     val history: StateFlow<List<MediaHistoryEntity>> = historyRepo.history.stateIn(
         scope = viewModelScope,
@@ -166,26 +146,61 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         initialValue = AspectRatioMode.FIT
     )
 
+    val statsForNerdsEnabled: StateFlow<Boolean> = prefsRepo.statsForNerdsEnabled.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = false
+    )
+
     private val _navEvents = MutableSharedFlow<CineNavigationEvent>(extraBufferCapacity = 4)
     val navEvents: SharedFlow<CineNavigationEvent> = _navEvents.asSharedFlow()
 
     private var progressPollingJob: Job? = null
-    private var aiSubtitleJob: Job? = null
     private var jsonEnrichJob: Job? = null
     private var volumePersistJob: Job? = null
     private var lastSavedProgressUri: String? = null
     private var lastSavedProgressMs: Long = -1L
-    private var lastAutoOverlayText: String? = null
-    private var lastAutoOverlayExpiresAtMs: Long = 0L
 
     init {
-        viewModelScope.launch {
-            val saved = prefsRepo.loadAiDailyUsage()
-            rateLimiter.restorePersistedDailyCounts(saved.dayKey, saved.flashRpd, saved.liteRpd)
+        playerManager.onCdnFailover = { host, nodeIndex, totalNodes ->
+            _uiState.update {
+                it.copy(toastMessage = "CDN failover → $host ($nodeIndex/$totalNodes)")
+            }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
+        }
+        playerManager.onDecoderFallback = { failedCodec, switchedMode ->
+            val failedLabel = failedCodec?.let { " ($it)" }.orEmpty()
+            _uiState.update {
+                it.copy(
+                    toastMessage = "Decoder failed$failedLabel → Switched to ${switchedMode.label}"
+                )
+            }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
+        }
+        playerManager.onTrackFallback = { trackLabel ->
+            _uiState.update {
+                it.copy(
+                    toastMessage = "HEVC decode failed → Switched to compatible track ($trackLabel)"
+                )
+            }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
+        }
+        playerManager.onMediaEnded = {
+            playNextEpisodeIfAvailable(autoTriggered = true)
         }
         viewModelScope.launch {
             val savedVolume = prefsRepo.volumeBoostPercent.first()
             playerManager.setVolumePercent(savedVolume)
+        }
+        viewModelScope.launch {
+            val savedDecoderMode = prefsRepo.videoDecoderMode.first()
+            playerManager.setPreferredDecoderMode(savedDecoderMode, reloadActiveStream = false)
         }
         viewModelScope.launch {
             enrichSamplesWithImdb()
@@ -510,8 +525,18 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun playJsonPlaylistItem(item: JsonPlaylistItem) {
+        if (item.isSeries) {
+            _jsonPlaylistState.update { it.copy(selectedSeriesForSheet = item) }
+            return
+        }
         viewModelScope.launch {
-            _jsonPlaylistState.update { it.copy(activeItemId = item.id) }
+            _jsonPlaylistState.update {
+                it.copy(
+                    activeItemId = item.id,
+                    activeEpisodeId = null,
+                    selectedSeriesForSheet = null
+                )
+            }
             val subs = mutableListOf<ExternalSubtitle>()
             _uiState.value.stagedSubtitle?.let { subs.add(it) }
             if (!item.subtitleUrl.isNullOrBlank()) {
@@ -534,8 +559,136 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 sourceUri = item.url,
                 format = effectiveFormat,
                 isLocalFile = item.url.startsWith("content://") || item.url.startsWith("file://"),
-                initialSubtitles = subs
+                initialSubtitles = subs,
+                mirrors = item.mirrors,
+                headers = item.headers
             )
+        }
+    }
+
+    fun dismissSeriesSheet() {
+        _jsonPlaylistState.update { it.copy(selectedSeriesForSheet = null) }
+    }
+
+    fun playSeriesEpisode(series: JsonPlaylistItem, episode: SeriesEpisode) {
+        viewModelScope.launch {
+            _jsonPlaylistState.update {
+                it.copy(
+                    activeItemId = series.id,
+                    activeEpisodeId = episode.id,
+                    selectedSeriesForSheet = null
+                )
+            }
+            val subs = mutableListOf<ExternalSubtitle>()
+            _uiState.value.stagedSubtitle?.let { subs.add(it) }
+            if (!episode.subtitleUrl.isNullOrBlank()) {
+                val remoteSub = subtitleHelper.buildFromRemoteUrl(episode.subtitleUrl)
+                subs.add(
+                    if (!episode.subtitleLabel.isNullOrBlank()) {
+                        remoteSub.copy(label = episode.subtitleLabel)
+                    } else {
+                        remoteSub
+                    }
+                )
+            }
+            val effectiveFormat = if (episode.format == StreamFormat.AUTO) {
+                MediaFormatDetector.detectFormat(episode.url)
+            } else {
+                episode.format
+            }
+            startPlayback(
+                title = "${series.title} · ${episode.codeLabel} — ${episode.title}",
+                sourceUri = episode.url,
+                format = effectiveFormat,
+                isLocalFile = episode.url.startsWith("content://") || episode.url.startsWith("file://"),
+                initialSubtitles = subs,
+                mirrors = episode.mirrors,
+                headers = episode.headers,
+                seriesItemId = series.id,
+                seriesTitle = series.title,
+                episodeId = episode.id,
+                episodeCodeLabel = episode.codeLabel
+            )
+        }
+    }
+
+    fun playNextEpisode() {
+        playNextEpisodeIfAvailable(autoTriggered = false)
+    }
+
+    private fun playNextEpisodeIfAvailable(autoTriggered: Boolean) {
+        val session = _uiState.value.activeSession ?: return
+        val seriesId = session.seriesItemId ?: return
+        val series = _jsonPlaylistState.value.items.firstOrNull { it.id == seriesId } ?: return
+        val nextEp = series.findNextEpisode(session.episodeId) ?: return
+        _uiState.update {
+            it.copy(
+                toastMessage = if (autoTriggered) {
+                    "Up Next: ${nextEp.codeLabel} — ${nextEp.title}"
+                } else {
+                    "Playing ${nextEp.codeLabel} — ${nextEp.title}"
+                }
+            )
+        }
+        playSeriesEpisode(series, nextEp)
+    }
+
+    fun switchToNextCdnMirror() {
+        val host = playerManager.switchToNextCdnMirror()
+        if (host != null) {
+            val st = playerManager.state.value
+            _uiState.update {
+                it.copy(toastMessage = "Switched CDN → $host (${st.activeCdnIndex}/${st.totalCdnNodes})")
+            }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
+        } else {
+            _uiState.update {
+                it.copy(toastMessage = "No alternate CDN mirrors configured for this stream")
+            }
+        }
+    }
+
+    fun clearMediaEdgeCache() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                MediaEdgeCache.clearAll()
+            }
+            playerManager.syncNetworkStats()
+            _uiState.update {
+                it.copy(toastMessage = "Local edge disk cache cleared")
+            }
+        }
+    }
+
+    fun setVideoDecoderMode(mode: VideoDecoderMode) {
+        playerManager.setPreferredDecoderMode(mode, reloadActiveStream = true)
+        viewModelScope.launch {
+            prefsRepo.updateVideoDecoderMode(mode)
+        }
+        _uiState.update {
+            it.copy(toastMessage = "Decoder set to ${mode.label}")
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    fun retryWithDecoderMode(mode: VideoDecoderMode) {
+        playerManager.retryWithDecoderMode(mode)
+        _uiState.update {
+            it.copy(toastMessage = "Retrying stream with ${mode.label}")
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    fun skipBadSegmentAndRetry() {
+        playerManager.skipBadSegmentAndRetry(deltaMs = 5_000L)
+        _uiState.update {
+            it.copy(toastMessage = "Skipped +5s past bad frame (cache bypassed)")
         }
     }
 
@@ -681,24 +834,14 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         format: StreamFormat,
         isLocalFile: Boolean,
         initialSubtitles: List<ExternalSubtitle>,
-        resumePositionMs: Long? = null
+        resumePositionMs: Long? = null,
+        mirrors: List<String> = emptyList(),
+        headers: Map<String, String> = emptyMap(),
+        seriesItemId: String? = null,
+        seriesTitle: String? = null,
+        episodeId: String? = null,
+        episodeCodeLabel: String? = null
     ) {
-        // Reset AI subtitle session when switching to a new video
-        stopAutoAiSubtitles()
-        _aiSubtitleState.update {
-            it.copy(
-                isEnabled = false,
-                isGenerating = false,
-                statusMessage = null,
-                errorMessage = null,
-                detectedLanguage = null,
-                cues = emptyList(),
-                activeOverlayText = null
-            )
-        }
-        lastAutoOverlayText = null
-        lastAutoOverlayExpiresAtMs = 0L
-
         val existingRecord = historyRepo.getBySourceUri(sourceUri)
         val mergedSubs = initialSubtitles.ifEmpty {
             val savedUri = existingRecord?.subtitleUri
@@ -738,7 +881,13 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             format = format,
             isLocalFile = isLocalFile,
             externalSubtitles = mergedSubs,
-            subtitleOffsetMs = 0L
+            subtitleOffsetMs = 0L,
+            mirrors = mirrors,
+            headers = headers,
+            seriesItemId = seriesItemId,
+            seriesTitle = seriesTitle,
+            episodeId = episodeId,
+            episodeCodeLabel = episodeCodeLabel
         )
 
         _uiState.update { it.copy(activeSession = session) }
@@ -753,7 +902,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             externalSubtitles = resolvedPairs,
             startPositionMs = startPos,
             autoPlay = true,
-            autoSelectSubtitleId = mergedSubs.lastOrNull()?.id
+            autoSelectSubtitleId = mergedSubs.lastOrNull()?.id,
+            mirrors = mirrors,
+            headers = headers
         )
 
         historyRepo.recordPlayback(
@@ -767,278 +918,19 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         _navEvents.tryEmit(CineNavigationEvent.OpenPlayer)
     }
 
-    // ==================== AI AUDIO-TO-ENGLISH SUBTITLES ====================
+    // ==================== NETWORK & BUFFER STATS OVERLAY ====================
 
-    fun selectPreferredAiTier(tier: AiModelTier) {
-        _aiSubtitleState.update { it.copy(preferredTier = tier) }
+    fun toggleStatsForNerds() {
+        setStatsForNerdsEnabled(!statsForNerdsEnabled.value)
     }
 
-    /**
-     * Generates timed English subtitles from the current playing video audio (up to 18s window).
-     * Strictly enforces 3 RPM / 10K TPM / 10 RPD per model with automatic Flash -> Flash-Lite failover.
-     */
-    fun generateAiEnglishSubtitleClipNow() {
-        if (_aiSubtitleState.value.isGenerating) return
-        aiSubtitleJob?.cancel()
-        aiSubtitleJob = viewModelScope.launch {
-            _aiSubtitleState.update {
-                it.copy(
-                    isEnabled = true,
-                    isAutoMode = false,
-                    isGenerating = true,
-                    errorMessage = null,
-                    statusMessage = "Capturing video audio…"
-                )
-            }
-            try {
-                // If fewer than 4s are buffered yet, wait briefly while playing to capture speech
-                var waitTicks = 0
-                while (playerManager.audioCaptureProcessor.bufferedDurationSec() < 5f && waitTicks < 16) {
-                    if (!playbackState.value.isPlaying) {
-                        _aiSubtitleState.update {
-                            it.copy(
-                                isGenerating = false,
-                                statusMessage = "Play the video for a few seconds so audio can be captured."
-                            )
-                        }
-                        return@launch
-                    }
-                    delay(500L)
-                    waitTicks++
-                }
-                transcribeLatestAudioChunk(requestedSeconds = 18)
-            } catch (e: CancellationException) {
-                throw e
-            } finally {
-                _aiSubtitleState.update { it.copy(isGenerating = false) }
-            }
+    fun setStatsForNerdsEnabled(enabled: Boolean) {
+        if (enabled) {
+            playerManager.syncNetworkStats()
         }
-    }
-
-    /**
-     * Toggles continuous rate-limit-aware English subtitle generation while the video plays.
-     * Captures 18-second audio windows paced safely to respect 3 RPM / 10K TPM / 10 RPD per tier.
-     */
-    fun toggleAutoAiSubtitles() {
-        if (_aiSubtitleState.value.isAutoMode) {
-            stopAutoAiSubtitles()
-            return
-        }
-
-        aiSubtitleJob?.cancel()
-        aiSubtitleJob = viewModelScope.launch {
-            _aiSubtitleState.update {
-                it.copy(
-                    isEnabled = true,
-                    isAutoMode = true,
-                    errorMessage = null,
-                    statusMessage = "AI Live English Subtitles listening (rate-limit protected)…"
-                )
-            }
-            try {
-                while (isActive && _aiSubtitleState.value.isAutoMode) {
-                    // Wait until playing and at least 12s of fresh audio is buffered
-                    while (isActive && _aiSubtitleState.value.isAutoMode &&
-                        (!playbackState.value.isPlaying || playerManager.audioCaptureProcessor.bufferedDurationSec() < 12f)
-                    ) {
-                        val buffered = playerManager.audioCaptureProcessor.bufferedDurationSec().toInt()
-                        _aiSubtitleState.update {
-                            it.copy(
-                                statusMessage = if (playbackState.value.isPlaying) {
-                                    "Listening to audio (${buffered}s / 12s)…"
-                                } else {
-                                    "Paused — resume video to continue AI captions"
-                                }
-                            )
-                        }
-                        delay(1000L)
-                    }
-
-                    if (!isActive || !_aiSubtitleState.value.isAutoMode) break
-
-                    val result = transcribeLatestAudioChunk(requestedSeconds = 18)
-                    when (result) {
-                        is AiSubtitleGenerationResult.DailyLimitReached -> {
-                            _aiSubtitleState.update {
-                                it.copy(
-                                    isAutoMode = false,
-                                    isGenerating = false,
-                                    errorMessage = result.message,
-                                    statusMessage = "Auto AI paused: daily 10+10 RPD quota reached."
-                                )
-                            }
-                            break
-                        }
-                        is AiSubtitleGenerationResult.Cooldown -> {
-                            val waitSec = (result.waitMs / 1000L).coerceIn(5L, 60L)
-                            _aiSubtitleState.update {
-                                it.copy(
-                                    isGenerating = false,
-                                    statusMessage = "Respecting rate limits — resuming in ${waitSec}s…"
-                                )
-                            }
-                            delay(result.waitMs + 500L)
-                        }
-                        else -> {
-                            // Clear buffer so the next window captures fresh audio, and pace safely
-                            playerManager.audioCaptureProcessor.clearCapturedAudio()
-                            delay(12_000L)
-                        }
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } finally {
-                _aiSubtitleState.update { it.copy(isGenerating = false) }
-            }
-        }
-    }
-
-    fun stopAutoAiSubtitles() {
-        aiSubtitleJob?.cancel()
-        aiSubtitleJob = null
-        _aiSubtitleState.update {
-            it.copy(
-                isAutoMode = false,
-                isGenerating = false,
-                statusMessage = if (it.cues.isNotEmpty()) {
-                    "AI paused · ${it.cues.size} English cues saved"
-                } else null
-            )
-        }
-    }
-
-    fun clearAiSubtitles() {
-        stopAutoAiSubtitles()
-        lastAutoOverlayText = null
-        lastAutoOverlayExpiresAtMs = 0L
-        _aiSubtitleState.update {
-            it.copy(
-                isEnabled = false,
-                cues = emptyList(),
-                activeOverlayText = null,
-                statusMessage = null,
-                errorMessage = null,
-                detectedLanguage = null
-            )
-        }
-    }
-
-    /**
-     * Exports all AI-generated English cues to a standard .srt file and attaches it directly
-     * to ExoPlayer as a native external subtitle track (usable with MKV, MP4, M3U8, HLS).
-     */
-    fun applyAiSubtitlesAsNativeSrtTrack() {
-        val session = _uiState.value.activeSession ?: return
-        val cues = _aiSubtitleState.value.cues
-        if (cues.isEmpty()) return
-
         viewModelScope.launch {
-            val srtUri = aiSubtitleGenerator.exportCuesToSrtUri(session.sourceUri, cues)
-            val sub = ExternalSubtitle(
-                id = "ai_en_${System.currentTimeMillis()}",
-                uri = srtUri.toString(),
-                label = "AI English (${cues.size} cues)",
-                mimeType = androidx.media3.common.MimeTypes.APPLICATION_SUBRIP,
-                formatBadge = "SRT",
-                isLocalFile = true
-            )
-            // Turn off duplicate live overlay once loaded natively into ExoPlayer SubtitleView
-            _aiSubtitleState.update { it.copy(isEnabled = false, activeOverlayText = null) }
-            attachSubtitleToActiveSession(session, sub)
+            prefsRepo.updateStatsForNerdsEnabled(enabled)
         }
-    }
-
-    private suspend fun transcribeLatestAudioChunk(requestedSeconds: Int): AiSubtitleGenerationResult {
-        val posMs = playerManager.player.currentPosition.coerceAtLeast(0L)
-        val clip = playerManager.audioCaptureProcessor.snapshotWavClip(requestedSeconds, posMs)
-            ?: return AiSubtitleGenerationResult.SilentClip.also {
-                _aiSubtitleState.update {
-                    it.copy(
-                        isGenerating = false,
-                        statusMessage = "Waiting for playable audio track…"
-                    )
-                }
-            }
-
-        val preferred = _aiSubtitleState.value.preferredTier
-        _aiSubtitleState.update {
-            it.copy(
-                isGenerating = true,
-                errorMessage = null,
-                statusMessage = "Transcribing ${clip.durationSec.toInt()}s audio to English (${preferred.displayName})…"
-            )
-        }
-
-        val result = aiSubtitleGenerator.generateEnglishSubtitlesFromClip(clip, preferredTier = preferred)
-        when (result) {
-            is AiSubtitleGenerationResult.Success -> {
-                val mergedCues = (_aiSubtitleState.value.cues + result.cues)
-                    .distinctBy { "${it.startMs}_${it.englishText}" }
-                    .sortedBy { it.startMs }
-                val latestLines = result.cues
-                    .takeLast(2)
-                    .map { it.englishText.trim() }
-                    .filter { it.isNotBlank() }
-                    .joinToString("\n")
-                    .ifBlank { null }
-                if (!latestLines.isNullOrBlank()) {
-                    lastAutoOverlayText = latestLines
-                    lastAutoOverlayExpiresAtMs = System.currentTimeMillis() + 8_000L
-                }
-                _aiSubtitleState.update {
-                    it.copy(
-                        isEnabled = true,
-                        isGenerating = false,
-                        cues = mergedCues,
-                        detectedLanguage = result.detectedLanguage,
-                        lastModelUsed = result.modelUsed,
-                        errorMessage = null,
-                        activeOverlayText = latestLines ?: it.activeOverlayText,
-                        statusMessage = if (result.cues.isEmpty()) {
-                            "No speech detected in clip (${result.detectedLanguage})"
-                        } else {
-                            "Translated ${result.cues.size} English cues via ${result.modelUsed.displayName} (${result.detectedLanguage} → EN)"
-                        }
-                    )
-                }
-            }
-            is AiSubtitleGenerationResult.SilentClip -> {
-                _aiSubtitleState.update {
-                    it.copy(
-                        isGenerating = false,
-                        statusMessage = "No speech detected in audio segment (quota saved)."
-                    )
-                }
-            }
-            is AiSubtitleGenerationResult.Cooldown -> {
-                _aiSubtitleState.update {
-                    it.copy(
-                        isGenerating = false,
-                        statusMessage = result.message
-                    )
-                }
-            }
-            is AiSubtitleGenerationResult.DailyLimitReached -> {
-                _aiSubtitleState.update {
-                    it.copy(
-                        isGenerating = false,
-                        errorMessage = result.message,
-                        statusMessage = null
-                    )
-                }
-            }
-            is AiSubtitleGenerationResult.Error -> {
-                _aiSubtitleState.update {
-                    it.copy(
-                        isGenerating = false,
-                        errorMessage = result.message,
-                        statusMessage = null
-                    )
-                }
-            }
-        }
-        return result
     }
 
     // ==================== EXTERNAL SUBTITLES & TRACKS ====================
@@ -1093,7 +985,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             externalSubtitles = resolvedPairs,
             startPositionMs = resumePos,
             autoPlay = true,
-            autoSelectSubtitleId = newSub.id
+            autoSelectSubtitleId = newSub.id,
+            mirrors = updatedSession.mirrors,
+            headers = updatedSession.headers
         )
 
         historyRepo.saveAttachedSubtitle(updatedSession.sourceUri, newSub)
@@ -1128,7 +1022,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 externalSubtitles = resolvedPairs,
                 startPositionMs = resumePos,
                 autoPlay = wasPlaying,
-                autoSelectSubtitleId = updatedSession.externalSubtitles.lastOrNull()?.id
+                autoSelectSubtitleId = updatedSession.externalSubtitles.lastOrNull()?.id,
+                mirrors = updatedSession.mirrors,
+                headers = updatedSession.headers
             )
         }
     }
@@ -1147,7 +1043,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 externalSubtitles = resolvedPairs,
                 startPositionMs = playerManager.player.currentPosition.coerceAtLeast(0L),
                 autoPlay = true,
-                autoSelectSubtitleId = updated.externalSubtitles.lastOrNull()?.id
+                autoSelectSubtitleId = updated.externalSubtitles.lastOrNull()?.id,
+                mirrors = updated.mirrors,
+                headers = updated.headers
             )
         }
     }
@@ -1208,7 +1106,6 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
      * with live video buffers on constrained Android TVs.
      */
     fun exitPlayerAndReleaseBuffers() {
-        stopAutoAiSubtitles()
         persistCurrentPosition()
         playerManager.stopAndTrimBuffers()
     }
@@ -1232,7 +1129,13 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 format = session.format,
                 isLocalFile = session.isLocalFile,
                 initialSubtitles = session.externalSubtitles,
-                resumePositionMs = resumeMs
+                resumePositionMs = resumeMs,
+                mirrors = session.mirrors,
+                headers = session.headers,
+                seriesItemId = session.seriesItemId,
+                seriesTitle = session.seriesTitle,
+                episodeId = session.episodeId,
+                episodeCodeLabel = session.episodeCodeLabel
             )
         }
     }
@@ -1265,10 +1168,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
                 if (session != null && isPlayingOrBuffering) {
                     playerManager.syncPlaybackProgress()
-                    syncActiveAiCaptionOverlay()
                     tick++
-                    if (tick % 4 == 0 && _aiSubtitleState.value.isEnabled) {
-                        rateLimiter.refreshSnapshot()
+                    if (tick % 2 == 0 && statsForNerdsEnabled.value) {
+                        playerManager.syncNetworkStats()
                     }
                     if (tick % 10 == 0 && playbackState.value.isPlaying) {
                         val progress = playbackProgressState.value
@@ -1288,6 +1190,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 } else {
                     if (session != null && playerManager.hasLoadedMedia()) {
                         playerManager.syncPlaybackProgress()
+                        if (statsForNerdsEnabled.value) {
+                            playerManager.syncNetworkStats()
+                        }
                     }
                     delay(1_000L)
                 }
@@ -1295,26 +1200,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private fun syncActiveAiCaptionOverlay() {
-        val aiState = _aiSubtitleState.value
-        if (!aiState.isEnabled) return
-
-        val posMs = playbackProgressState.value.currentPositionMs
-        val matchedCue = aiState.cues.lastOrNull { posMs in it.startMs..it.endMs }
-        val resolvedText = matchedCue?.englishText ?: run {
-            if (System.currentTimeMillis() < lastAutoOverlayExpiresAtMs) {
-                lastAutoOverlayText
-            } else {
-                null
-            }
-        }
-        if (resolvedText != aiState.activeOverlayText) {
-            _aiSubtitleState.update { it.copy(activeOverlayText = resolvedText) }
-        }
-    }
-
     override fun onCleared() {
-        aiSubtitleJob?.cancel()
         progressPollingJob?.cancel()
         jsonEnrichJob?.cancel()
         volumePersistJob?.cancel()

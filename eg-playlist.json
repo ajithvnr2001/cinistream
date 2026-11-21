@@ -1,10 +1,13 @@
 {
   "title": "CineStream IMDb Showcase",
+  "cdnMirrors": [],
   "items": [
     {
       "id": "hidden-face-2011",
+      "type": "movie",
       "title": "The Hidden Face",
       "url": "https://multicloud-s3-index.ajithvnr2001.workers.dev/pub/9f712691f8937399bfe52e34c80a450d/rustfs-demo-2/The.hidden.face.2011-hls/master.m3u8",
+      "mirrors": [],
       "format": "HLS",
       "group": "Mystery · Thriller",
       "imdbId": "tt1772240",
@@ -13,9 +16,78 @@
       "description": "A Spanish orchestra conductor investigates the mysterious disappearance of his girlfriend, uncovering a hidden secret inside their house."
     },
     {
+      "id": "blender-anthology-series",
+      "type": "series",
+      "title": "Blender Open Cinema Anthology",
+      "group": "Sci-Fi · Animation",
+      "imdbId": "tt2285752",
+      "year": "2012",
+      "description": "A multi-season showcase demonstrating Series, Seasons, Episodes, and automatic Multi-CDN failover inside CineStream.",
+      "seasons": [
+        {
+          "season": 1,
+          "title": "Season 1 · Classics",
+          "episodes": [
+            {
+              "id": "blender-s1-e1",
+              "episode": 1,
+              "title": "Tears of Steel",
+              "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
+              "mirrors": [
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4"
+              ],
+              "format": "HLS",
+              "duration": "12m",
+              "description": "In an apocalyptic Amsterdam future, warriors and scientists stage a crucial event from the past."
+            },
+            {
+              "id": "blender-s1-e2",
+              "episode": 2,
+              "title": "Sintel",
+              "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8",
+              "mirrors": [
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4"
+              ],
+              "format": "M3U8",
+              "duration": "15m",
+              "description": "A lonely young woman searches across treacherous lands for her lost baby dragon, Scales."
+            }
+          ]
+        },
+        {
+          "season": 2,
+          "title": "Season 2 · Shorts",
+          "episodes": [
+            {
+              "id": "blender-s2-e1",
+              "episode": 1,
+              "title": "Big Buck Bunny",
+              "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+              "format": "MP4",
+              "duration": "10m",
+              "description": "A giant, gentle rabbit confronts three mischievous rodents in a colorful woodland comedy."
+            },
+            {
+              "id": "blender-s2-e2",
+              "episode": 2,
+              "title": "Elephants Dream",
+              "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+              "format": "MP4",
+              "duration": "11m",
+              "description": "Two travelers explore a bizarre and surreal mechanical world built from memories and giant gears."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "tears-of-steel-2012",
+      "type": "movie",
       "title": "Tears of Steel",
       "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
+      "mirrors": [
+        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4"
+      ],
       "format": "HLS",
       "group": "Sci-Fi",
       "imdbId": "tt2285752",
@@ -25,8 +97,12 @@
     },
     {
       "id": "sintel-2010",
+      "type": "movie",
       "title": "Sintel",
       "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8",
+      "mirrors": [
+        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4"
+      ],
       "format": "M3U8",
       "group": "Fantasy · Animation",
       "imdbId": "tt1727587",
@@ -36,6 +112,7 @@
     },
     {
       "id": "big-buck-bunny-2008",
+      "type": "movie",
       "title": "Big Buck Bunny",
       "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
       "format": "MP4",
@@ -47,6 +124,7 @@
     },
     {
       "id": "elephants-dream-2006",
+      "type": "movie",
       "title": "Elephants Dream",
       "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
       "format": "MP4",

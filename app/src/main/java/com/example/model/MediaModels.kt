@@ -28,6 +28,35 @@ data class M3uEntry(
     val format: StreamFormat = StreamFormat.AUTO
 )
 
+enum class MediaContentType {
+    MOVIE,
+    SERIES
+}
+
+data class SeriesEpisode(
+    val id: String,
+    val seasonNumber: Int,
+    val episodeNumber: Int,
+    val title: String,
+    val url: String,
+    val mirrors: List<String> = emptyList(),
+    val headers: Map<String, String> = emptyMap(),
+    val format: StreamFormat = StreamFormat.AUTO,
+    val description: String? = null,
+    val durationLabel: String? = null,
+    val imageUrl: String? = null,
+    val subtitleUrl: String? = null,
+    val subtitleLabel: String? = null
+) {
+    val codeLabel: String get() = "S${seasonNumber} E${episodeNumber}"
+}
+
+data class SeriesSeason(
+    val seasonNumber: Int,
+    val title: String,
+    val episodes: List<SeriesEpisode>
+)
+
 data class JsonPlaylistItem(
     val id: String,
     val title: String,
@@ -40,8 +69,32 @@ data class JsonPlaylistItem(
     val releaseYear: String? = null,
     val description: String? = null,
     val subtitleUrl: String? = null,
-    val subtitleLabel: String? = null
-)
+    val subtitleLabel: String? = null,
+    val contentType: MediaContentType = MediaContentType.MOVIE,
+    val mirrors: List<String> = emptyList(),
+    val headers: Map<String, String> = emptyMap(),
+    val seasons: List<SeriesSeason> = emptyList()
+) {
+    val isSeries: Boolean
+        get() = contentType == MediaContentType.SERIES && seasons.isNotEmpty()
+
+    val totalEpisodes: Int
+        get() = seasons.sumOf { it.episodes.size }
+
+    val seriesBadgeLabel: String?
+        get() = if (isSeries) "SERIES · ${seasons.size}S" else null
+
+    fun allEpisodesOrdered(): List<SeriesEpisode> =
+        seasons.sortedBy { it.seasonNumber }
+            .flatMap { season -> season.episodes.sortedBy { it.episodeNumber } }
+
+    fun findNextEpisode(currentEpisodeId: String?): SeriesEpisode? {
+        if (currentEpisodeId.isNullOrBlank()) return null
+        val ordered = allEpisodesOrdered()
+        val idx = ordered.indexOfFirst { it.id == currentEpisodeId }
+        return if (idx in 0 until ordered.lastIndex) ordered[idx + 1] else null
+    }
+}
 
 data class TrackOption(
     val id: String,

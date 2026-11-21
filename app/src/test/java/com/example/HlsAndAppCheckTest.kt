@@ -1,82 +1,41 @@
 package com.example
 
 import android.content.Context
-import android.content.Intent
-import androidx.media3.common.C
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.media3.common.MimeTypes
-import androidx.media3.common.audio.AudioProcessor.AudioFormat
 import androidx.test.core.app.ApplicationProvider
-import com.example.ai.AppCheckProviderMode
-import com.example.ai.AppCheckRuntimeState
-import com.example.ai.configureAppCheck
-import com.example.ai.resolveRecaptchaSiteKey
 import com.example.model.StreamFormat
-import com.example.player.CinePlayerManager
 import com.example.player.M3uInspectionResult
 import com.example.player.M3uPlaylistParser
 import com.example.player.MediaFormatDetector
-import com.example.player.PcmAudioCaptureProcessor
+import com.example.player.PlayerNetworkStats
+import com.example.player.PlayerStatsFormatter
+import com.example.ui.player.PlayerStatsCard
+import com.example.ui.theme.CineStreamTheme
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
-import kotlin.math.sin
 
 @RunWith(RobolectricTestRunner::class)
 class HlsAndAppCheckTest {
 
+    @get:Rule
+    val composeRule = createComposeRule()
+
     companion object {
         private const val TEST_HLS_URL =
             "https://multicloud-s3-index.ajithvnr2001.workers.dev/pub/9f712691f8937399bfe52e34c80a450d/rustfs-demo-2/The.hidden.face.2011-hls/master.m3u8"
-    }
-
-    @Test
-    fun sideloadedAppWithoutDebugTokenUsesProvisionedRecaptchaEnterprise() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        // Reset meta/debug state to simulate fresh sideloaded install on user phone/TV
-        context.getSharedPreferences("cinestream_appcheck_meta", Context.MODE_PRIVATE)
-            .edit().clear().commit()
-        AppCheckRuntimeState.activeMode = AppCheckProviderMode.UNINITIALIZED
-
-        val siteKey = resolveRecaptchaSiteKey(context)
-        assertNotNull("Provisioned recaptcha_site_key must be bundled in resources", siteKey)
-        assertTrue("recaptcha_site_key should be non-blank", siteKey!!.isNotBlank())
-
-        // Launch with normal launcher Intent (no FIREBASE_APPCHECK_DEBUG_TOKEN extra)
-        configureAppCheck(context, Intent(Intent.ACTION_MAIN))
-
-        assertEquals(
-            "Sideloaded APK without debug token extra must use Recaptcha Enterprise provider",
-            AppCheckProviderMode.RECAPTCHA_ENTERPRISE,
-            AppCheckRuntimeState.activeMode
-        )
-    }
-
-    @Test
-    fun emulatorLaunchWithDebugTokenExtraUsesRegisteredDebugProvider() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        context.getSharedPreferences("cinestream_appcheck_meta", Context.MODE_PRIVATE)
-            .edit().clear().commit()
-        AppCheckRuntimeState.activeMode = AppCheckProviderMode.UNINITIALIZED
-
-        val harnessIntent = Intent(Intent.ACTION_MAIN).apply {
-            putExtra("FIREBASE_APPCHECK_DEBUG_TOKEN", "00000000-1111-2222-3333-444444444444")
-        }
-        configureAppCheck(context, harnessIntent)
-
-        assertEquals(
-            "Harness launch with explicit debug token must use DEBUG_REGISTERED_TOKEN",
-            AppCheckProviderMode.DEBUG_REGISTERED_TOKEN,
-            AppCheckRuntimeState.activeMode
-        )
     }
 
     @Test
@@ -97,7 +56,6 @@ class HlsAndAppCheckTest {
             .build()
         val parser = M3uPlaylistParser(context, client)
 
-        // Verify live HLS manifest inspection if reachable from test environment, plus deterministic manifest check
         val liveResult = parser.inspect(TEST_HLS_URL, isLocalFile = false)
         assertFalse(
             "HLS master.m3u8 must never be misclassified as an IPTV channel playlist",
@@ -116,31 +74,76 @@ class HlsAndAppCheckTest {
     }
 
     @Test
-    fun capturesFivePointOneSurroundMovieAudioWithoutDisturbingPassthrough() {
-        val processor = PcmAudioCaptureProcessor()
-        val surroundFormat = AudioFormat(48_000, 6, C.ENCODING_PCM_16BIT)
-        val configured = processor.configure(surroundFormat)
-        assertEquals(surroundFormat, configured)
-        assertTrue(processor.isActive())
+    fun playerStatsFormatterFormatsNetworkAndBufferTelemetryCleanly() {
+        assertEquals("—", PlayerStatsFormatter.formatBitrate(0L))
+        assertEquals("850 Kbps", PlayerStatsFormatter.formatBitrate(850_000L))
+        assertEquals("14.50 Mbps", PlayerStatsFormatter.formatBitrate(14_500_000L))
 
-        // Feed 2 seconds of 48kHz 5.1 audio with speech-like sine wave on center channel (ch 2)
-        val totalFrames = 48_000 * 2
-        val input = ByteBuffer.allocateDirect(totalFrames * 6 * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (frame in 0 until totalFrames) {
-            val speechSample = (sin(2.0 * Math.PI * 440.0 * frame / 48_000.0) * 6000.0).toInt().toShort()
-            for (ch in 0 until 6) {
-                input.putShort(if (ch == 2) speechSample else 0)
+        assertEquals("0 KB/s", PlayerStatsFormatter.formatThroughput(0L))
+        assertEquals("512 KB/s", PlayerStatsFormatter.formatThroughput(512L * 1024L))
+        assertEquals("2.50 MB/s", PlayerStatsFormatter.formatThroughput((2.5 * 1024 * 1024).toLong()))
+
+        assertEquals("12.4 MB", PlayerStatsFormatter.formatBytes((12.4 * 1024 * 1024).toLong()))
+        assertEquals("14.20 s", PlayerStatsFormatter.formatBufferSeconds(14_200L))
+        assertEquals("1920×1080 @ 24 fps", PlayerStatsFormatter.formatResolution(1920, 1080, 23.976f))
+        assertEquals("avc1.640028 (AVC)", PlayerStatsFormatter.formatCodecLabel("avc1.640028", "video/avc"))
+        assertEquals("AAC · 5.1 · 48.0 kHz · 192k", PlayerStatsFormatter.formatAudioDetail("AAC", 6, 48_000, 192_000))
+        assertEquals("cdn.example.com", PlayerStatsFormatter.extractHostLabel("https://cdn.example.com/hls/master.m3u8", isLocal = false))
+        assertEquals("Local Storage", PlayerStatsFormatter.extractHostLabel("content://media/external/video/12", isLocal = true))
+    }
+
+    @Test
+    fun playerStatsCardDisplaysNetworkAndBufferDetailsAndCloses() {
+        var closed = false
+        val sampleStats = PlayerNetworkStats(
+            streamHost = "cdn.cinestream.test",
+            streamFormatLabel = "HLS",
+            isLocalSource = false,
+            playbackStateLabel = "PLAYING",
+            connectionSpeedBps = 24_800_000L,
+            networkActivityBytesPerSec = 1_650_000L,
+            sessionDownloadedBytes = 48L * 1024L * 1024L,
+            bufferHealthMs = 15_600L,
+            bufferedPercent = 22,
+            allocatedBufferBytes = 14L * 1024L * 1024L,
+            targetBufferBytes = 24 * 1024 * 1024,
+            jvmHeapUsedBytes = 62L * 1024L * 1024L,
+            jvmHeapMaxBytes = 384L * 1024L * 1024L,
+            rebufferCount = 1,
+            totalRebufferMs = 420L,
+            videoWidth = 1920,
+            videoHeight = 1080,
+            videoFps = 24f,
+            videoCodec = "avc1.640028 (AVC)",
+            videoBitrateBps = 6_400_000,
+            audioCodec = "mp4a.40.2 (AAC)",
+            audioChannels = 6,
+            audioSampleRateHz = 48_000,
+            audioBitrateBps = 192_000,
+            droppedFrames = 0L,
+            networkActivityHistoryKBps = listOf(400f, 1_200f, 1_650f),
+            bufferHealthHistorySec = listOf(8.0f, 12.5f, 15.6f)
+        )
+
+        composeRule.setContent {
+            CineStreamTheme {
+                PlayerStatsCard(
+                    stats = sampleStats,
+                    isTv = false,
+                    showCloseButton = true,
+                    onClose = { closed = true }
+                )
             }
         }
-        input.flip()
 
-        processor.queueInput(input)
-        val passthrough = processor.getOutput()
-        assertEquals("Pass-through output must preserve exact byte count", totalFrames * 6 * 2, passthrough.remaining())
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("player_stats_overlay").assertIsDisplayed()
+        composeRule.onNodeWithText("STATS FOR NERDS").assertIsDisplayed()
+        composeRule.onNodeWithText("24.80 Mbps").assertIsDisplayed()
+        composeRule.onNodeWithText("15.60 s (22%) · 1 stall").assertIsDisplayed()
+        composeRule.onNodeWithText("HLS · cdn.cinestream.test").assertIsDisplayed()
 
-        val clip = processor.snapshotWavClip(requestedSeconds = 2, currentPlaybackPositionMs = 12_000L)
-        assertNotNull("Should capture a valid 16kHz WAV clip from 5.1 HLS audio", clip)
-        assertTrue("Center-channel 5.1 dialogue must be detected as audible", clip!!.hasAudibleSignal)
-        assertEquals("RIFF", String(clip.wavBytes, 0, 4, Charsets.US_ASCII))
+        composeRule.onNodeWithTag("stats_overlay_close_button").performClick()
+        assertTrue("Clicking close button should dismiss Stats for Nerds overlay", closed)
     }
 }

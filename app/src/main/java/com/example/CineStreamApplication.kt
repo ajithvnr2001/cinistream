@@ -52,13 +52,17 @@ class CineStreamApplication : Application(), ImageLoaderFactory {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ||
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        ) {
             runCatching { Coil.imageLoader(this).memoryCache?.clear() }
+            runCatching { sharedOkHttpClient.connectionPool.evictAll() }
         }
     }
 
     override fun onLowMemory() {
         super.onLowMemory()
         runCatching { Coil.imageLoader(this).memoryCache?.clear() }
+        runCatching { sharedOkHttpClient.connectionPool.evictAll() }
     }
 }

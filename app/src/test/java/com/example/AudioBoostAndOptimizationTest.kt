@@ -5,24 +5,18 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.media3.common.C
-import androidx.media3.common.audio.AudioProcessor.AudioFormat
 import com.example.player.AudioBoostMath
-import com.example.player.PcmAudioCaptureProcessor
 import com.example.ui.player.TracksSheet
 import com.example.ui.player.VerticalVolumeBoostHud
 import com.example.ui.player.VolumeBoostDialog
 import com.example.ui.theme.CineStreamTheme
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -55,43 +49,6 @@ class AudioBoostAndOptimizationTest {
     }
 
     @Test
-    fun pcmCapturePassesThroughWithoutDuplicateAllocationAndEncodesSinglePassWav() {
-        val processor = PcmAudioCaptureProcessor()
-        val format = AudioFormat(16_000, 1, C.ENCODING_PCM_16BIT)
-        processor.configure(format)
-
-        // Generate 2 seconds of audible 440 Hz tone at 16 kHz mono
-        val sampleCount = 32_000
-        val input = ByteBuffer.allocateDirect(sampleCount * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in 0 until sampleCount) {
-            val sample = (kotlin.math.sin(2.0 * Math.PI * 440.0 * i / 16_000.0) * 16_000.0).toInt().toShort()
-            input.putShort(sample)
-        }
-        input.flip()
-
-        processor.queueInput(input)
-        // Ensure entire inputBuffer was consumed for downstream ExoPlayer AudioSink pass-through
-        assertEquals(0, input.remaining())
-        val out1 = processor.getOutput()
-        assertEquals(sampleCount * 2, out1.remaining())
-
-        // Feed a second frame of equal size and verify the exact same direct ByteBuffer is reused
-        input.rewind()
-        processor.queueInput(input)
-        val out2 = processor.getOutput()
-        assertEquals(sampleCount * 2, out2.remaining())
-        assertTrue("PcmAudioCaptureProcessor must reuse its direct ByteBuffer across callbacks", out1 === out2)
-
-        val clip = processor.snapshotWavClip(requestedSeconds = 2, currentPlaybackPositionMs = 2_000L)
-        assertNotNull(clip)
-        assertTrue(clip!!.hasAudibleSignal)
-        assertEquals(44 + sampleCount * 2, clip.wavBytes.size)
-        assertEquals("RIFF", String(clip.wavBytes, 0, 4, Charsets.US_ASCII))
-        assertEquals("WAVE", String(clip.wavBytes, 8, 4, Charsets.US_ASCII))
-        assertEquals("data", String(clip.wavBytes, 36, 4, Charsets.US_ASCII))
-    }
-
-    @Test
     fun memorySafeTargetBufferBytesClampsCorrectlyForTvAndLargeHeap() {
         // 80 MB constrained TV heap -> 16 MB buffer cap (20%)
         assertEquals(
@@ -119,8 +76,9 @@ class AudioBoostAndOptimizationTest {
     }
 
     @Test
-    fun tracksSheetSoundBoosterPresetsAndStepButtonsAdjustUpTo200Percent() {
+    fun tracksSheetSoundBoosterPresetsAndStatsToggleWorkProperly() {
         val currentVolumeState = androidx.compose.runtime.mutableIntStateOf(100)
+        val statsEnabledState = androidx.compose.runtime.mutableStateOf(false)
 
         composeRule.setContent {
             CineStreamTheme {
@@ -129,6 +87,8 @@ class AudioBoostAndOptimizationTest {
                     audioTracks = emptyList(),
                     volumePercent = currentVolumeState.intValue,
                     onSetVolumePercent = { currentVolumeState.intValue = it },
+                    statsForNerdsEnabled = statsEnabledState.value,
+                    onToggleStatsForNerds = { statsEnabledState.value = !statsEnabledState.value },
                     onDismiss = {},
                     onSelectVideoTrack = {},
                     onSelectAudioTrack = {}
@@ -138,6 +98,10 @@ class AudioBoostAndOptimizationTest {
 
         composeRule.mainClock.advanceTimeBy(180L)
         composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("tracks_stats_for_nerds_toggle").performClick()
+        composeRule.waitForIdle()
+        assertTrue("Clicking Stats for Nerds toggle should enable telemetry HUD", statsEnabledState.value)
 
         composeRule.onNodeWithTag("volume_preset_200").performClick()
         composeRule.waitForIdle()

@@ -19,11 +19,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.ai.configureAppCheck
 import com.example.ui.home.HomeScreen
 import com.example.ui.player.JsonPlaylistSheet
 import com.example.ui.player.M3uPlaylistSheet
 import com.example.ui.player.PlayerScreen
+import com.example.ui.player.SeriesDetailSheet
 import com.example.ui.theme.CineStreamTheme
 import com.example.viewmodel.CineNavigationEvent
 import com.example.viewmodel.CineStreamViewModel
@@ -37,8 +37,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Configure Firebase App Check before any UI, ViewModel, or Firebase operations
-        configureAppCheck(this, intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -157,23 +155,33 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
             val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
             val subtitleAppearance by viewModel.subtitleAppearance.collectAsStateWithLifecycle()
             val aspectRatioMode by viewModel.aspectRatioMode.collectAsStateWithLifecycle()
-            val aiSubtitleState by viewModel.aiSubtitleState.collectAsStateWithLifecycle()
-            val rateLimitSnapshot by viewModel.rateLimitSnapshot.collectAsStateWithLifecycle()
+            val statsForNerdsEnabled by viewModel.statsForNerdsEnabled.collectAsStateWithLifecycle()
+
+            val activeSeries = remember(jsonPlaylistState.items, uiState.activeSession?.seriesItemId) {
+                val seriesId = uiState.activeSession?.seriesItemId ?: return@remember null
+                jsonPlaylistState.items.firstOrNull { it.id == seriesId }
+            }
+            val hasNextEpisode = remember(activeSeries, uiState.activeSession?.episodeId) {
+                activeSeries?.findNextEpisode(uiState.activeSession?.episodeId) != null
+            }
 
             PlayerScreen(
                 player = viewModel.playerManager.player,
                 session = uiState.activeSession,
                 playbackState = playbackState,
                 progressStateFlow = viewModel.playbackProgressState,
+                networkStatsFlow = viewModel.networkStats,
+                statsForNerdsEnabled = statsForNerdsEnabled,
                 subtitleAppearance = subtitleAppearance,
                 aspectRatioMode = aspectRatioMode,
-                aiSubtitleState = aiSubtitleState,
-                rateLimitSnapshot = rateLimitSnapshot,
                 m3uEntries = uiState.m3uEntries,
                 activeM3uEntryId = uiState.activeM3uEntryId,
                 jsonPlaylistLabel = jsonPlaylistState.sourceLabel,
                 jsonPlaylistItems = jsonPlaylistState.items,
                 activeJsonItemId = jsonPlaylistState.activeItemId,
+                activeSeries = activeSeries,
+                activeEpisodeId = uiState.activeSession?.episodeId,
+                hasNextEpisode = hasNextEpisode,
                 isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
                 canRefreshJson = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
                 toastMessage = uiState.toastMessage,
@@ -188,6 +196,7 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onSeekBy = viewModel.playerManager::seekBy,
                 onSetSpeed = viewModel.playerManager::setPlaybackSpeed,
                 onSetVolumePercent = viewModel::setVolumePercent,
+                onToggleStatsForNerds = viewModel::toggleStatsForNerds,
                 onCycleAspectRatio = viewModel::cycleAspectRatio,
                 onLoadSubtitleFile = viewModel::loadExternalSubtitleFileIntoPlayer,
                 onLoadSubtitleUrl = viewModel::loadExternalSubtitleUrlIntoPlayer,
@@ -198,16 +207,18 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onUpdateSubtitleSize = viewModel::updateSubtitleTextSize,
                 onUpdateSubtitleColor = viewModel::updateSubtitleColor,
                 onUpdateSubtitleBg = viewModel::updateSubtitleBg,
-                onSelectAiTier = viewModel::selectPreferredAiTier,
-                onGenerateAiClipNow = viewModel::generateAiEnglishSubtitleClipNow,
-                onToggleAutoAi = viewModel::toggleAutoAiSubtitles,
-                onApplyAiAsSrt = viewModel::applyAiSubtitlesAsNativeSrtTrack,
-                onClearAiSubtitles = viewModel::clearAiSubtitles,
                 onSelectVideoTrack = viewModel::selectVideoTrack,
                 onSelectAudioTrack = viewModel::selectAudioTrack,
                 onRetryFormat = viewModel::retryWithFormat,
                 onSelectM3uEntry = viewModel::playM3uEntry,
                 onSelectJsonItem = viewModel::playJsonPlaylistItem,
+                onSelectSeriesEpisode = viewModel::playSeriesEpisode,
+                onPlayNextEpisode = viewModel::playNextEpisode,
+                onSwitchCdnMirror = viewModel::switchToNextCdnMirror,
+                onClearEdgeCache = viewModel::clearMediaEdgeCache,
+                onSelectDecoderMode = viewModel::setVideoDecoderMode,
+                onRetryWithDecoderMode = viewModel::retryWithDecoderMode,
+                onSkipBadSegment = viewModel::skipBadSegmentAndRetry,
                 onRefreshJsonPlaylist = viewModel::refreshJsonPlaylist,
                 onToastShown = viewModel::consumeToast
             )
@@ -240,5 +251,16 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onSelectItem = viewModel::playJsonPlaylistItem
             )
         }
+    }
+
+    val globalJsonState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
+    val selectedSeries = globalJsonState.selectedSeriesForSheet
+    if (selectedSeries != null) {
+        SeriesDetailSheet(
+            series = selectedSeries,
+            activeEpisodeId = globalJsonState.activeEpisodeId,
+            onDismiss = viewModel::dismissSeriesSheet,
+            onSelectEpisode = viewModel::playSeriesEpisode
+        )
     }
 }

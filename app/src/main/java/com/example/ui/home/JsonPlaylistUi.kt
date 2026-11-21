@@ -232,7 +232,7 @@ fun JsonPlaylistUrlInputDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Load any JSON playlist URL containing video links. Supports imdbId/imdbUrl, image/poster, subtitleUrl, year, rating, and category fields—missing posters & ratings are auto-fetched from IMDb.",
+                    text = "Load any JSON playlist URL containing Movies and/or Series (seasons & episodes). Supports imdbId/imdbUrl, mirrors/cdnMirrors failover, custom headers, subtitleUrl, and posters—missing artwork & ratings are auto-fetched from IMDb.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

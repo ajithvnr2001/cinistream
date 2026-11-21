@@ -13,9 +13,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -37,11 +41,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.TrackOption
+import com.example.player.DecoderFallbackHelper
+import com.example.player.PlayerStatsFormatter
+import com.example.player.VideoDecoderMode
 import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
+import com.example.ui.theme.SubtitleEmerald
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -51,6 +59,19 @@ fun TracksSheet(
     audioTracks: List<TrackOption>,
     volumePercent: Int = 100,
     onSetVolumePercent: (Int) -> Unit = {},
+    statsForNerdsEnabled: Boolean = false,
+    onToggleStatsForNerds: () -> Unit = {},
+    activeCdnIndex: Int = 1,
+    totalCdnNodes: Int = 1,
+    activeCdnHost: String = "",
+    onSwitchCdnMirror: () -> Unit = {},
+    diskCacheUsedBytes: Long = 0L,
+    diskCacheMaxBytes: Long = 0L,
+    onClearEdgeCache: () -> Unit = {},
+    preferredDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
+    effectiveDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
+    activeVideoDecoderName: String = "",
+    onSelectDecoderMode: (VideoDecoderMode) -> Unit = {},
     onDismiss: () -> Unit,
     onSelectVideoTrack: (TrackOption?) -> Unit,
     onSelectAudioTrack: (TrackOption) -> Unit
@@ -87,6 +108,165 @@ fun TracksSheet(
                 onSetVolumePercent = onSetVolumePercent
             )
 
+            // YouTube-style Stats for Nerds Toggle
+            Surface(
+                onClick = onToggleStatsForNerds,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(firstTrackFocusRequester)
+                    .tvFocusHighlight(shape = RoundedCornerShape(14.dp), focusedScale = 1.02f)
+                    .testTag("tracks_stats_for_nerds_toggle"),
+                shape = RoundedCornerShape(14.dp),
+                color = if (statsForNerdsEnabled) CinemaAmber.copy(alpha = 0.14f) else ObsidianSurfaceHigh,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (statsForNerdsEnabled) CinemaAmber.copy(alpha = 0.65f) else ObsidianOutline.copy(alpha = 0.6f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.NetworkCheck,
+                        contentDescription = null,
+                        tint = if (statsForNerdsEnabled) CinemaAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.stats_for_nerds_title),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = stringResource(R.string.stats_for_nerds_subtitle),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (statsForNerdsEnabled) CinemaAmber else ObsidianOutline.copy(alpha = 0.55f)
+                    ) {
+                        Text(
+                            text = if (statsForNerdsEnabled) "ON" else "OFF",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (statsForNerdsEnabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            // Multi-CDN Mirror Switcher (shown whenever backup mirrors exist for the playing stream)
+            if (totalCdnNodes > 1) {
+                Surface(
+                    onClick = onSwitchCdnMirror,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tvFocusHighlight(shape = RoundedCornerShape(14.dp), focusedScale = 1.02f)
+                        .testTag("tracks_switch_cdn_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    color = ObsidianSurfaceHigh,
+                    border = BorderStroke(1.dp, SubtitleEmerald.copy(alpha = 0.55f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.SwapHoriz,
+                            contentDescription = null,
+                            tint = SubtitleEmerald,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${stringResource(R.string.cdn_mirror_title)} ($activeCdnIndex/$totalCdnNodes)",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = activeCdnHost.ifBlank { "Active mirror" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = SubtitleEmerald.copy(alpha = 0.2f)
+                        ) {
+                            Text(
+                                text = "Switch",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SubtitleEmerald,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Local Edge Disk Cache status & optional clear action
+            if (diskCacheMaxBytes > 0L) {
+                Surface(
+                    onClick = onClearEdgeCache,
+                    enabled = diskCacheUsedBytes > 0L,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tvFocusHighlight(shape = RoundedCornerShape(14.dp), focusedScale = 1.02f)
+                        .testTag("tracks_clear_edge_cache_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    color = ObsidianSurfaceHigh,
+                    border = BorderStroke(1.dp, ObsidianOutline.copy(alpha = 0.6f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.edge_cache_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${PlayerStatsFormatter.formatBytes(diskCacheUsedBytes)} / ${PlayerStatsFormatter.formatBytes(diskCacheMaxBytes)} cached on device",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (diskCacheUsedBytes > 0L) {
+                            Text(
+                                text = "Clear",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = CinemaAmber
+                            )
+                        }
+                    }
+                }
+            }
+
             HorizontalDivider(color = ObsidianOutline.copy(alpha = 0.6f))
 
             // Video Quality / HLS Renditions
@@ -114,8 +294,7 @@ fun TracksSheet(
                     isSelected = videoTracks.none { it.isSelected } || videoTracks.count { it.isSelected } > 1,
                     leadingAutoIcon = true,
                     onClick = { onSelectVideoTrack(null) },
-                    testTag = "video_track_auto",
-                    modifier = Modifier.focusRequester(firstTrackFocusRequester)
+                    testTag = "video_track_auto"
                 )
 
                 videoTracks.forEachIndexed { idx, track ->
@@ -126,6 +305,97 @@ fun TracksSheet(
                         onClick = { onSelectVideoTrack(track) },
                         testTag = "video_track_$idx"
                     )
+                }
+            }
+
+            // Video Decoder Engine selector (Auto HW+SW / Hardware / Software)
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = ObsidianSurfaceHigh,
+                border = BorderStroke(1.dp, ObsidianOutline.copy(alpha = 0.6f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Memory,
+                            contentDescription = null,
+                            tint = CinemaAmber,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.decoder_engine_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            val activeTag = DecoderFallbackHelper.formatDecoderTag(activeVideoDecoderName)
+                            val subtitleText = if (activeTag != "—") {
+                                "Active: $activeTag"
+                            } else {
+                                effectiveDecoderMode.description
+                            }
+                            Text(
+                                text = subtitleText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        VideoDecoderMode.entries.forEach { mode ->
+                            val isSelected = preferredDecoderMode == mode
+                            val accent = if (mode == VideoDecoderMode.SOFTWARE) SubtitleEmerald else CinemaAmber
+                            Surface(
+                                onClick = { onSelectDecoderMode(mode) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
+                                    .testTag("tracks_decoder_mode_${mode.name.lowercase()}"),
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) accent.copy(alpha = 0.22f) else ObsidianSurface,
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (isSelected) accent else ObsidianOutline.copy(alpha = 0.65f)
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = mode.shortLabel,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (isSelected) accent else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = when (mode) {
+                                            VideoDecoderMode.AUTO -> "HW→SW"
+                                            VideoDecoderMode.HARDWARE -> "GPU/DSP"
+                                            VideoDecoderMode.SOFTWARE -> "CPU Safe"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

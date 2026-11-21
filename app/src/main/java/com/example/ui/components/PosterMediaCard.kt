@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -104,13 +105,16 @@ fun PosterImageThumbnail(
     ) {
         PosterFallbackArt(modifier = Modifier.fillMaxSize())
         if (!imageUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
+            val imageRequest = remember(context, imageUrl, decodeWidthPx, decodeHeightPx) {
+                ImageRequest.Builder(context)
                     .data(imageUrl)
                     .size(decodeWidthPx, decodeHeightPx)
                     .allowRgb565(true)
                     .crossfade(false)
-                    .build(),
+                    .build()
+            }
+            AsyncImage(
+                model = imageRequest,
                 contentDescription = contentDescription,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -155,6 +159,7 @@ fun PosterStreamCard(
     imdbId: String? = null,
     imdbRating: String? = null,
     releaseYear: String? = null,
+    seriesBadge: String? = null,
     hasSubtitle: Boolean = false,
     isActive: Boolean = false,
     cardWidth: Dp = 172.dp,
@@ -217,7 +222,22 @@ fun PosterStreamCard(
                     } else {
                         Box(modifier = Modifier.size(1.dp))
                     }
-                    FormatBadge(format = format)
+                    if (!seriesBadge.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = CinemaAmber.copy(alpha = 0.92f)
+                        ) {
+                            Text(
+                                text = seriesBadge,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
+                                color = Color.Black,
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else {
+                        FormatBadge(format = format)
+                    }
                 }
 
                 // Bottom Overlay inside Poster: Year / CC + Play Pill

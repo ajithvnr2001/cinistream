@@ -48,4 +48,15 @@
     <string name="json_playlist_url_placeholder">https://… (.json playlist)</string>
     <string name="cd_json_playlist">Open JSON IMDb playlist</string>
     <string name="cd_volume_boost">Adjust sound volume and 200 percent booster</string>
+    <string name="cd_stats_for_nerds">Toggle network and buffer stats overlay</string>
+    <string name="stats_for_nerds_title">Stats for Nerds</string>
+    <string name="stats_for_nerds_subtitle">Live connection speed, network activity, buffer health &amp; codecs</string>
+    <string name="cd_episodes">Browse series seasons and episodes</string>
+    <string name="cd_next_episode">Play next episode</string>
+    <string name="cdn_mirror_title">CDN Mirror Node</string>
+    <string name="edge_cache_title">Local Edge Disk Cache</string>
+    <string name="decoder_engine_title">Video Decoder Engine</string>
+    <string name="try_software_decoder">Try Software Decoder (SW)</string>
+    <string name="try_hardware_decoder">Try Hardware Decoder (HW)</string>
+    <string name="skip_bad_segment">Skip Bad Segment (+5s)</string>
 </resources>

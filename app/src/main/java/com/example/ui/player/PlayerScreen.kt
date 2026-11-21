@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,16 +72,16 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
-import com.example.ai.AiModelTier
-import com.example.ai.RateLimitSnapshot
 import com.example.model.AspectRatioMode
 import com.example.model.JsonPlaylistItem
 import com.example.model.M3uEntry
+import com.example.model.SeriesEpisode
 import com.example.model.StreamFormat
 import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
@@ -88,13 +89,15 @@ import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
 import com.example.model.TrackOption
 import com.example.player.AudioBoostMath
+import com.example.player.MediaEdgeCache
 import com.example.player.PlaybackProgressState
+import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerPlaybackState
+import com.example.player.VideoDecoderMode
 import com.example.ui.components.rememberIsAndroidTv
 import com.example.ui.components.rememberLocalFilePicker
 import com.example.ui.theme.CinemaAmber
 import com.example.viewmodel.ActiveMediaSession
-import com.example.viewmodel.AiSubtitleUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,15 +117,20 @@ fun PlayerScreen(
     session: ActiveMediaSession?,
     playbackState: PlayerPlaybackState,
     progressStateFlow: StateFlow<PlaybackProgressState> = remember { MutableStateFlow(PlaybackProgressState()) },
+    networkStatsFlow: StateFlow<PlayerNetworkStats> = remember { MutableStateFlow(PlayerNetworkStats()) },
+    statsForNerdsEnabled: Boolean = false,
     subtitleAppearance: SubtitleAppearance,
     aspectRatioMode: AspectRatioMode,
-    aiSubtitleState: AiSubtitleUiState,
-    rateLimitSnapshot: RateLimitSnapshot,
     m3uEntries: List<M3uEntry>,
     activeM3uEntryId: String?,
     jsonPlaylistLabel: String? = null,
     jsonPlaylistItems: List<JsonPlaylistItem> = emptyList(),
     activeJsonItemId: String? = null,
+    activeSeries: JsonPlaylistItem? = null,
+    activeEpisodeId: String? = null,
+    hasNextEpisode: Boolean = false,
+    diskCacheUsedBytes: Long = 0L,
+    diskCacheMaxBytes: Long = 0L,
     isEnrichingImdb: Boolean = false,
     canRefreshJson: Boolean = false,
     toastMessage: String?,
@@ -133,6 +141,7 @@ fun PlayerScreen(
     onSeekBy: (Long) -> Unit,
     onSetSpeed: (Float) -> Unit,
     onSetVolumePercent: (Int) -> Unit = {},
+    onToggleStatsForNerds: () -> Unit = {},
     onCycleAspectRatio: () -> Unit,
     onLoadSubtitleFile: (Uri) -> Unit,
     onLoadSubtitleUrl: (String) -> Unit,
@@ -143,16 +152,18 @@ fun PlayerScreen(
     onUpdateSubtitleSize: (SubtitleTextSize) -> Unit,
     onUpdateSubtitleColor: (SubtitleColorPreset) -> Unit,
     onUpdateSubtitleBg: (SubtitleBgPreset) -> Unit,
-    onSelectAiTier: (AiModelTier) -> Unit,
-    onGenerateAiClipNow: () -> Unit,
-    onToggleAutoAi: () -> Unit,
-    onApplyAiAsSrt: () -> Unit,
-    onClearAiSubtitles: () -> Unit,
     onSelectVideoTrack: (TrackOption?) -> Unit,
     onSelectAudioTrack: (TrackOption) -> Unit,
     onRetryFormat: (StreamFormat) -> Unit,
     onSelectM3uEntry: (M3uEntry) -> Unit,
     onSelectJsonItem: (JsonPlaylistItem) -> Unit = {},
+    onSelectSeriesEpisode: (JsonPlaylistItem, SeriesEpisode) -> Unit = { _, _ -> },
+    onPlayNextEpisode: () -> Unit = {},
+    onSwitchCdnMirror: () -> Unit = {},
+    onClearEdgeCache: () -> Unit = {},
+    onSelectDecoderMode: (VideoDecoderMode) -> Unit = {},
+    onRetryWithDecoderMode: (VideoDecoderMode) -> Unit = {},
+    onSkipBadSegment: () -> Unit = {},
     onRefreshJsonPlaylist: () -> Unit = {},
     onToastShown: () -> Unit
 ) {
@@ -168,6 +179,8 @@ fun PlayerScreen(
     val playPauseFocusRequester = remember { FocusRequester() }
     val seekBarFocusRequester = remember { FocusRequester() }
     val subButtonFocusRequester = remember { FocusRequester() }
+    val statsButtonFocusRequester = remember { FocusRequester() }
+    val episodesButtonFocusRequester = remember { FocusRequester() }
     val speedButtonFocusRequester = remember { FocusRequester() }
     val volumeButtonFocusRequester = remember { FocusRequester() }
     val tracksButtonFocusRequester = remember { FocusRequester() }
@@ -184,6 +197,7 @@ fun PlayerScreen(
     var showTracksSheet by remember { mutableStateOf(false) }
     var showM3uSheet by remember { mutableStateOf(false) }
     var showJsonSheet by remember { mutableStateOf(false) }
+    var showSeriesSheet by remember { mutableStateOf(false) }
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showVolumeBoostDialog by remember { mutableStateOf(false) }
     var interactionNonce by remember { mutableIntStateOf(0) }
@@ -237,11 +251,13 @@ fun PlayerScreen(
         showTracksSheet,
         showM3uSheet,
         showJsonSheet,
+        showSeriesSheet,
         showSpeedMenu,
         showVolumeBoostDialog
     ) {
         val noModalOpen = !showSubtitleSheet && !showTracksSheet && !showM3uSheet &&
-            !showJsonSheet && !showSpeedMenu && !showVolumeBoostDialog && playbackState.errorMessage == null
+            !showJsonSheet && !showSeriesSheet && !showSpeedMenu && !showVolumeBoostDialog &&
+            playbackState.errorMessage == null
         if (noModalOpen) {
             if (controlsVisible && !isLocked && (isTv || lastInputWasKey)) {
                 delay(60L)
@@ -294,13 +310,14 @@ fun PlayerScreen(
         showTracksSheet,
         showM3uSheet,
         showJsonSheet,
+        showSeriesSheet,
         showSpeedMenu,
         showVolumeBoostDialog,
         interactionNonce
     ) {
         val canAutoHide = controlsVisible && playbackState.isPlaying && !isScrubbing &&
             !showSubtitleSheet && !showTracksSheet && !showM3uSheet && !showJsonSheet &&
-            !showSpeedMenu && !showVolumeBoostDialog
+            !showSeriesSheet && !showSpeedMenu && !showVolumeBoostDialog
         if (canAutoHide) {
             delay(if (isTv) 5000L else 4000L)
             controlsVisible = false
@@ -352,7 +369,6 @@ fun PlayerScreen(
     val tvOverscanHorizontal = if (isTv) 28.dp else 12.dp
     val tvOverscanVertical = if (isTv) 20.dp else 10.dp
     val hasActiveSubtitles = !playbackState.subtitlesDisabled && playbackState.subtitleTracks.any { it.isSelected }
-    val aiSubActive = aiSubtitleState.isAutoMode || aiSubtitleState.isEnabled || aiSubtitleState.isGenerating
 
     Box(
         modifier = Modifier
@@ -362,7 +378,9 @@ fun PlayerScreen(
             .focusable(enabled = !controlsVisible)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                if (showSubtitleSheet || showTracksSheet || showM3uSheet || showJsonSheet || showSpeedMenu || showVolumeBoostDialog) {
+                if (showSubtitleSheet || showTracksSheet || showM3uSheet || showJsonSheet ||
+                    showSeriesSheet || showSpeedMenu || showVolumeBoostDialog
+                ) {
                     return@onPreviewKeyEvent false
                 }
                 lastInputWasKey = true
@@ -430,56 +448,59 @@ fun PlayerScreen(
                 }
             }
     ) {
-        // Video Surface + Native SubtitleView via Media3 PlayerView (detaches player cleanly onRelease)
-        AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("exoplayer_surface"),
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    this.player = player
-                    useController = false
-                    keepScreenOn = true
-                    isFocusable = false
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                    setShutterBackgroundColor(AndroidColor.BLACK)
-                }
-            },
-            update = { playerView ->
-                if (playerView.player !== player) {
-                    playerView.player = player
-                }
-                val desiredConfig = AppliedPlayerViewConfig(aspectRatioMode, subtitleAppearance, isTv)
-                if (playerView.tag != desiredConfig) {
-                    playerView.tag = desiredConfig
-                    playerView.resizeMode = when (aspectRatioMode) {
-                        AspectRatioMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        AspectRatioMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                        AspectRatioMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        // Video Surface + Native SubtitleView via Media3 PlayerView (keyed on surfaceResetToken so
+        // HW MediaCodec <-> FFmpeg CPU transitions always mount a fresh Surface without BufferQueue lock)
+        key(playbackState.surfaceResetToken) {
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("exoplayer_surface"),
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        this.player = player
+                        useController = false
+                        keepScreenOn = true
+                        isFocusable = false
+                        setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                        setShutterBackgroundColor(AndroidColor.BLACK)
                     }
-                    playerView.subtitleView?.let { subView ->
-                        subView.setApplyEmbeddedStyles(false)
-                        subView.setApplyEmbeddedFontSizes(false)
-                        val tvBoost = if (isTv) 1.35f else 1.0f
-                        subView.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, subtitleAppearance.textSize.sp * tvBoost)
-                        subView.setStyle(
-                            CaptionStyleCompat(
-                                subtitleAppearance.colorPreset.argb,
-                                subtitleAppearance.bgPreset.argb,
-                                AndroidColor.TRANSPARENT,
-                                CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
-                                AndroidColor.BLACK,
-                                Typeface.SANS_SERIF
+                },
+                update = { playerView ->
+                    if (playerView.player !== player) {
+                        playerView.player = player
+                    }
+                    val desiredConfig = AppliedPlayerViewConfig(aspectRatioMode, subtitleAppearance, isTv)
+                    if (playerView.tag != desiredConfig) {
+                        playerView.tag = desiredConfig
+                        playerView.resizeMode = when (aspectRatioMode) {
+                            AspectRatioMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            AspectRatioMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                            AspectRatioMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        }
+                        playerView.subtitleView?.let { subView ->
+                            subView.setApplyEmbeddedStyles(false)
+                            subView.setApplyEmbeddedFontSizes(false)
+                            val tvBoost = if (isTv) 1.35f else 1.0f
+                            subView.setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, subtitleAppearance.textSize.sp * tvBoost)
+                            subView.setStyle(
+                                CaptionStyleCompat(
+                                    subtitleAppearance.colorPreset.argb,
+                                    subtitleAppearance.bgPreset.argb,
+                                    AndroidColor.TRANSPARENT,
+                                    CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW,
+                                    AndroidColor.BLACK,
+                                    Typeface.SANS_SERIF
+                                )
                             )
-                        )
-                        subView.setBottomPaddingFraction(if (isTv) 0.10f else 0.08f)
+                            subView.setBottomPaddingFraction(if (isTv) 0.10f else 0.08f)
+                        }
                     }
+                },
+                onRelease = { playerView ->
+                    playerView.player = null
                 }
-            },
-            onRelease = { playerView ->
-                playerView.player = null
-            }
-        )
+            )
+        }
 
         // Touch Tap, Double-Tap Seek, and Right-Side Vertical 0-200% Sound Swipe
         Box(
@@ -540,35 +561,26 @@ fun PlayerScreen(
                 }
         )
 
-        // Live AI English Subtitle Overlay
-        val liveAiCaption = aiSubtitleState.activeOverlayText
-        if (aiSubtitleState.isEnabled && !liveAiCaption.isNullOrBlank()) {
-            Box(
+        // YouTube-style "Stats for Nerds" Floating Network & Buffer Overlay
+        if (statsForNerdsEnabled && playbackState.errorMessage == null) {
+            PlayerStatsOverlay(
+                statsFlow = networkStatsFlow,
+                isTv = isTv,
+                showCloseButton = controlsVisible && !isLocked,
+                onClose = onToggleStatsForNerds,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .align(Alignment.TopStart)
+                    .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
                     .padding(
-                        horizontal = if (isTv) 48.dp else 20.dp,
-                        vertical = when {
-                            controlsVisible && !isLocked -> if (isTv) 152.dp else 132.dp
-                            else -> if (isTv) 44.dp else 28.dp
+                        start = tvOverscanHorizontal,
+                        end = tvOverscanHorizontal,
+                        top = if (controlsVisible && !isLocked) {
+                            if (isTv) 86.dp else 72.dp
+                        } else {
+                            tvOverscanVertical
                         }
                     )
-                    .background(
-                        color = Color(subtitleAppearance.bgPreset.argb),
-                        shape = RoundedCornerShape(8.dp)
-                    )
-                    .padding(horizontal = 14.dp, vertical = 6.dp)
-                    .testTag("ai_live_subtitle_overlay")
-            ) {
-                Text(
-                    text = liveAiCaption,
-                    color = Color(subtitleAppearance.colorPreset.argb),
-                    fontSize = (subtitleAppearance.textSize.sp * (if (isTv) 1.35f else 1.0f)).sp,
-                    textAlign = TextAlign.Center,
-                    lineHeight = (subtitleAppearance.textSize.sp * (if (isTv) 1.65f else 1.3f)).sp
-                )
-            }
+            )
         }
 
         // Buffering Indicator
@@ -621,7 +633,17 @@ fun PlayerScreen(
             PlayerErrorCard(
                 message = playbackState.errorMessage,
                 currentFormat = session?.format ?: StreamFormat.AUTO,
+                isDecoderError = playbackState.isDecoderError,
+                effectiveDecoderMode = playbackState.effectiveDecoderMode,
                 onRetry = { onRetryFormat(session?.format ?: StreamFormat.AUTO) },
+                onSwitchDecoderMode = { mode ->
+                    onRetryWithDecoderMode(mode)
+                    interactionNonce++
+                },
+                onSkipBadSegment = {
+                    onSkipBadSegment()
+                    interactionNonce++
+                },
                 onForceHls = { onRetryFormat(StreamFormat.HLS) },
                 onBack = handleExit,
                 modifier = Modifier
@@ -654,14 +676,17 @@ fun PlayerScreen(
                         format = session?.format ?: StreamFormat.AUTO,
                         videoHeight = playbackState.videoHeight,
                         hasActiveSubtitles = hasActiveSubtitles,
-                        aiSubActive = aiSubActive,
-                        aiSubGenerating = aiSubtitleState.isGenerating,
+                        statsForNerdsEnabled = statsForNerdsEnabled,
+                        hasSeriesEpisodes = activeSeries != null,
+                        episodeCodeBadge = session?.episodeCodeLabel,
                         hasJsonPlaylist = jsonPlaylistItems.isNotEmpty(),
                         hasM3uPlaylist = m3uEntries.isNotEmpty(),
                         isTv = isTv,
                         tvOverscanHorizontal = tvOverscanHorizontal,
                         tvOverscanVertical = tvOverscanVertical,
                         subButtonFocusRequester = subButtonFocusRequester,
+                        statsButtonFocusRequester = statsButtonFocusRequester,
+                        episodesButtonFocusRequester = episodesButtonFocusRequester,
                         jsonButtonFocusRequester = jsonButtonFocusRequester,
                         m3uButtonFocusRequester = m3uButtonFocusRequester,
                         tracksButtonFocusRequester = tracksButtonFocusRequester,
@@ -669,6 +694,15 @@ fun PlayerScreen(
                         onOpenSubtitles = {
                             returnFocusTarget = subButtonFocusRequester
                             showSubtitleSheet = true
+                            interactionNonce++
+                        },
+                        onToggleStatsForNerds = {
+                            onToggleStatsForNerds()
+                            interactionNonce++
+                        },
+                        onOpenSeriesEpisodes = {
+                            returnFocusTarget = episodesButtonFocusRequester
+                            showSeriesSheet = true
                             interactionNonce++
                         },
                         onOpenJsonCatalog = {
@@ -720,11 +754,16 @@ fun PlayerScreen(
                         volumePercent = playbackState.volumePercent,
                         playbackSpeed = playbackState.playbackSpeed,
                         aspectRatioMode = aspectRatioMode,
+                        hasNextEpisode = hasNextEpisode,
                         isTv = isTv,
                         showSpeedMenu = showSpeedMenu,
                         volumeButtonFocusRequester = volumeButtonFocusRequester,
                         speedButtonFocusRequester = speedButtonFocusRequester,
                         seekBarFocusRequester = seekBarFocusRequester,
+                        onPlayNextEpisode = {
+                            onPlayNextEpisode()
+                            interactionNonce++
+                        },
                         onOpenVolumeBoost = {
                             returnFocusTarget = volumeButtonFocusRequester
                             showVolumeBoostDialog = true
@@ -780,8 +819,6 @@ fun PlayerScreen(
             hasExternalSubtitles = session?.externalSubtitles?.isNotEmpty() == true,
             subtitleOffsetMs = session?.subtitleOffsetMs ?: 0L,
             appearance = subtitleAppearance,
-            aiSubtitleState = aiSubtitleState,
-            rateLimitSnapshot = rateLimitSnapshot,
             onDismiss = { showSubtitleSheet = false },
             onPickSubtitleFile = { subtitleFilePicker.pickSubtitle() },
             onLoadSubtitleUrl = onLoadSubtitleUrl,
@@ -791,16 +828,19 @@ fun PlayerScreen(
             onResetOffset = onResetSubtitleOffset,
             onUpdateTextSize = onUpdateSubtitleSize,
             onUpdateColor = onUpdateSubtitleColor,
-            onUpdateBg = onUpdateSubtitleBg,
-            onSelectAiTier = onSelectAiTier,
-            onGenerateAiClipNow = onGenerateAiClipNow,
-            onToggleAutoAi = onToggleAutoAi,
-            onApplyAiAsSrt = onApplyAiAsSrt,
-            onClearAiSubtitles = onClearAiSubtitles
+            onUpdateBg = onUpdateSubtitleBg
         )
     }
 
     if (showTracksSheet) {
+        val sheetStats by networkStatsFlow.collectAsStateWithLifecycle()
+        val liveCacheUsed = diskCacheUsedBytes.takeIf { it > 0L }
+            ?: sheetStats.diskCacheUsedBytes.takeIf { it > 0L }
+            ?: MediaEdgeCache.usedBytes()
+        val liveCacheMax = diskCacheMaxBytes.takeIf { it > 0L }
+            ?: sheetStats.diskCacheMaxBytes.takeIf { it > 0L }
+            ?: MediaEdgeCache.maxBytes()
+
         TracksSheet(
             videoTracks = playbackState.videoTracks,
             audioTracks = playbackState.audioTracks,
@@ -808,6 +848,31 @@ fun PlayerScreen(
             onSetVolumePercent = { pct ->
                 onSetVolumePercent(pct)
                 volumeHudNonce++
+            },
+            statsForNerdsEnabled = statsForNerdsEnabled,
+            onToggleStatsForNerds = {
+                onToggleStatsForNerds()
+                interactionNonce++
+            },
+            activeCdnIndex = playbackState.activeCdnIndex,
+            totalCdnNodes = playbackState.totalCdnNodes,
+            activeCdnHost = playbackState.activeCdnHost,
+            onSwitchCdnMirror = {
+                onSwitchCdnMirror()
+                interactionNonce++
+            },
+            diskCacheUsedBytes = liveCacheUsed,
+            diskCacheMaxBytes = liveCacheMax,
+            onClearEdgeCache = {
+                onClearEdgeCache()
+                interactionNonce++
+            },
+            preferredDecoderMode = playbackState.preferredDecoderMode,
+            effectiveDecoderMode = playbackState.effectiveDecoderMode,
+            activeVideoDecoderName = playbackState.activeVideoDecoderName,
+            onSelectDecoderMode = { mode ->
+                onSelectDecoderMode(mode)
+                interactionNonce++
             },
             onDismiss = { showTracksSheet = false },
             onSelectVideoTrack = onSelectVideoTrack,
@@ -845,6 +910,15 @@ fun PlayerScreen(
             onRefresh = onRefreshJsonPlaylist,
             onDismiss = { showJsonSheet = false },
             onSelectItem = onSelectJsonItem
+        )
+    }
+
+    if (showSeriesSheet && activeSeries != null) {
+        SeriesDetailSheet(
+            series = activeSeries,
+            activeEpisodeId = activeEpisodeId,
+            onDismiss = { showSeriesSheet = false },
+            onSelectEpisode = onSelectSeriesEpisode
         )
     }
 }

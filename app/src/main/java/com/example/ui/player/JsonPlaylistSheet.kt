@@ -54,6 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.JsonPlaylistItem
+import com.example.model.MediaContentType
 import com.example.ui.components.FormatBadge
 import com.example.ui.components.ImdbBadgePill
 import com.example.ui.components.PosterImageThumbnail
@@ -63,6 +64,7 @@ import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
+import com.example.ui.theme.SubtitleEmerald
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,6 +83,13 @@ fun JsonPlaylistSheet(
     val firstItemFocusRequester = remember { FocusRequester() }
     var query by rememberSaveable { mutableStateOf("") }
     var selectedCategory by rememberSaveable { mutableStateOf("All") }
+    var selectedTypeFilter by rememberSaveable { mutableStateOf("ALL") }
+
+    val hasMixedTypes = remember(items) {
+        val hasSeries = items.any { it.isSeries }
+        val hasMovies = items.any { !it.isSeries }
+        hasSeries && hasMovies
+    }
 
     LaunchedEffect(Unit) {
         delay(120L)
@@ -96,9 +105,14 @@ fun JsonPlaylistSheet(
         }
     }
 
-    val filtered by remember(items, query, selectedCategory) {
+    val filtered by remember(items, query, selectedCategory, selectedTypeFilter) {
         derivedStateOf {
             items.filter { item ->
+                val matchesType = when (selectedTypeFilter) {
+                    "MOVIES" -> item.contentType == MediaContentType.MOVIE
+                    "SERIES" -> item.isSeries
+                    else -> true
+                }
                 val matchesCat = selectedCategory == "All" ||
                     item.groupTitle.equals(selectedCategory, ignoreCase = true)
                 val matchesQuery = if (query.isBlank()) {
@@ -110,7 +124,7 @@ fun JsonPlaylistSheet(
                         (item.imdbId?.lowercase()?.contains(q) == true) ||
                         (item.releaseYear?.contains(q) == true)
                 }
-                matchesCat && matchesQuery
+                matchesType && matchesCat && matchesQuery
             }
         }
     }
@@ -187,7 +201,7 @@ fun JsonPlaylistSheet(
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    placeholder = { Text("Search movies, IMDb IDs, genres…") },
+                    placeholder = { Text("Search movies, series, IMDb IDs, genres…") },
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                     singleLine = true,
                     modifier = Modifier
@@ -195,6 +209,35 @@ fun JsonPlaylistSheet(
                         .testTag("json_search_input"),
                     shape = RoundedCornerShape(12.dp)
                 )
+            }
+
+            if (hasMixedTypes) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val movieCount = remember(items) { items.count { !it.isSeries } }
+                    val seriesCount = remember(items) { items.count { it.isSeries } }
+                    val tabs = listOf(
+                        "ALL" to "All (${items.size})",
+                        "MOVIES" to "Movies ($movieCount)",
+                        "SERIES" to "Series ($seriesCount)"
+                    )
+                    tabs.forEach { (key, label) ->
+                        FilterChip(
+                            selected = selectedTypeFilter == key,
+                            onClick = { selectedTypeFilter = key },
+                            label = { Text(label) },
+                            modifier = Modifier
+                                .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
+                                .testTag("json_type_filter_${key.lowercase()}"),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = CinemaAmber.copy(alpha = 0.24f),
+                                selectedLabelColor = CinemaAmber
+                            )
+                        )
+                    }
+                }
             }
 
             if (categories.isNotEmpty()) {
@@ -290,7 +333,20 @@ fun JsonPlaylistSheet(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                    FormatBadge(format = item.format)
+                                    if (item.isSeries) {
+                                        SubtitlePillBadge(
+                                            text = "SERIES · ${item.seasons.size}S · ${item.totalEpisodes} EP",
+                                            accent = CinemaAmber
+                                        )
+                                    } else {
+                                        FormatBadge(format = item.format)
+                                        if (item.mirrors.isNotEmpty()) {
+                                            SubtitlePillBadge(
+                                                text = "${item.mirrors.size + 1} CDN",
+                                                accent = SubtitleEmerald
+                                            )
+                                        }
+                                    }
                                     if (!item.subtitleUrl.isNullOrBlank()) {
                                         SubtitlePillBadge(text = "CC")
                                     }

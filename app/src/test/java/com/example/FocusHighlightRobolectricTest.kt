@@ -15,13 +15,11 @@ import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.requestFocus
-import com.example.ai.RateLimitSnapshot
 import com.example.model.SubtitleAppearance
 import com.example.model.TrackOption
 import com.example.ui.components.tvFocusHighlight
 import com.example.ui.player.SubtitleSheet
 import com.example.ui.theme.CineStreamTheme
-import com.example.viewmodel.AiSubtitleUiState
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -100,8 +98,6 @@ class FocusHighlightRobolectricTest {
                     hasExternalSubtitles = true,
                     subtitleOffsetMs = 0L,
                     appearance = SubtitleAppearance(),
-                    aiSubtitleState = AiSubtitleUiState(),
-                    rateLimitSnapshot = RateLimitSnapshot(),
                     onDismiss = {},
                     onPickSubtitleFile = {},
                     onLoadSubtitleUrl = {},
@@ -111,12 +107,7 @@ class FocusHighlightRobolectricTest {
                     onResetOffset = {},
                     onUpdateTextSize = {},
                     onUpdateColor = {},
-                    onUpdateBg = {},
-                    onSelectAiTier = {},
-                    onGenerateAiClipNow = {},
-                    onToggleAutoAi = {},
-                    onApplyAiAsSrt = {},
-                    onClearAiSubtitles = {}
+                    onUpdateBg = {}
                 )
             }
         }

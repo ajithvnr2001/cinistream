@@ -20,28 +20,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ClosedCaptionDisabled
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FolderOpen
-import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Remove
-import androidx.compose.material.icons.rounded.SaveAlt
-import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -69,9 +62,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import com.example.R
-import com.example.ai.AiModelTier
-import com.example.ai.RateLimitSnapshot
-import com.example.ai.TierQuotaStatus
 import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
 import com.example.model.SubtitleColorPreset
@@ -85,9 +75,6 @@ import com.example.ui.theme.ObsidianCanvas
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
-import com.example.ui.theme.SignalRose
-import com.example.ui.theme.SubtitleEmerald
-import com.example.viewmodel.AiSubtitleUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,8 +84,6 @@ fun SubtitleSheet(
     hasExternalSubtitles: Boolean,
     subtitleOffsetMs: Long,
     appearance: SubtitleAppearance,
-    aiSubtitleState: AiSubtitleUiState,
-    rateLimitSnapshot: RateLimitSnapshot,
     onDismiss: () -> Unit,
     onPickSubtitleFile: () -> Unit,
     onLoadSubtitleUrl: (String) -> Unit,
@@ -108,26 +93,16 @@ fun SubtitleSheet(
     onResetOffset: () -> Unit,
     onUpdateTextSize: (SubtitleTextSize) -> Unit,
     onUpdateColor: (SubtitleColorPreset) -> Unit,
-    onUpdateBg: (SubtitleBgPreset) -> Unit,
-    onSelectAiTier: (AiModelTier) -> Unit,
-    onGenerateAiClipNow: () -> Unit,
-    onToggleAutoAi: () -> Unit,
-    onApplyAiAsSrt: () -> Unit,
-    onClearAiSubtitles: () -> Unit
+    onUpdateBg: (SubtitleBgPreset) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val initialFocusRequester = remember { FocusRequester() }
     val loadFileFocusRequester = remember { FocusRequester() }
     var showUrlField by rememberSaveable { mutableStateOf(false) }
     var subtitleUrl by rememberSaveable { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         delay(120L)
-        if (!aiSubtitleState.isGenerating && rateLimitSnapshot.totalDailyRemaining > 0) {
-            runCatching { initialFocusRequester.requestFocus() }
-        } else {
-            runCatching { loadFileFocusRequester.requestFocus() }
-        }
+        runCatching { loadFileFocusRequester.requestFocus() }
     }
 
     ModalBottomSheet(
@@ -151,26 +126,11 @@ fun SubtitleSheet(
                     style = MaterialTheme.typography.headlineSmall
                 )
                 Text(
-                    text = "Load .srt, .vtt, .ass, .ssa, .ttml or generate AI English captions from audio",
+                    text = "Load .srt, .vtt, .ass, .ssa, or .ttml captions from device or URL",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-
-            // AI Audio-to-English Subtitle Generator Card (Rate-Limit Protected)
-            AiEnglishSubtitleSection(
-                aiState = aiSubtitleState,
-                rateLimitSnapshot = rateLimitSnapshot,
-                generateButtonFocusRequester = initialFocusRequester,
-                onSelectTier = onSelectAiTier,
-                onGenerateClipNow = onGenerateAiClipNow,
-                onToggleAutoAi = onToggleAutoAi,
-                onApplyAsSrt = {
-                    onApplyAiAsSrt()
-                    onDismiss()
-                },
-                onClearAi = onClearAiSubtitles
-            )
 
             // Load External Subtitle Buttons
             Row(
@@ -551,324 +511,6 @@ private fun SubtitleTrackRow(
                     accent = if (badge == "EXT") MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.secondary
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun AiEnglishSubtitleSection(
-    aiState: AiSubtitleUiState,
-    rateLimitSnapshot: RateLimitSnapshot,
-    generateButtonFocusRequester: FocusRequester,
-    onSelectTier: (AiModelTier) -> Unit,
-    onGenerateClipNow: () -> Unit,
-    onToggleAutoAi: () -> Unit,
-    onApplyAsSrt: () -> Unit,
-    onClearAi: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("ai_subtitle_card"),
-        shape = RoundedCornerShape(16.dp),
-        color = ObsidianSurfaceHigh,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (aiState.isAutoMode || aiState.isEnabled) {
-                CinemaAmber.copy(alpha = 0.7f)
-            } else {
-                ObsidianOutline
-            }
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Title Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.AutoAwesome,
-                        contentDescription = null,
-                        tint = CinemaAmber,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Column {
-                        Text(
-                            text = "AI English Subtitles",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Audio → EN · Auto-failover (3 RPM · 10K TPM · 10 RPD)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                if (!aiState.detectedLanguage.isNullOrBlank()) {
-                    SubtitlePillBadge(
-                        text = "${aiState.detectedLanguage}→EN",
-                        accent = SubtitleEmerald
-                    )
-                }
-            }
-
-            // Model Preference Chips
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AiModelTier.entries.forEach { tier ->
-                    val selected = aiState.preferredTier == tier
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectTier(tier) },
-                        label = { Text(tier.displayName) },
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = RoundedCornerShape(8.dp), focusedScale = 1.05f)
-                            .testTag("ai_tier_chip_${tier.name.lowercase()}"),
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = CinemaAmber.copy(alpha = 0.22f),
-                            selectedLabelColor = CinemaAmber
-                        )
-                    )
-                }
-            }
-
-            // Live Rate-Limit Meters (Both Tiers)
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                QuotaTierRow(
-                    status = rateLimitSnapshot.flashStatus,
-                    isActiveModel = aiState.lastModelUsed == AiModelTier.FLASH_3_8
-                )
-                QuotaTierRow(
-                    status = rateLimitSnapshot.liteStatus,
-                    isActiveModel = aiState.lastModelUsed == AiModelTier.FLASH_3_5_LITE
-                )
-            }
-
-            // Action Buttons: Generate Clip & Auto Live
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = onGenerateClipNow,
-                    enabled = !aiState.isGenerating && rateLimitSnapshot.totalDailyRemaining > 0,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .focusRequester(generateButtonFocusRequester)
-                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                        .testTag("ai_generate_clip_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = CinemaAmber,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    if (aiState.isGenerating && !aiState.isAutoMode) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Listening…", maxLines = 1)
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.GraphicEq,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Generate (18s)", maxLines = 1)
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = onToggleAutoAi,
-                    enabled = aiState.isAutoMode || rateLimitSnapshot.totalDailyRemaining > 0,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                        .testTag("ai_auto_toggle_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (aiState.isAutoMode) SignalRose else SubtitleEmerald
-                    )
-                ) {
-                    Icon(
-                        imageVector = if (aiState.isAutoMode) Icons.Rounded.StopCircle else Icons.Rounded.AutoAwesome,
-                        contentDescription = null,
-                        tint = if (aiState.isAutoMode) SignalRose else SubtitleEmerald,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (aiState.isAutoMode) "Stop Auto" else "Auto Live",
-                        color = if (aiState.isAutoMode) SignalRose else SubtitleEmerald,
-                        maxLines = 1
-                    )
-                }
-            }
-
-            // Status / Loading Bar
-            if (aiState.isGenerating) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = CinemaAmber,
-                    trackColor = ObsidianCanvas
-                )
-            }
-
-            if (!aiState.statusMessage.isNullOrBlank()) {
-                Text(
-                    text = aiState.statusMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = SubtitleEmerald,
-                    modifier = Modifier.testTag("ai_status_message")
-                )
-            }
-
-            if (!aiState.errorMessage.isNullOrBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = SignalRose.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, SignalRose.copy(alpha = 0.45f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = aiState.errorMessage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = SignalRose,
-                        modifier = Modifier
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                            .testTag("ai_error_message")
-                    )
-                }
-            }
-
-            // Export as Native SRT Track / Clear Cues + Latest Translated Preview
-            if (aiState.cues.isNotEmpty()) {
-                val recentPreview = aiState.cues.takeLast(2).joinToString("\n") { it.englishText }
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = ObsidianCanvas,
-                    border = BorderStroke(1.dp, SubtitleEmerald.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = recentPreview,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White,
-                        modifier = Modifier
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                            .testTag("ai_translated_preview")
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedButton(
-                        onClick = onApplyAsSrt,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp)
-                            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                            .testTag("ai_apply_srt_button"),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.6f))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.SaveAlt,
-                            contentDescription = null,
-                            tint = CinemaAmber,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "Apply as SRT (${aiState.cues.size})",
-                            color = CinemaAmber,
-                            maxLines = 1
-                        )
-                    }
-
-                    IconButton(
-                        onClick = onClearAi,
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                            .testTag("ai_clear_cues_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.DeleteOutline,
-                            contentDescription = "Clear AI subtitles",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun QuotaTierRow(
-    status: TierQuotaStatus,
-    isActiveModel: Boolean
-) {
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = ObsidianCanvas,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (isActiveModel) CinemaAmber.copy(alpha = 0.45f) else ObsidianOutline.copy(alpha = 0.5f)
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = status.tier.displayName,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (status.isDailyExhausted) SignalRose else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            val tpmFormatted = if (status.tpmUsed >= 1000) {
-                String.format("%.1fK", status.tpmUsed / 1000f)
-            } else {
-                status.tpmUsed.toString()
-            }
-            Text(
-                text = "RPM ${status.rpmUsed}/${status.rpmLimit} · TPM $tpmFormatted/10K · RPD ${status.rpdUsed}/${status.rpdLimit}",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (status.isDailyExhausted) SignalRose else MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

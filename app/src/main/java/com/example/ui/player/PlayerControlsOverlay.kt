@@ -32,15 +32,19 @@ import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -76,6 +80,7 @@ import com.example.model.AspectRatioMode
 import com.example.model.StreamFormat
 import com.example.player.AudioBoostMath
 import com.example.player.PlaybackProgressState
+import com.example.player.VideoDecoderMode
 import com.example.ui.components.FormatBadge
 import com.example.ui.components.formatDuration
 import com.example.ui.components.tvFocusHighlight
@@ -139,19 +144,24 @@ internal fun PlayerTopBar(
     format: StreamFormat,
     videoHeight: Int,
     hasActiveSubtitles: Boolean,
-    aiSubActive: Boolean,
-    aiSubGenerating: Boolean,
+    statsForNerdsEnabled: Boolean,
+    hasSeriesEpisodes: Boolean,
+    episodeCodeBadge: String?,
     hasJsonPlaylist: Boolean,
     hasM3uPlaylist: Boolean,
     isTv: Boolean,
     tvOverscanHorizontal: Dp,
     tvOverscanVertical: Dp,
     subButtonFocusRequester: FocusRequester,
+    statsButtonFocusRequester: FocusRequester,
+    episodesButtonFocusRequester: FocusRequester,
     jsonButtonFocusRequester: FocusRequester,
     m3uButtonFocusRequester: FocusRequester,
     tracksButtonFocusRequester: FocusRequester,
     onBack: () -> Unit,
     onOpenSubtitles: () -> Unit,
+    onToggleStatsForNerds: () -> Unit,
+    onOpenSeriesEpisodes: () -> Unit,
     onOpenJsonCatalog: () -> Unit,
     onOpenM3uQueue: () -> Unit,
     onOpenTracks: () -> Unit,
@@ -203,6 +213,13 @@ internal fun PlayerTopBar(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     FormatBadge(format = format)
+                    if (!episodeCodeBadge.isNullOrBlank()) {
+                        Text(
+                            text = "· $episodeCodeBadge",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CinemaAmber
+                        )
+                    }
                     if (videoHeight > 0) {
                         Text(
                             text = "${videoHeight}p",
@@ -217,9 +234,9 @@ internal fun PlayerTopBar(
                             color = SubtitleEmerald
                         )
                     }
-                    if (aiSubActive) {
+                    if (statsForNerdsEnabled) {
                         Text(
-                            text = if (aiSubGenerating) "· AI EN…" else "· AI EN",
+                            text = "· NET HUD",
                             style = MaterialTheme.typography.labelSmall,
                             color = CinemaAmber
                         )
@@ -227,26 +244,14 @@ internal fun PlayerTopBar(
                 }
             }
 
-            val subTint = when {
-                aiSubActive -> CinemaAmber
-                hasActiveSubtitles -> SubtitleEmerald
-                else -> Color.White
-            }
+            val subTint = if (hasActiveSubtitles) SubtitleEmerald else Color.White
             Surface(
                 onClick = onOpenSubtitles,
                 shape = RoundedCornerShape(12.dp),
-                color = when {
-                    aiSubActive -> CinemaAmber.copy(alpha = 0.24f)
-                    hasActiveSubtitles -> SubtitleEmerald.copy(alpha = 0.24f)
-                    else -> Color.White.copy(alpha = 0.14f)
-                },
+                color = if (hasActiveSubtitles) SubtitleEmerald.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
                 border = BorderStroke(
                     1.dp,
-                    when {
-                        aiSubActive -> CinemaAmber
-                        hasActiveSubtitles -> SubtitleEmerald
-                        else -> Color.White.copy(alpha = 0.22f)
-                    }
+                    if (hasActiveSubtitles) SubtitleEmerald else Color.White.copy(alpha = 0.22f)
                 ),
                 modifier = Modifier
                     .minimumInteractiveComponentSize()
@@ -266,10 +271,76 @@ internal fun PlayerTopBar(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = if (aiSubActive) "AI Sub" else "Sub",
+                        text = "Sub",
                         style = MaterialTheme.typography.labelMedium,
                         color = subTint
                     )
+                }
+            }
+
+            val statsTint = if (statsForNerdsEnabled) CinemaAmber else Color.White
+            Surface(
+                onClick = onToggleStatsForNerds,
+                shape = RoundedCornerShape(12.dp),
+                color = if (statsForNerdsEnabled) CinemaAmber.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+                border = BorderStroke(
+                    1.dp,
+                    if (statsForNerdsEnabled) CinemaAmber else Color.White.copy(alpha = 0.22f)
+                ),
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .focusRequester(statsButtonFocusRequester)
+                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                    .testTag("player_stats_button")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.NetworkCheck,
+                        contentDescription = stringResource(R.string.cd_stats_for_nerds),
+                        tint = statsTint,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Stats",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statsTint
+                    )
+                }
+            }
+
+            if (hasSeriesEpisodes) {
+                Surface(
+                    onClick = onOpenSeriesEpisodes,
+                    shape = RoundedCornerShape(12.dp),
+                    color = CinemaAmber.copy(alpha = 0.22f),
+                    border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .focusRequester(episodesButtonFocusRequester)
+                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                        .testTag("player_episodes_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Tv,
+                            contentDescription = stringResource(R.string.cd_episodes),
+                            tint = CinemaAmber,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Episodes",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CinemaAmber
+                        )
+                    }
                 }
             }
 
@@ -426,11 +497,13 @@ internal fun PlayerBottomBar(
     volumePercent: Int,
     playbackSpeed: Float,
     aspectRatioMode: AspectRatioMode,
+    hasNextEpisode: Boolean,
     isTv: Boolean,
     showSpeedMenu: Boolean,
     volumeButtonFocusRequester: FocusRequester,
     speedButtonFocusRequester: FocusRequester,
     seekBarFocusRequester: FocusRequester,
+    onPlayNextEpisode: () -> Unit,
     onOpenVolumeBoost: () -> Unit,
     onOpenSpeedMenu: () -> Unit,
     onDismissSpeedMenu: () -> Unit,
@@ -462,11 +535,42 @@ internal fun PlayerBottomBar(
                 // Isolated timestamp text subscriber
                 PlayerTimestampBadge(progressStateFlow = progressStateFlow)
 
-                // Quick Bottom Controls: Sound Boost (200%), Speed, Aspect Ratio, (Rotate on Mobile)
+                // Quick Bottom Controls: Next Ep (Series), Sound Boost (200%), Speed, Aspect Ratio, (Rotate on Mobile)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (hasNextEpisode) {
+                        Surface(
+                            onClick = onPlayNextEpisode,
+                            shape = RoundedCornerShape(10.dp),
+                            color = CinemaAmber.copy(alpha = 0.24f),
+                            border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                .testTag("player_next_episode_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.SkipNext,
+                                    contentDescription = stringResource(R.string.cd_next_episode),
+                                    tint = CinemaAmber,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Next Ep",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = CinemaAmber
+                                )
+                            }
+                        }
+                    }
+
                     val isBoosted = volumePercent > AudioBoostMath.NORMAL_MAX_PERCENT
                     val volAccent = when {
                         volumePercent >= 160 -> SignalRose
@@ -738,13 +842,17 @@ private fun PlayerSpeedMenuControl(
 internal fun PlayerErrorCard(
     message: String,
     currentFormat: StreamFormat,
+    isDecoderError: Boolean = false,
+    effectiveDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
     onRetry: () -> Unit,
+    onSwitchDecoderMode: (VideoDecoderMode) -> Unit = {},
+    onSkipBadSegment: () -> Unit = {},
     onForceHls: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.widthIn(max = 420.dp),
+        modifier = modifier.widthIn(max = 440.dp),
         shape = RoundedCornerShape(20.dp),
         color = ObsidianSurface,
         border = BorderStroke(1.dp, SignalRose.copy(alpha = 0.5f))
@@ -761,7 +869,7 @@ internal fun PlayerErrorCard(
                 modifier = Modifier.size(36.dp)
             )
             Text(
-                text = "Playback Interrupted",
+                text = if (isDecoderError) "Video Decoder Error" else "Playback Interrupted",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -770,6 +878,50 @@ internal fun PlayerErrorCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (isDecoderError) {
+                val targetMode = if (effectiveDecoderMode == VideoDecoderMode.SOFTWARE) {
+                    VideoDecoderMode.HARDWARE
+                } else {
+                    VideoDecoderMode.SOFTWARE
+                }
+                val buttonLabel = if (targetMode == VideoDecoderMode.SOFTWARE) {
+                    stringResource(R.string.try_software_decoder)
+                } else {
+                    stringResource(R.string.try_hardware_decoder)
+                }
+                Button(
+                    onClick = { onSwitchDecoderMode(targetMode) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp), borderColor = Color.White)
+                        .testTag("player_error_switch_decoder_button"),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SubtitleEmerald,
+                        contentColor = Color(0xFF061611)
+                    )
+                ) {
+                    Icon(Icons.Rounded.Memory, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(buttonLabel)
+                }
+                OutlinedButton(
+                    onClick = onSkipBadSegment,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                        .testTag("player_error_skip_segment_button"),
+                    border = BorderStroke(1.dp, SubtitleEmerald.copy(alpha = 0.55f))
+                ) {
+                    Icon(
+                        Icons.Rounded.SkipNext,
+                        contentDescription = null,
+                        tint = SubtitleEmerald,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.skip_bad_segment), color = SubtitleEmerald)
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)

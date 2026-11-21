@@ -31,6 +31,8 @@ object MediaEdgeCache {
 
     private const val CACHE_DIR_NAME = "media_edge_cache"
     private const val MAX_CACHE_FILE_SIZE_BYTES = 4L * 1024L * 1024L
+    const val WRITE_BUFFER_SIZE_BYTES = 128 * 1024
+    const val CONSTRAINED_HEAP_THRESHOLD_BYTES = 400L * 1024L * 1024L
 
     @Volatile
     private var simpleCache: SimpleCache? = null
@@ -40,6 +42,32 @@ object MediaEdgeCache {
 
     private val lock = Any()
 
+    /**
+     * Low-RAM Android TVs share slow internal eMMC flash with OS RAM swap. Writing every 2-6 MB
+     * HLS `.m4s` chunk synchronously on ExoPlayer's loader thread + SQLite index updates can stall
+     * download throughput. Because ExoPlayer already holds a 20-45s RAM buffer + 5s back-buffer,
+     * constrained TVs stream significantly faster directly from RAM with zero eMMC write stalls.
+     */
+    fun shouldBypassDiskCacheForDevice(
+        isTv: Boolean,
+        isLowRam: Boolean,
+        maxHeapBytes: Long = Runtime.getRuntime().maxMemory()
+    ): Boolean {
+        return isTv || isLowRam || maxHeapBytes <= CONSTRAINED_HEAP_THRESHOLD_BYTES
+    }
+
+    fun isRamDirectMode(context: Context): Boolean {
+        val appCtx = context.applicationContext
+        val isTv = appCtx.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+        val activityManager = appCtx.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val isLowRam = activityManager?.isLowRamDevice == true
+        return shouldBypassDiskCacheForDevice(
+            isTv = isTv,
+            isLowRam = isLowRam,
+            maxHeapBytes = Runtime.getRuntime().maxMemory()
+        )
+    }
+
     fun getOrCreate(context: Context): SimpleCache? {
         simpleCache?.let { return it }
         return synchronized(lock) {
@@ -48,7 +76,7 @@ object MediaEdgeCache {
             val isTv = appCtx.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
             val activityManager = appCtx.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             val isLowRam = activityManager?.isLowRamDevice == true ||
-                Runtime.getRuntime().maxMemory() <= 400L * 1024L * 1024L
+                Runtime.getRuntime().maxMemory() <= CONSTRAINED_HEAP_THRESHOLD_BYTES
             val capBytes = CdnMirrorResolver.computeSafeDiskCacheBytes(isTv || isLowRam)
             maxBytes = capBytes
 
@@ -79,19 +107,24 @@ object MediaEdgeCache {
     }
 
     /**
-     * Wraps [directDataSourceFactory] so cache-eligible HTTP(S) media segments pass through
-     * Media3 [CacheDataSource], while manifests (`.m3u8`/`.mpd`), subtitles, and local files
-     * go straight to [directDataSourceFactory].
+     * Wraps [directDataSourceFactory] with fast 128 KB-buffered disk caching on modern phones and
+     * tablets, while routing constrained Android TVs directly through RAM-only streaming so slow
+     * TV eMMC flash writes never throttle HLS/DASH/MKV loader threads.
      */
     fun createSmartDataSourceFactory(
         context: Context,
         directDataSourceFactory: DataSource.Factory,
         bypassCacheProvider: () -> Boolean = { false }
     ): DataSource.Factory {
+        if (isRamDirectMode(context)) {
+            maxBytes = 0L
+            return directDataSourceFactory
+        }
         val cache = getOrCreate(context) ?: return directDataSourceFactory
         val cacheSinkFactory = CacheDataSink.Factory()
             .setCache(cache)
             .setFragmentSize(MAX_CACHE_FILE_SIZE_BYTES)
+            .setBufferSize(WRITE_BUFFER_SIZE_BYTES)
 
         val cacheDataSourceFactory = CacheDataSource.Factory()
             .setCache(cache)

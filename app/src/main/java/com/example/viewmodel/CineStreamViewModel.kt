@@ -32,6 +32,7 @@ import com.example.player.MediaFormatDetector
 import com.example.player.PlaybackProgressState
 import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerPlaybackState
+import com.example.player.StreamingNetworkEngine
 import com.example.player.SubtitleHelper
 import com.example.player.VideoDecoderMode
 import kotlinx.coroutines.Dispatchers
@@ -464,6 +465,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                     if (openSheetOnSuccess) {
                         _navEvents.tryEmit(CineNavigationEvent.OpenJsonSheet)
                     }
+                    prewarmFirstItemOrigin(result.items)
                     startJsonImdbEnrichment(result.items)
                 }
                 is JsonPlaylistLoadResult.Error -> {
@@ -499,6 +501,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                         it.copy(toastMessage = "Loaded ${result.items.size} items from $label")
                     }
                     _navEvents.tryEmit(CineNavigationEvent.OpenJsonSheet)
+                    prewarmFirstItemOrigin(result.items)
                     startJsonImdbEnrichment(result.items)
                 }
                 is JsonPlaylistLoadResult.Error -> {
@@ -527,6 +530,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     fun playJsonPlaylistItem(item: JsonPlaylistItem) {
         if (item.isSeries) {
             _jsonPlaylistState.update { it.copy(selectedSeriesForSheet = item) }
+            val firstEpUrl = item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url
+            StreamingNetworkEngine.prewarmOrigin(firstEpUrl, playerManager.okHttpClient)
             return
         }
         viewModelScope.launch {
@@ -609,7 +614,22 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 episodeId = episode.id,
                 episodeCodeLabel = episode.codeLabel
             )
+            val nextEp = series.findNextEpisode(episode.id)
+            if (nextEp != null) {
+                StreamingNetworkEngine.prewarmOrigin(nextEp.url, playerManager.okHttpClient)
+            }
         }
+    }
+
+    private fun prewarmFirstItemOrigin(items: List<JsonPlaylistItem>) {
+        val firstUrl = items.firstNotNullOfOrNull { item ->
+            if (item.isSeries) {
+                item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url
+            } else {
+                item.url.takeIf { it.isNotBlank() }
+            }
+        }
+        StreamingNetworkEngine.prewarmOrigin(firstUrl, playerManager.okHttpClient)
     }
 
     fun playNextEpisode() {

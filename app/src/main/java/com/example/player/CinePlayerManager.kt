@@ -2,6 +2,7 @@ package com.example.player
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.SystemClock
 import androidx.annotation.OptIn
@@ -16,7 +17,6 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -30,6 +30,7 @@ import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.SingleSampleMediaSource
+import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
@@ -47,6 +48,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.TimeUnit
@@ -100,19 +102,25 @@ class CinePlayerManager(context: Context) {
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) CineStream/1.0 ExoPlayer"
 
         const val MIN_TARGET_BUFFER_BYTES = 12 * 1024 * 1024
-        const val MAX_TARGET_BUFFER_BYTES = 32 * 1024 * 1024
-        const val MIN_BUFFER_MS = 10_000
-        const val MAX_BUFFER_MS = 20_000
-        const val BUFFER_FOR_PLAYBACK_MS = 1_500
-        const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 3_000
+        const val MAX_TARGET_BUFFER_BYTES = 40 * 1024 * 1024
+        const val MIN_BUFFER_MS = 20_000
+        const val MAX_BUFFER_MS = 45_000
+        const val BUFFER_FOR_PLAYBACK_MS = 2_500
+        const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 6_000
+        const val SAFE_LARGE_HEAP_BACK_BUFFER_MS = 5_000
         const val TV_SAFE_MAX_VIDEO_WIDTH = 1920
         const val TV_SAFE_MAX_VIDEO_HEIGHT = 1080
-        const val TV_SAFE_MAX_VIDEO_BITRATE = 12_000_000
+        const val TV_SAFE_MAX_VIDEO_BITRATE = 9_500_000
+        const val TV_INITIAL_WIFI_BITRATE_BPS = 6_000_000L
+        const val MOBILE_INITIAL_WIFI_BITRATE_BPS = 10_000_000L
+        const val ETHERNET_INITIAL_BITRATE_BPS = 12_000_000L
         private const val SPARKLINE_HISTORY_SIZE = 24
 
         /**
-         * Caps ExoPlayer's Java-heap media buffer to 20% of JVM maxMemory, clamped to 12–32 MB.
-         * Prevents OOM crashes on 32-bit Android TVs (80 MB default heap -> 16 MB; 384 MB largeHeap -> 32 MB).
+         * Caps ExoPlayer's Java-heap media buffer to 20% of JVM maxMemory, clamped to 12–40 MB.
+         * - 80 MB constrained heap -> 16 MB cap
+         * - 384 MB largeHeap Android 9 TV -> 40 MB cap (~37s of 8.6 Mbps 1080p, ~8.5s of 38 Mbps 4K)
+         * Always enforced over time thresholds so neither 1080p nor 4K streams can ever OOM a 1 GB TV.
          */
         fun computeSafeTargetBufferBytes(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): Int {
             return (maxHeapBytes * 0.20)
@@ -120,46 +128,95 @@ class CinePlayerManager(context: Context) {
                 .coerceIn(MIN_TARGET_BUFFER_BYTES.toLong(), MAX_TARGET_BUFFER_BYTES.toLong())
                 .toInt()
         }
+
+        /**
+         * Retains a modest 5s back-buffer on >=256 MB heaps for instant micro-rewinds, and 0 ms on
+         * tighter heaps so played frames are immediately freed for GC.
+         */
+        fun computeSafeBackBufferMs(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): Int {
+            return if (maxHeapBytes >= 256L * 1024L * 1024L) SAFE_LARGE_HEAP_BACK_BUFFER_MS else 0
+        }
+
+        /**
+         * Returns a sensible Wi-Fi cold-start bitrate estimate so HLS/DASH streams start sharp in
+         * HD on frame 1 instead of ExoPlayer's conservative ~1 Mbps 480p default.
+         */
+        fun computeInitialWifiBitrateEstimate(isConstrainedOrTv: Boolean): Long {
+            return if (isConstrainedOrTv) TV_INITIAL_WIFI_BITRATE_BPS else MOBILE_INITIAL_WIFI_BITRATE_BPS
+        }
     }
+
+    private val isTelevisionDevice: Boolean =
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+
+    private val isConstrainedDevice: Boolean = run {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        (activityManager?.isLowRamDevice == true) ||
+            Runtime.getRuntime().maxMemory() <= MediaEdgeCache.CONSTRAINED_HEAP_THRESHOLD_BYTES
+    }
+
+    private val isRamDirectCacheMode: Boolean = MediaEdgeCache.isRamDirectMode(context)
 
     val okHttpClient: OkHttpClient = (context.applicationContext as? CineStreamApplication)?.sharedOkHttpClient
         ?: OkHttpClient.Builder()
-            .connectionPool(ConnectionPool(5, 3, TimeUnit.MINUTES))
+            .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
+            .connectionPool(ConnectionPool(6, 5, TimeUnit.MINUTES))
             .retryOnConnectionFailure(true)
             .followRedirects(true)
             .followSslRedirects(true)
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
             .build()
 
-    // Explicit BandwidthMeter shared between HTTP DataSource and ExoPlayer for live connection speed telemetry
+    // Explicit BandwidthMeter shared between HTTP/3 Cronet / HTTP/2 OkHttp and ExoPlayer.
+    // Tuned initial Wi-Fi/Ethernet estimates start frame 1 cleanly in HD instead of 480p.
     private val bandwidthMeter = DefaultBandwidthMeter.Builder(context)
+        .setInitialBitrateEstimate(
+            C.NETWORK_TYPE_WIFI,
+            computeInitialWifiBitrateEstimate(isTelevisionDevice || isConstrainedDevice)
+        )
+        .setInitialBitrateEstimate(C.NETWORK_TYPE_ETHERNET, ETHERNET_INITIAL_BITRATE_BPS)
+        .setInitialBitrateEstimate(C.NETWORK_TYPE_4G, 5_000_000L)
+        .setInitialBitrateEstimate(C.NETWORK_TYPE_5G_SA, 12_000_000L)
+        .setInitialBitrateEstimate(C.NETWORK_TYPE_5G_NSA, 12_000_000L)
         .setResetOnNetworkTypeChange(true)
         .build()
 
-    // Use DefaultHttpDataSource for video streaming to avoid OkHttp HTTP/2 okio.Buffer segment churn on low-RAM TVs
-    private val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-        .setUserAgent(DEFAULT_USER_AGENT)
-        .setTransferListener(bandwidthMeter)
-        .setAllowCrossProtocolRedirects(true)
-        .setConnectTimeoutMs(20_000)
-        .setReadTimeoutMs(30_000)
+    // Reuse the shared ConnectionPool, FastDnsResolver & Dispatcher for HTTP/2 fallback
+    private val streamingOkHttpClient: OkHttpClient = okHttpClient.newBuilder()
+        .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
+        .build()
 
-    // DefaultDataSource wraps DefaultHttpDataSource so remote http/https streams AND local content://
-    // videos/subtitles seamlessly combine inside MergingMediaSource across all formats.
+    // Dynamically uses Play Services Cronet (HTTP/3 QUIC + TLS 1.3 + BBR) when available,
+    // with automatic zero-crash fallback to HTTP/2 OkHttp on non-GMS devices.
+    private val httpDataSourceFactory: AdaptiveHttpDataSourceFactory =
+        StreamingNetworkEngine.createAdaptiveHttpDataSourceFactory(
+            okHttpClient = streamingOkHttpClient,
+            userAgent = DEFAULT_USER_AGENT,
+            transferListener = bandwidthMeter
+        )
+
+    // DefaultDataSource wraps AdaptiveHttpDataSourceFactory so remote HTTP/3 / HTTP/2 streams
+    // AND local content:// videos/subtitles seamlessly combine inside MergingMediaSource.
     private val directDataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
 
     // Automatically bypasses on-device disk edge cache after any decode error so neither HW nor SW
     // decoders can ever be re-fed a truncated or corrupted cached segment.
     @Volatile private var bypassEdgeCacheForSession: Boolean = false
 
-    // TV-safe local disk edge cache (64 MB TV / 128 MB Mobile) caching VOD media segments while
-    // bypassing .m3u8/.mpd manifests, subtitles, and local files.
+    // RAM-Direct (zero eMMC flash stall) on constrained Android TVs; 128 KB buffered 128 MB edge
+    // disk cache on modern phones/tablets (always bypassing manifests, subtitles, and local files).
     private val smartEdgeDataSourceFactory = MediaEdgeCache.createSmartDataSourceFactory(
         context = context,
         directDataSourceFactory = directDataSourceFactory,
         bypassCacheProvider = { bypassEdgeCacheForSession }
     )
+
+    private val loadErrorHandlingPolicy = FastStreamingLoadErrorHandlingPolicy()
 
     // Tolerant TS flags fix FFmpeg-muxed HEVC/H.264 HLS streams with CRA/BLA non-IDR keyframes
     private val tolerantTsFlags: Int =
@@ -172,11 +229,14 @@ class CinePlayerManager(context: Context) {
 
     private val hlsMediaSourceFactory = HlsMediaSource.Factory(smartEdgeDataSourceFactory)
         .setExtractorFactory(DefaultHlsExtractorFactory(tolerantTsFlags, true))
+        .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
         .setAllowChunklessPreparation(true)
 
     private val mediaSourceFactory = DefaultMediaSourceFactory(smartEdgeDataSourceFactory, extractorsFactory)
+        .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
 
     val targetBufferBytes: Int = computeSafeTargetBufferBytes()
+    val backBufferDurationMs: Int = computeSafeBackBufferMs()
 
     // trimOnReset = true immediately returns 64 KB buffer segments to GC when stopping or switching media
     private val allocator = DefaultAllocator(
@@ -184,7 +244,8 @@ class CinePlayerManager(context: Context) {
         /* individualAllocationSize = */ C.DEFAULT_BUFFER_SEGMENT_SIZE
     )
 
-    // Strict heap-capped LoadControl: respects targetBufferBytes over time thresholds and frees played frames immediately
+    // Strict heap-capped LoadControl: provides a generous 20–45s jitter cushion and 6s post-rebuffer
+    // recovery while ALWAYS enforcing targetBufferBytes over time thresholds to prevent OOMs on 1 GB TVs.
     private val loadControl = DefaultLoadControl.Builder()
         .setAllocator(allocator)
         .setBufferDurationsMs(
@@ -196,22 +257,40 @@ class CinePlayerManager(context: Context) {
         .setTargetBufferBytes(targetBufferBytes)
         .setPrioritizeTimeOverSizeThresholds(false)
         .setBackBuffer(
-            /* backBufferDurationMs = */ 0,
+            /* backBufferDurationMs = */ backBufferDurationMs,
             /* retainBackBufferFromKeyframe = */ false
         )
         .build()
 
-    // Cap adaptive HLS/DASH auto-selection on constrained devices so 4K renditions don't saturate RAM,
-    // while enabling mixed-MIME (H.264 + HEVC) & non-seamless adaptiveness across all devices.
-    private val trackSelector = DefaultTrackSelector(context).apply {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        val isConstrainedDevice = (activityManager?.isLowRamDevice == true) ||
-            Runtime.getRuntime().maxMemory() <= 400L * 1024L * 1024L
+    // TV-aware ABR & Stereo audio track selector:
+    // - On Android TV / constrained RAM devices: prefers 2ch Stereo (hardware DSP, eliminating 7.1 SW AAC
+    //   underruns on 32-bit Cortex-A53 CPUs), caps auto-selected video to 1080p / 9.5 Mbps (preventing
+    //   18 Mbps orig streams from starving), and uses faster ABR downshifts (maxDecrease = 10s, 0.70 fraction).
+    // - Always sets exceed constraints = true so 5.1/7.1-only or single-track streams still play seamlessly.
+
+    private val adaptiveTrackSelectionFactory = if (isTelevisionDevice || isConstrainedDevice) {
+        AdaptiveTrackSelection.Factory(
+            /* minDurationForQualityIncreaseMs = */ 10_000,
+            /* maxDurationForQualityDecreaseMs = */ 10_000,
+            /* minDurationToRetainAfterDiscardMs = */ 25_000,
+            /* bandwidthFraction = */ 0.70f
+        )
+    } else {
+        AdaptiveTrackSelection.Factory()
+    }
+
+    private val trackSelector = DefaultTrackSelector(context, adaptiveTrackSelectionFactory).apply {
+        val preferredLang = Locale.getDefault().language.takeIf { it.isNotBlank() } ?: "en"
         val builder = buildUponParameters()
+            .setPreferredAudioLanguage(preferredLang)
             .setAllowVideoMixedMimeTypeAdaptiveness(true)
             .setAllowVideoNonSeamlessAdaptiveness(true)
-        if (isConstrainedDevice) {
+            .setExceedVideoConstraintsIfNecessary(true)
+            .setExceedAudioConstraintsIfNecessary(true)
+
+        if (isTelevisionDevice || isConstrainedDevice) {
             builder
+                .setMaxAudioChannelCount(2)
                 .setMaxVideoSize(TV_SAFE_MAX_VIDEO_WIDTH, TV_SAFE_MAX_VIDEO_HEIGHT)
                 .setMaxVideoBitrate(TV_SAFE_MAX_VIDEO_BITRATE)
         }
@@ -964,7 +1043,9 @@ class CinePlayerManager(context: Context) {
             totalCdnNodes = candidateUrls.size.coerceAtLeast(1),
             cdnFailoverCount = cdnFailoverCount,
             diskCacheUsedBytes = MediaEdgeCache.usedBytes(),
-            diskCacheMaxBytes = MediaEdgeCache.maxBytes()
+            diskCacheMaxBytes = MediaEdgeCache.maxBytes(),
+            networkTransportLabel = httpDataSourceFactory.activeTransportLabel(),
+            isRamDirectCacheMode = isRamDirectCacheMode
         )
     }
 
@@ -1076,6 +1157,8 @@ class CinePlayerManager(context: Context) {
             cdnFailoverCount = cdnFailoverCount,
             diskCacheUsedBytes = MediaEdgeCache.usedBytes(),
             diskCacheMaxBytes = MediaEdgeCache.maxBytes(),
+            networkTransportLabel = httpDataSourceFactory.activeTransportLabel(),
+            isRamDirectCacheMode = isRamDirectCacheMode,
             activeVideoDecoderName = activeVideoDecoderName,
             effectiveDecoderMode = effectiveDecoderMode,
             networkActivityHistoryKBps = networkHistory.toList(),

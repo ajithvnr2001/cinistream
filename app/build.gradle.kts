@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.cinestream.vqxkpm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 14
-    versionName = "1.14"
+    versionCode = 16
+    versionName = "1.16"
 
     ndk {
       // Keep 64-bit phones (arm64-v8a), 32-bit Android TVs (armeabi-v7a), and 64-bit emulators (x86_64)
@@ -121,9 +121,11 @@ dependencies {
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.androidx.media3.exoplayer.hls)
   implementation(libs.androidx.media3.exoplayer.dash)
-  // implementation(libs.androidx.media3.datasource.okhttp)
+  implementation(libs.androidx.media3.datasource.okhttp)
+  implementation(libs.androidx.media3.datasource.cronet)
   implementation(libs.androidx.media3.ui)
   implementation(libs.nextlib.media3ext)
+  implementation(libs.play.services.cronet)
   implementation(libs.coil.compose)
   // implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)

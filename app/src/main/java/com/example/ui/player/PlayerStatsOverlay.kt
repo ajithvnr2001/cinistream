@@ -150,6 +150,25 @@ internal fun PlayerStatsCard(
                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                         )
                     }
+                    if (!stats.isLocalSource && stats.networkTransportLabel.isNotBlank()) {
+                        val isQuic = stats.networkTransportLabel.contains("HTTP/3")
+                        val transportAccent = if (isQuic) SubtitleEmerald else Color(0xFF7DD3FC)
+                        val shortBadge = if (isQuic) "HTTP/3" else "HTTP/2"
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = transportAccent.copy(alpha = 0.18f),
+                            border = BorderStroke(0.75.dp, transportAccent.copy(alpha = 0.55f))
+                        ) {
+                            Text(
+                                text = shortBadge,
+                                fontFamily = JetBrainsMonoFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 9.sp,
+                                color = transportAccent,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
 
                 if (showCloseButton) {
@@ -230,16 +249,20 @@ internal fun PlayerStatsCard(
                 valueSize = valueFontSize
             )
 
-            // Active CDN Node & Local Edge Disk Cache
+            // Active CDN Node & Local Edge Disk Cache / TV RAM-Direct mode
             val cdnNodePart = if (stats.isLocalSource) {
                 "Direct File"
             } else {
                 val failPart = if (stats.cdnFailoverCount > 0) " (${stats.cdnFailoverCount}x failover)" else ""
                 "Node ${stats.activeCdnIndex}/${stats.totalCdnNodes}$failPart"
             }
-            val cachePart = if (stats.diskCacheMaxBytes > 0L) {
-                " · Edge ${PlayerStatsFormatter.formatBytes(stats.diskCacheUsedBytes)}/${PlayerStatsFormatter.formatBytes(stats.diskCacheMaxBytes)}"
-            } else ""
+            val cachePart = when {
+                stats.isLocalSource -> ""
+                stats.isRamDirectCacheMode -> " · RAM Direct (Zero eMMC)"
+                stats.diskCacheMaxBytes > 0L ->
+                    " · Edge ${PlayerStatsFormatter.formatBytes(stats.diskCacheUsedBytes)}/${PlayerStatsFormatter.formatBytes(stats.diskCacheMaxBytes)}"
+                else -> ""
+            }
             StatLine(
                 label = "CDN / Cache",
                 value = "$cdnNodePart$cachePart",

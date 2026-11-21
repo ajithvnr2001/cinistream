@@ -1,6 +1,6 @@
-# JSON Playlists, Series & 3-Layer In-App CDN Guide
+# JSON Playlists, Series & Hybrid In-App CDN Guide
 
-CineStream supports unified **Movie + Multi-Season Series JSON catalogs**, **M3U / M3U8 IPTV playlists**, automatic **IMDb metadata enrichment**, and a **3-Layer Hybrid In-App CDN Engine** built directly into the player.
+CineStream v1.16 supports unified **Movie + Multi-Season Series JSON catalogs**, **M3U / M3U8 IPTV playlists**, automatic **IMDb metadata enrichment**, and a **4-Layer Hybrid In-App CDN & Transport Acceleration Engine** built directly into the player.
 
 ---
 
@@ -125,16 +125,16 @@ You can also omit the `"seasons"` wrapper and pass a flat `"episodes"` array; `J
 | **Group / Genre** | `group`, `groupTitle`, `group_title`, `group-title`, `category`, `genre`, `genres[]` |
 
 ### Series Playback Experience
-- **Series Detail Modal (`SeriesDetailSheet`):** Tapping a Series card opens season tabs and a full episode list (D-pad navigable on Android TV).
-- **In-Player `Next Ep` Pill & Auto-Advance:** When watching a series episode, a **Next Ep** action appears in the player bar and playback automatically advances to the next episode (including across season boundaries) when the current episode finishes.
+- **Series Detail Modal (`SeriesDetailSheet`):** Tapping a Series card opens season tabs and a full episode list (D-pad navigable on Android TV) and immediately pre-warms the first episode's origin host in the background.
+- **In-Player `Next Ep` Pill & Auto-Advance:** When watching a series episode, a **Next Ep** action appears in the player bar, the next episode's origin host is pre-warmed silently, and playback automatically advances to the next episode (including across season boundaries) when the current episode finishes.
 
 ---
 
-## 2. 3-Layer Hybrid In-App CDN Engine
+## 2. 4-Layer Hybrid In-App CDN & Transport Engine
 
-CineStream ships an in-app CDN engine engineered to deliver smooth playback, instant seek-back, and automatic resilience against origin downtime — with **zero server lock-in**.
+CineStream ships an in-app CDN and transport engine engineered for instant startup, maximum throughput over Cloudflare Workers / S3 / R2 / Backblaze origins, and automatic resilience against origin downtime — with **zero server lock-in**.
 
-### Layer 1: Multi-CDN Mirror Resolver (`CdnMirrorResolver`)
+### Layer 1: Multi-CDN Mirror Resolver (`CdnMirrorResolver`) + Fast Failover
 For every movie or episode, `CdnMirrorResolver.buildCandidateUrls()` builds a deduplicated, ordered list of playable origins:
 1. **Primary URL** (`item.url`)
 2. **Explicit per-item / per-episode mirrors** (`item.mirrors` + extra entries in `sources` / `streams`)
@@ -146,20 +146,25 @@ For every movie or episode, `CdnMirrorResolver.buildCandidateUrls()` builds a de
 - Auto-generated backup URL: `https://cdn-b.example.com/pub/movie-1/master.m3u8?token=abc`
 
 **Automatic Mid-Stream Failover:**
-If the active origin throws any recoverable network, HTTP status, timeout, or manifest parsing error (`ERROR_CODE_IO_*`, `ERROR_CODE_PARSING_*`), `CinePlayerManager` automatically hops to the next mirror **at the exact current playback millisecond** and displays a subtle failover toast. Users can also hop manually between CDN nodes via **Stats for Nerds / Player controls**.
+- `FastStreamingLoadErrorHandlingPolicy` retries brief transient Wi-Fi drops rapidly (`500 ms`), but **fails fast immediately** (`C.TIME_UNSET`) on permanent HTTP 4xx (`403`, `404`, `410`) or manifest parsing errors.
+- `CinePlayerManager` then automatically hops to the next mirror **at the exact current playback millisecond** and displays a subtle failover toast. Users can also hop manually between CDN nodes.
 
-### Layer 2: TV-Safe On-Device Edge Disk Cache (`MediaEdgeCache`)
-Wraps Media3's `SimpleCache` in `cacheDir/media_edge_cache`:
-- **Zero Extra JVM Heap:** Cached chunks live strictly on disk (never in Java RAM).
-- **Storage-Safe LRU Caps:** Automatically capped at **64 MB** on Android TV / low-RAM devices and **128 MB** on phones/tablets (`4 MB` cache fragment size).
-- **Smart Routing (`SmartEdgeCacheDataSource`):**
-  - **CACHED:** Progressive streams & HLS/DASH media segments (`.ts`, `.m4s`, `.mp4`, `.mkv`, `.webm`, `.aac`) → makes seek-back, replay, and brief network drops instantaneous.
+### Layer 2: Device-Aware Caching (`MediaEdgeCache`: TV RAM-Direct vs. Mobile Edge Disk Cache)
+- **On Android TV / Constrained-RAM Devices (`FEATURE_LEANBACK || isLowRamDevice || maxMemory <= 400 MB`):**
+  - Runs in **RAM-Direct Mode** (zero synchronous eMMC disk writes, zero SQLite index updates on ExoPlayer's loader thread). Slow TV eMMC flash contention can never throttle high-bitrate HLS/DASH downloads; ExoPlayer's 20–45s heap-capped RAM buffer + 5s back-buffer handles smooth playback and instant micro-rewinds directly from memory.
+- **On Modern Phones & Tablets (Fast UFS Flash):**
+  - Wraps Media3's `SimpleCache` in `cacheDir/media_edge_cache` with a **128 MB** LRU cap (`4 MB` cache fragment size) and an enlarged **`128 KB` `CacheDataSink` write buffer** (6× larger than Media3's 20 KB default).
+  - **CACHED:** Progressive streams & HLS/DASH media segments (`.ts`, `.m4s`, `.mp4`, `.mkv`, `.webm`, `.aac`) → instant seek-back and replay.
   - **BYPASSED:** `.m3u8`, `.m3u`, `.mpd`, `.ism/manifest` (so live streams & expiring signed tokens never go stale), subtitles (`.srt`, `.vtt`, `.ass`, `.ssa`, `.ttml`), and local `content://` / `file://` files.
-- **Fault Tolerance:** Configured with `CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR` (full disk silently falls back to direct streaming) **and** automatically bypassed for the entire session (`bypassEdgeCacheForSession = true`) whenever any video decoder error occurs so a truncated cached chunk can never repeatedly crash decoders.
+  - **Fault Tolerance:** Uses `FLAG_IGNORE_CACHE_ON_ERROR` and automatically sets `bypassEdgeCacheForSession = true` on any video decoder error so a truncated cached chunk can never crash decoders twice.
 
-### Layer 3: Custom HTTP Origin Headers
+### Layer 3: Custom HTTP Origin Headers (Synced Across HTTP/3 & HTTP/2)
 Many S3/Cloudflare Workers/private CDN endpoints require `Authorization`, `Referer`, `Origin`, or custom `User-Agent` headers.
-- Headers defined at the **Playlist**, **Series**, **Season**, or **Episode** level merge automatically (`child` overrides `parent`) and are applied to `DefaultHttpDataSource.Factory.setDefaultRequestProperties(...)` before playback starts.
+- Headers defined at the **Playlist**, **Series**, **Season**, or **Episode** level merge automatically (`child` overrides `parent`) and are applied through `AdaptiveHttpDataSourceFactory.setDefaultRequestProperties(...)` so they apply consistently across **both** Play Services Cronet (HTTP/3 QUIC) and OkHttp (HTTP/2).
+
+### Layer 4: Adaptive HTTP/3 QUIC Transport + Origin Pre-Warming (`StreamingNetworkEngine`)
+- **HTTP/3 (QUIC) + TLS 1.3 + BBR:** Automatically upgrades Cloudflare Workers / modern CDN origins to HTTP/3 QUIC via Google Play Services Cronet even on Android 9 TVs, falling back seamlessly to HTTP/2 OkHttp + 5-minute IPv4-first `FastDnsResolver`.
+- **Safe Origin Pre-Warming:** When a playlist loads, when opening a Series drawer, or when starting an episode with a next episode on another host, CineStream sends a debounced (60s cooldown) background `HEAD scheme://host[:port]/` request to warm DNS + TLS/QUIC sockets without ever consuming single-use tokenized media URLs or downloading media bytes.
 
 ---
 
@@ -177,4 +182,4 @@ https://stream.example.com/news/master.m3u8
 
 ## 4. Automatic IMDb Metadata Enrichment (`ImdbMetadataClient`)
 
-Whenever a JSON playlist item provides an `imdbId` or `imdbUrl` (e.g., `tt1772240` or `https://www.imdb.com/title/tt1772240/`) without an explicit poster URL or rating, `ImdbMetadataClient` fetches poster artwork, rating, and year asynchronously over the shared `OkHttpClient` and hydrates the catalog cards seamlessly.
+Whenever a JSON playlist item provides an `imdbId` or `imdbUrl` (e.g., `tt1772240` or `https://www.imdb.com/title/tt1772240/`) without an explicit poster URL or rating, `ImdbMetadataClient` fetches poster artwork, rating, and year asynchronously over the shared `OkHttpClient` (with `FastDnsResolver` caching) and hydrates the catalog cards seamlessly.

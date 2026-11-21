@@ -37,6 +37,8 @@ data class PlayerNetworkStats(
     val cdnFailoverCount: Int = 0,
     val diskCacheUsedBytes: Long = 0L,
     val diskCacheMaxBytes: Long = 0L,
+    val networkTransportLabel: String = "HTTP/2 (OkHttp)",
+    val isRamDirectCacheMode: Boolean = false,
     val activeVideoDecoderName: String = "",
     val effectiveDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
     val networkActivityHistoryKBps: List<Float> = emptyList(),

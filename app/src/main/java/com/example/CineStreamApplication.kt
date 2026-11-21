@@ -7,26 +7,49 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
+import com.example.player.CinePlayerManager
+import com.example.player.FastDnsResolver
+import com.example.player.StreamingNetworkEngine
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
- * Application class providing a single shared OkHttpClient (zero body logging) and a
- * memory-bounded RGB_565 Coil ImageLoader so low-RAM Android TVs never exhaust Java heap.
+ * Application class providing:
+ * - Asynchronous Play Services Cronet HTTP/3 (QUIC + TLS 1.3 + BBR) initialization on Android 9+ TVs & phones.
+ * - A single shared HTTP/2-capable OkHttpClient with 5-minute IPv4-first DNS caching (zero body logging).
+ * - A memory-bounded RGB_565 Coil ImageLoader so low-RAM Android TVs stream fast without OOMs.
  */
 class CineStreamApplication : Application(), ImageLoaderFactory {
 
+    val fastDnsResolver: FastDnsResolver by lazy { FastDnsResolver() }
+
     val sharedOkHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectionPool(ConnectionPool(5, 3, TimeUnit.MINUTES))
+            // Cache DNS for 5 min with IPv4-first ordering (eliminates Android 9 & dual-stack stalls)
+            .dns(fastDnsResolver)
+            // Force HTTP/2 multiplexing + HTTP/1.1 fallback so Android 9 TVs stream demuxed
+            // HLS video + audio .m4s chunks over one warm TLS socket when Cronet isn't active.
+            .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
+            .connectionPool(ConnectionPool(6, 5, TimeUnit.MINUTES))
             .retryOnConnectionFailure(true)
             .followRedirects(true)
             .followSslRedirects(true)
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
             .build()
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        // Warm up Google Play Services Chromium Cronet (HTTP/3 QUIC + TLS 1.3) off the main thread
+        StreamingNetworkEngine.initializeCronetAsync(
+            context = this,
+            userAgent = CinePlayerManager.DEFAULT_USER_AGENT
+        )
     }
 
     override fun newImageLoader(): ImageLoader {
@@ -57,6 +80,7 @@ class CineStreamApplication : Application(), ImageLoaderFactory {
         ) {
             runCatching { Coil.imageLoader(this).memoryCache?.clear() }
             runCatching { sharedOkHttpClient.connectionPool.evictAll() }
+            runCatching { fastDnsResolver.clear() }
         }
     }
 
@@ -64,5 +88,6 @@ class CineStreamApplication : Application(), ImageLoaderFactory {
         super.onLowMemory()
         runCatching { Coil.imageLoader(this).memoryCache?.clear() }
         runCatching { sharedOkHttpClient.connectionPool.evictAll() }
+        runCatching { fastDnsResolver.clear() }
     }
 }

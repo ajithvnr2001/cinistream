@@ -56,6 +56,7 @@
     <string name="cdn_mirror_title">CDN Mirror Node</string>
     <string name="edge_cache_title">Local Edge Disk Cache</string>
     <string name="decoder_engine_title">Video Decoder Engine</string>
+    <string name="network_engine_title">Network Engine &amp; Prefetch</string>
     <string name="try_software_decoder">Try Software Decoder (SW)</string>
     <string name="try_hardware_decoder">Try Hardware Decoder (HW)</string>
     <string name="skip_bad_segment">Skip Bad Segment (+5s)</string>

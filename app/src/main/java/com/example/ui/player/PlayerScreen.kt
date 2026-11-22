@@ -90,6 +90,7 @@ import com.example.model.SubtitleTextSize
 import com.example.model.TrackOption
 import com.example.player.AudioBoostMath
 import com.example.player.MediaEdgeCache
+import com.example.player.NetworkTransportMode
 import com.example.player.PlaybackProgressState
 import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerPlaybackState
@@ -162,6 +163,7 @@ fun PlayerScreen(
     onSwitchCdnMirror: () -> Unit = {},
     onClearEdgeCache: () -> Unit = {},
     onSelectDecoderMode: (VideoDecoderMode) -> Unit = {},
+    onSelectTransportMode: (NetworkTransportMode) -> Unit = {},
     onRetryWithDecoderMode: (VideoDecoderMode) -> Unit = {},
     onSkipBadSegment: () -> Unit = {},
     onRefreshJsonPlaylist: () -> Unit = {},
@@ -575,7 +577,7 @@ fun PlayerScreen(
                         start = tvOverscanHorizontal,
                         end = tvOverscanHorizontal,
                         top = if (controlsVisible && !isLocked) {
-                            if (isTv) 86.dp else 72.dp
+                            if (isTv) 64.dp else 62.dp
                         } else {
                             tvOverscanVertical
                         }
@@ -872,6 +874,12 @@ fun PlayerScreen(
             activeVideoDecoderName = playbackState.activeVideoDecoderName,
             onSelectDecoderMode = { mode ->
                 onSelectDecoderMode(mode)
+                interactionNonce++
+            },
+            preferredTransportMode = playbackState.preferredTransportMode,
+            activeTransportLabel = sheetStats.networkTransportLabel,
+            onSelectTransportMode = { mode ->
+                onSelectTransportMode(mode)
                 interactionNonce++
             },
             onDismiss = { showTracksSheet = false },

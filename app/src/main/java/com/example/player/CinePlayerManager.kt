@@ -88,6 +88,7 @@ data class PlayerPlaybackState(
     val activeVideoDecoderName: String = "",
     val preferredDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
     val effectiveDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
+    val preferredTransportMode: NetworkTransportMode = NetworkTransportMode.AUTO,
     val isDecoderError: Boolean = false,
     val failedDecoderName: String? = null,
     val surfaceResetToken: Int = 0,
@@ -191,18 +192,31 @@ class CinePlayerManager(context: Context) {
         .writeTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    @Volatile private var preferredTransportMode: NetworkTransportMode = NetworkTransportMode.AUTO
+    private val quicWatchdog = QuicThroughputWatchdog()
+
     // Dynamically uses Play Services Cronet (HTTP/3 QUIC + TLS 1.3 + BBR) when available,
-    // with automatic zero-crash fallback to HTTP/2 OkHttp on non-GMS devices.
+    // with automatic QUIC-throttle watchdog & zero-crash fallback to HTTP/2 OkHttp.
     private val httpDataSourceFactory: AdaptiveHttpDataSourceFactory =
         StreamingNetworkEngine.createAdaptiveHttpDataSourceFactory(
             okHttpClient = streamingOkHttpClient,
             userAgent = DEFAULT_USER_AGENT,
-            transferListener = bandwidthMeter
+            transferListener = bandwidthMeter,
+            transportModeProvider = { preferredTransportMode },
+            cronetDemotedProvider = { quicWatchdog.isDemoted }
         )
 
     // DefaultDataSource wraps AdaptiveHttpDataSourceFactory so remote HTTP/3 / HTTP/2 streams
     // AND local content:// videos/subtitles seamlessly combine inside MergingMediaSource.
     private val directDataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+
+    // Bounded parallel HLS (3x TV / 4x Phone) + Progressive Range (2x TV / 3x Phone) prefetcher
+    // that warms cold Cloudflare/S3 edges ahead of playback while staying strictly RAM-capped.
+    val parallelPrefetchManager = ParallelHlsPrefetchManager(
+        config = ParallelPrefetchConfig.forDevice(isTelevisionDevice || isConstrainedDevice),
+        upstreamFactory = directDataSourceFactory
+    )
+    private val prefetchedDataSourceFactory = parallelPrefetchManager.createDataSourceFactory()
 
     // Automatically bypasses on-device disk edge cache after any decode error so neither HW nor SW
     // decoders can ever be re-fed a truncated or corrupted cached segment.
@@ -212,7 +226,7 @@ class CinePlayerManager(context: Context) {
     // disk cache on modern phones/tablets (always bypassing manifests, subtitles, and local files).
     private val smartEdgeDataSourceFactory = MediaEdgeCache.createSmartDataSourceFactory(
         context = context,
-        directDataSourceFactory = directDataSourceFactory,
+        directDataSourceFactory = prefetchedDataSourceFactory,
         bypassCacheProvider = { bypassEdgeCacheForSession }
     )
 
@@ -377,6 +391,7 @@ class CinePlayerManager(context: Context) {
     var onCdnFailover: ((host: String, nodeIndex: Int, totalNodes: Int) -> Unit)? = null
     var onDecoderFallback: ((failedCodec: String?, switchedMode: VideoDecoderMode) -> Unit)? = null
     var onTrackFallback: ((trackLabel: String) -> Unit)? = null
+    var onTransportAutoFallback: ((reason: String) -> Unit)? = null
     var onMediaEnded: (() -> Unit)? = null
 
     private val windowBytesLoaded = AtomicLong(0L)
@@ -410,6 +425,20 @@ class CinePlayerManager(context: Context) {
                     if (hasReachedReadyOnce && rebufferStartedAtElapsedMs == 0L) {
                         rebufferCount++
                         rebufferStartedAtElapsedMs = nowElapsed
+                        // Fast self-healing: if Cronet HTTP/3 is stalling repeatedly at < 2.5 Mbps,
+                        // immediately tear down the throttled UDP socket and switch to HTTP/2 TCP.
+                        if (!activeMediaIsLocal &&
+                            preferredTransportMode == NetworkTransportMode.AUTO &&
+                            httpDataSourceFactory.isUsingCronet()
+                        ) {
+                            val currentBps = latestBandwidthEstimateBps.takeIf { it > 0L }
+                                ?: bandwidthMeter.bitrateEstimate.takeIf { it != C.TIME_UNSET && it > 0L }
+                                ?: 0L
+                            if (quicWatchdog.recordRebufferStall(currentBps)) {
+                                triggerAutoHttp2Recovery("Slow HTTP/3 QUIC stalled → Switched to HTTP/2 TCP")
+                                return
+                            }
+                        }
                     }
                 }
                 Player.STATE_IDLE, Player.STATE_ENDED -> {
@@ -556,7 +585,31 @@ class CinePlayerManager(context: Context) {
                 }
             }
 
-            // 2. Automatic Multi-CDN Mirror Failover at exact playback position on upstream network/IO errors
+            // 2A. Automatic HTTP/3 QUIC error demotion -> retry immediately over HTTP/2 TCP
+            if (isRecoverableCdnError(error) &&
+                httpDataSourceFactory.isUsingCronet() &&
+                preferredTransportMode == NetworkTransportMode.AUTO &&
+                quicWatchdog.forceDemote()
+            ) {
+                val resumeMs = player.currentPosition.takeIf { it > 0L } ?: lastRequestedStartPosMs
+                val targetUrl = candidateUrls.getOrNull(activeMirrorIndex) ?: activeMediaUri
+                if (!targetUrl.isNullOrBlank()) {
+                    parallelPrefetchManager.clearMemoryOnly()
+                    onTransportAutoFallback?.invoke("HTTP/3 QUIC error → Switched to HTTP/2 TCP")
+                    prepareResolvedUrl(
+                        targetUrl = targetUrl,
+                        format = activeMediaFormat,
+                        externalSubtitles = lastLoadedSubtitles,
+                        startPositionMs = resumeMs,
+                        autoPlay = lastAutoPlay,
+                        autoSelectSubtitleId = lastAutoSelectSubtitleId,
+                        resetSessionCounters = false
+                    )
+                    return
+                }
+            }
+
+            // 2B. Automatic Multi-CDN Mirror Failover at exact playback position on upstream network/IO errors
             if (isRecoverableCdnError(error) && activeMirrorIndex + 1 < candidateUrls.size) {
                 val resumeMs = player.currentPosition.takeIf { it > 0L } ?: lastRequestedStartPosMs
                 activeMirrorIndex++
@@ -634,6 +687,14 @@ class CinePlayerManager(context: Context) {
                 windowBytesLoaded.addAndGet(totalBytesLoaded)
                 sessionBytesLoaded.addAndGet(totalBytesLoaded)
             }
+            // Pure socket bandwidth check (immune to 1 ms RAM prefetch hits!)
+            if (!activeMediaIsLocal &&
+                preferredTransportMode == NetworkTransportMode.AUTO &&
+                httpDataSourceFactory.isUsingCronet() &&
+                quicWatchdog.recordNetworkSample(bitrateEstimate, totalBytesLoaded)
+            ) {
+                triggerAutoHttp2Recovery("Slow HTTP/3 QUIC detected → Switched to HTTP/2 TCP")
+            }
         }
 
         override fun onLoadCompleted(
@@ -645,6 +706,15 @@ class CinePlayerManager(context: Context) {
             if (loadEventInfo.bytesLoaded > 0L && latestBandwidthEstimateBps <= 0L) {
                 windowBytesLoaded.addAndGet(loadEventInfo.bytesLoaded)
                 sessionBytesLoaded.addAndGet(loadEventInfo.bytesLoaded)
+            }
+            // Secondary segment-level watchdog (sub-50 ms RAM hits are ignored inside watchdog)
+            if (mediaLoadData.dataType == C.DATA_TYPE_MEDIA &&
+                !activeMediaIsLocal &&
+                preferredTransportMode == NetworkTransportMode.AUTO &&
+                httpDataSourceFactory.isUsingCronet() &&
+                quicWatchdog.recordCompletedSegment(loadEventInfo.bytesLoaded, loadEventInfo.loadDurationMs)
+            ) {
+                triggerAutoHttp2Recovery("Slow HTTP/3 QUIC detected → Switched to HTTP/2 TCP")
             }
         }
 
@@ -701,7 +771,9 @@ class CinePlayerManager(context: Context) {
         lastAutoSelectSubtitleId = autoSelectSubtitleId
         lastAutoPlay = autoPlay
 
-        // Fresh media resets per-session failed codec blocklist, cache bypass, track fallbacks & decoder mode
+        // Fresh media resets per-session prefetch queue, QUIC watchdog, failed codec blocklist & cache bypass
+        parallelPrefetchManager.resetSession()
+        quicWatchdog.reset()
         bypassEdgeCacheForSession = false
         sessionBlockedCodecs.clear()
         triedFallbackVideoTrackIds.clear()
@@ -762,6 +834,55 @@ class CinePlayerManager(context: Context) {
                     autoSelectSubtitleId = lastAutoSelectSubtitleId,
                     resetSessionCounters = false,
                     forceResetRenderer = true
+                )
+            }
+        }
+    }
+
+    private fun triggerAutoHttp2Recovery(reason: String) {
+        parallelPrefetchManager.clearMemoryOnly()
+        onTransportAutoFallback?.invoke(reason)
+        val targetUrl = candidateUrls.getOrNull(activeMirrorIndex) ?: activeMediaUri
+        // If playback is actively stalled/buffering on a stuck QUIC socket, immediately reconnect
+        // over HTTP/2 IPv4 TCP at the exact playback millisecond instead of waiting for timeout.
+        if (!targetUrl.isNullOrBlank() && player.playbackState == Player.STATE_BUFFERING) {
+            val resumeMs = player.currentPosition.takeIf { it > 0L } ?: lastRequestedStartPosMs
+            val wasPlaying = player.playWhenReady
+            prepareResolvedUrl(
+                targetUrl = targetUrl,
+                format = activeMediaFormat,
+                externalSubtitles = lastLoadedSubtitles,
+                startPositionMs = resumeMs,
+                autoPlay = wasPlaying,
+                autoSelectSubtitleId = lastAutoSelectSubtitleId,
+                resetSessionCounters = false
+            )
+        }
+    }
+
+    /**
+     * Updates the preferred [NetworkTransportMode] (Auto HTTP/3->HTTP/2, HTTP/2 TCP, or HTTP/3 QUIC).
+     * Clears in-flight prefetch buffers and optionally reloads the active stream at the exact millisecond.
+     */
+    fun setPreferredTransportMode(mode: NetworkTransportMode, reloadActiveStream: Boolean = true) {
+        val changed = preferredTransportMode != mode || quicWatchdog.isDemoted
+        preferredTransportMode = mode
+        quicWatchdog.reset()
+        parallelPrefetchManager.clearMemoryOnly()
+        _state.update { it.copy(preferredTransportMode = mode) }
+        if (changed && reloadActiveStream) {
+            val targetUrl = candidateUrls.getOrNull(activeMirrorIndex) ?: activeMediaUri
+            if (!targetUrl.isNullOrBlank()) {
+                val resumeMs = player.currentPosition.takeIf { it > 0L } ?: lastRequestedStartPosMs
+                val wasPlaying = player.playWhenReady || _state.value.errorMessage != null
+                prepareResolvedUrl(
+                    targetUrl = targetUrl,
+                    format = activeMediaFormat,
+                    externalSubtitles = lastLoadedSubtitles,
+                    startPositionMs = resumeMs,
+                    autoPlay = wasPlaying,
+                    autoSelectSubtitleId = lastAutoSelectSubtitleId,
+                    resetSessionCounters = false
                 )
             }
         }
@@ -944,7 +1065,8 @@ class CinePlayerManager(context: Context) {
                 activeCdnHost = currentHost,
                 activeVideoDecoderName = activeVideoDecoderName,
                 preferredDecoderMode = preferredDecoderMode,
-                effectiveDecoderMode = effectiveDecoderMode
+                effectiveDecoderMode = effectiveDecoderMode,
+                preferredTransportMode = preferredTransportMode
             )
         }
 
@@ -1033,6 +1155,7 @@ class CinePlayerManager(context: Context) {
         lastStatsSampleElapsedMs = SystemClock.elapsedRealtime()
         networkHistory.clear()
         bufferHistory.clear()
+        val prefetchSnapshot = parallelPrefetchManager.snapshotStats()
         _networkStats.value = PlayerNetworkStats(
             streamHost = PlayerStatsFormatter.extractHostLabel(mediaUri, activeMediaIsLocal),
             streamFormatLabel = format.label,
@@ -1045,7 +1168,10 @@ class CinePlayerManager(context: Context) {
             diskCacheUsedBytes = MediaEdgeCache.usedBytes(),
             diskCacheMaxBytes = MediaEdgeCache.maxBytes(),
             networkTransportLabel = httpDataSourceFactory.activeTransportLabel(),
-            isRamDirectCacheMode = isRamDirectCacheMode
+            isRamDirectCacheMode = isRamDirectCacheMode,
+            prefetchDepth = prefetchSnapshot.activeDepth,
+            prefetchHitRatePercent = prefetchSnapshot.hitRatePercent,
+            prefetchHits = prefetchSnapshot.cacheHits
         )
     }
 
@@ -1058,6 +1184,8 @@ class CinePlayerManager(context: Context) {
         val buffered = player.bufferedPosition.coerceAtLeast(0L)
         val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
         val isLive = player.isCurrentMediaItemLive
+        val bufferAheadMs = (buffered - pos).coerceAtLeast(0L)
+        parallelPrefetchManager.setLowBufferMode(bufferAheadMs < 8_000L)
         val cur = _progressState.value
         if (pos == cur.currentPositionMs &&
             buffered == cur.bufferedPositionMs &&
@@ -1126,6 +1254,7 @@ class CinePlayerManager(context: Context) {
             else -> "IDLE"
         }
 
+        val prefetchSnapshot = parallelPrefetchManager.snapshotStats()
         _networkStats.value = PlayerNetworkStats(
             streamHost = PlayerStatsFormatter.extractHostLabel(activeMediaUri, activeMediaIsLocal),
             streamFormatLabel = activeMediaFormat.label,
@@ -1159,6 +1288,9 @@ class CinePlayerManager(context: Context) {
             diskCacheMaxBytes = MediaEdgeCache.maxBytes(),
             networkTransportLabel = httpDataSourceFactory.activeTransportLabel(),
             isRamDirectCacheMode = isRamDirectCacheMode,
+            prefetchDepth = prefetchSnapshot.activeDepth,
+            prefetchHitRatePercent = prefetchSnapshot.hitRatePercent,
+            prefetchHits = prefetchSnapshot.cacheHits,
             activeVideoDecoderName = activeVideoDecoderName,
             effectiveDecoderMode = effectiveDecoderMode,
             networkActivityHistoryKBps = networkHistory.toList(),
@@ -1173,6 +1305,7 @@ class CinePlayerManager(context: Context) {
      */
     fun stopAndTrimBuffers() {
         syncPlaybackProgress()
+        parallelPrefetchManager.resetSession()
         player.playWhenReady = false
         player.clearVideoSurface()
         player.stop()
@@ -1278,6 +1411,7 @@ class CinePlayerManager(context: Context) {
     }
 
     fun release() {
+        parallelPrefetchManager.release()
         volumeBooster.release()
         player.removeAnalyticsListener(analyticsListener)
         player.removeListener(listener)

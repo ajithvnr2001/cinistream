@@ -13,6 +13,7 @@ import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
 import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
+import com.example.player.NetworkTransportMode
 import com.example.player.VideoDecoderMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -33,6 +34,7 @@ class SubtitlePrefsRepository(private val context: Context) {
         val VOLUME_BOOST_PERCENT = intPreferencesKey("volume_boost_percent")
         val STATS_FOR_NERDS_ENABLED = booleanPreferencesKey("stats_for_nerds_enabled")
         val VIDEO_DECODER_MODE = stringPreferencesKey("video_decoder_mode")
+        val NETWORK_TRANSPORT_MODE = stringPreferencesKey("network_transport_mode")
     }
 
     val appearance: Flow<SubtitleAppearance> = context.cinePrefsDataStore.data.map { prefs ->
@@ -67,6 +69,12 @@ class SubtitlePrefsRepository(private val context: Context) {
         prefs[Keys.VIDEO_DECODER_MODE]
             ?.let { runCatching { VideoDecoderMode.valueOf(it) }.getOrNull() }
             ?: VideoDecoderMode.AUTO
+    }
+
+    val networkTransportMode: Flow<NetworkTransportMode> = context.cinePrefsDataStore.data.map { prefs ->
+        prefs[Keys.NETWORK_TRANSPORT_MODE]
+            ?.let { runCatching { NetworkTransportMode.valueOf(it) }.getOrNull() }
+            ?: NetworkTransportMode.AUTO
     }
 
     suspend fun updateTextSize(size: SubtitleTextSize) {
@@ -111,5 +119,9 @@ class SubtitlePrefsRepository(private val context: Context) {
 
     suspend fun updateVideoDecoderMode(mode: VideoDecoderMode) {
         context.cinePrefsDataStore.edit { it[Keys.VIDEO_DECODER_MODE] = mode.name }
+    }
+
+    suspend fun updateNetworkTransportMode(mode: NetworkTransportMode) {
+        context.cinePrefsDataStore.edit { it[Keys.NETWORK_TRANSPORT_MODE] = mode.name }
     }
 }

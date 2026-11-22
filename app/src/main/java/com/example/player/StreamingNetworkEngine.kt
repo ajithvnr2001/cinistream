@@ -154,15 +154,159 @@ class FastStreamingLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy(MIN_
 }
 
 /**
+ * User-selectable and self-healing network transport policy.
+ * - [AUTO]: Uses HTTP/3 (QUIC) via Play Services Cronet when available, and automatically demotes
+ *   to HTTP/2 OkHttp (TCP) for the session if the ISP throttles UDP 443 (< 2 Mbps sustained).
+ * - [HTTP2_TCP]: Forces OkHttp HTTP/2 over TCP (best when ISP CGNAT rate-limits QUIC UDP).
+ * - [HTTP3_QUIC]: Keeps Play Services Cronet HTTP/3 enabled without automatic demotion.
+ */
+enum class NetworkTransportMode(
+    val label: String,
+    val shortLabel: String,
+    val description: String
+) {
+    AUTO(
+        label = "Auto (HTTP/3 → HTTP/2)",
+        shortLabel = "Auto",
+        description = "HTTP/3 QUIC with automatic fallback to HTTP/2 TCP if throttled"
+    ),
+    HTTP2_TCP(
+        label = "HTTP/2 (TCP)",
+        shortLabel = "HTTP/2",
+        description = "Direct OkHttp HTTP/2 over TCP (bypasses ISP UDP/QUIC throttling)"
+    ),
+    HTTP3_QUIC(
+        label = "HTTP/3 (QUIC)",
+        shortLabel = "HTTP/3",
+        description = "Google Play Services Cronet QUIC + TLS 1.3 + BBR"
+    )
+}
+
+/**
+ * Pure, thread-safe watchdog that detects ISP UDP/QUIC throttling (e.g., JioFiber CGNAT capping
+ * `udp6` port 443 to ~500-900 kbps while IPv4 TCP runs at 13-100 Mbps) and triggers automatic
+ * session demotion to HTTP/2 TCP.
+ *
+ * v1.18 fix: Immune to `1 ms` RAM prefetch hits (ignores sub-50 ms / >500 Mbps local RAM reads)
+ * and monitors pure socket [recordNetworkSample] + [recordRebufferStall] so throttled HTTP/3
+ * switches to HTTP/2 TCP in ~5 seconds automatically.
+ */
+class QuicThroughputWatchdog(
+    private val minSubstantialBytes: Long = MIN_SUBSTANTIAL_CHUNK_BYTES,
+    private val slowThresholdBps: Long = SLOW_QUIC_THRESHOLD_BPS,
+    private val consecutiveLimit: Int = CONSECUTIVE_SLOW_THRESHOLD,
+    private val slowStallLimit: Int = SLOW_REBUFFER_STALL_LIMIT
+) {
+    companion object {
+        const val MIN_SUBSTANTIAL_CHUNK_BYTES: Long = 256L * 1024L
+        const val SLOW_QUIC_THRESHOLD_BPS: Long = 2_500_000L
+        const val CONSECUTIVE_SLOW_THRESHOLD: Int = 3
+        const val SLOW_REBUFFER_STALL_LIMIT: Int = 2
+        private const val RAM_HIT_MAX_DURATION_MS: Long = 50L
+        private const val RAM_HIT_MIN_BPS: Long = 500_000_000L
+    }
+
+    private var consecutiveSlowChunks: Int = 0
+    private var consecutiveSlowSamples: Int = 0
+    private var slowRebufferStalls: Int = 0
+
+    @Volatile
+    var isDemoted: Boolean = false
+        private set
+
+    @Synchronized
+    fun reset() {
+        consecutiveSlowChunks = 0
+        consecutiveSlowSamples = 0
+        slowRebufferStalls = 0
+        isDemoted = false
+    }
+
+    /**
+     * Records a completed media segment transfer while Cronet HTTP/3 is active.
+     * Sub-50 ms / >500 Mbps RAM prefetch hits are ignored so they NEVER reset the slow-QUIC streak.
+     * Returns `true` on the exact call that trips automatic demotion to HTTP/2 TCP.
+     */
+    @Synchronized
+    fun recordCompletedSegment(bytesLoaded: Long, loadDurationMs: Long): Boolean {
+        if (isDemoted) return false
+        if (bytesLoaded < minSubstantialBytes || loadDurationMs <= 0L) return false
+        val effectiveBps = (bytesLoaded * 8_000L) / loadDurationMs
+        // Ignore RAM prefetch hits (~1-20 ms, >500 Mbps) so they never reset slow-network detection
+        if (loadDurationMs < RAM_HIT_MAX_DURATION_MS || effectiveBps >= RAM_HIT_MIN_BPS) {
+            return false
+        }
+        if (effectiveBps < slowThresholdBps) {
+            consecutiveSlowChunks++
+            if (consecutiveSlowChunks >= consecutiveLimit) {
+                isDemoted = true
+                return true
+            }
+        } else {
+            consecutiveSlowChunks = 0
+        }
+        return false
+    }
+
+    /**
+     * Records a pure network socket bandwidth sample from [BandwidthMeter] (`onBandwidthEstimate`),
+     * which measures ONLY real HTTP sockets (never RAM cache hits).
+     * Returns `true` on the exact call that trips automatic demotion to HTTP/2 TCP.
+     */
+    @Synchronized
+    fun recordNetworkSample(measuredBps: Long, totalBytesLoaded: Long): Boolean {
+        if (isDemoted) return false
+        if (measuredBps <= 0L || totalBytesLoaded < 64L * 1024L) return false
+        if (measuredBps < slowThresholdBps) {
+            consecutiveSlowSamples++
+            if (consecutiveSlowSamples >= consecutiveLimit) {
+                isDemoted = true
+                return true
+            }
+        } else {
+            consecutiveSlowSamples = 0
+            slowRebufferStalls = 0
+        }
+        return false
+    }
+
+    /**
+     * Records a mid-playback rebuffer stall while Cronet HTTP/3 is active.
+     * Trips fast demotion to HTTP/2 TCP after [slowStallLimit] stalls at < [slowThresholdBps].
+     */
+    @Synchronized
+    fun recordRebufferStall(currentNetworkBps: Long): Boolean {
+        if (isDemoted) return false
+        if (currentNetworkBps in 1L until slowThresholdBps) {
+            slowRebufferStalls++
+            if (slowRebufferStalls >= slowStallLimit) {
+                isDemoted = true
+                return true
+            }
+        }
+        return false
+    }
+
+    @Synchronized
+    fun forceDemote(): Boolean {
+        if (isDemoted) return false
+        isDemoted = true
+        return true
+    }
+}
+
+/**
  * Adaptive HTTP DataSource factory that dynamically routes new requests through Google Play
- * Services Cronet (HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR) once initialized, and falls back
- * seamlessly to CineStream's HTTP/2 OkHttp engine on non-GMS devices or before Cronet loads.
+ * Services Cronet (HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR) or HTTP/2 OkHttp (TCP) according to
+ * [NetworkTransportMode] and [QuicThroughputWatchdog] automatic demotion state.
  */
 @OptIn(UnstableApi::class)
 class AdaptiveHttpDataSourceFactory(
     private val okHttpFactory: OkHttpDataSource.Factory,
     private val transferListener: TransferListener?,
     private val cronetEngineProvider: () -> CronetEngine? = { StreamingNetworkEngine.cronetEngine },
+    private val transportModeProvider: () -> NetworkTransportMode = { NetworkTransportMode.AUTO },
+    private val cronetDemotedProvider: () -> Boolean = { false },
     private val cronetExecutor: ExecutorService = StreamingNetworkEngine.cronetExecutor
 ) : HttpDataSource.Factory {
 
@@ -187,23 +331,35 @@ class AdaptiveHttpDataSourceFactory(
         return this
     }
 
+    fun shouldUseCronet(): Boolean {
+        val engine = cronetEngineProvider() ?: return false
+        val mode = transportModeProvider()
+        return when (mode) {
+            NetworkTransportMode.HTTP2_TCP -> false
+            NetworkTransportMode.HTTP3_QUIC -> true
+            NetworkTransportMode.AUTO -> !cronetDemotedProvider()
+        } && engine != null
+    }
+
     override fun createDataSource(): HttpDataSource {
-        val engine = cronetEngineProvider()
-        if (engine != null) {
-            val cronetSource = runCatching {
-                getOrCreateCronetFactory(engine).createDataSource()
-            }.getOrNull()
-            if (cronetSource != null) {
-                return cronetSource
+        if (shouldUseCronet()) {
+            val engine = cronetEngineProvider()
+            if (engine != null) {
+                val cronetSource = runCatching {
+                    getOrCreateCronetFactory(engine).createDataSource()
+                }.getOrNull()
+                if (cronetSource != null) {
+                    return cronetSource
+                }
             }
         }
         return okHttpFactory.createDataSource()
     }
 
-    fun isUsingCronet(): Boolean = cronetEngineProvider() != null
+    fun isUsingCronet(): Boolean = shouldUseCronet()
 
     fun activeTransportLabel(): String {
-        return if (isUsingCronet()) {
+        return if (shouldUseCronet()) {
             StreamingNetworkEngine.TRANSPORT_HTTP3_CRONET
         } else {
             StreamingNetworkEngine.TRANSPORT_HTTP2_OKHTTP
@@ -331,14 +487,18 @@ object StreamingNetworkEngine {
     fun createAdaptiveHttpDataSourceFactory(
         okHttpClient: OkHttpClient,
         userAgent: String,
-        transferListener: TransferListener?
+        transferListener: TransferListener?,
+        transportModeProvider: () -> NetworkTransportMode = { NetworkTransportMode.AUTO },
+        cronetDemotedProvider: () -> Boolean = { false }
     ): AdaptiveHttpDataSourceFactory {
         val okHttpFactory = OkHttpDataSource.Factory(okHttpClient)
             .setUserAgent(userAgent)
             .setTransferListener(transferListener)
         return AdaptiveHttpDataSourceFactory(
             okHttpFactory = okHttpFactory,
-            transferListener = transferListener
+            transferListener = transferListener,
+            transportModeProvider = transportModeProvider,
+            cronetDemotedProvider = cronetDemotedProvider
         )
     }
 

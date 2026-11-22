@@ -109,8 +109,11 @@ internal fun PlayerStatsCard(
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp)
+            modifier = Modifier.padding(
+                horizontal = 12.dp,
+                vertical = if (isTv) 8.dp else 9.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(if (isTv) 3.5.dp else 4.5.dp)
         ) {
             // Header row: YouTube-style Stats for Nerds title + live state pill + optional Close button
             Row(
@@ -258,14 +261,19 @@ internal fun PlayerStatsCard(
             }
             val cachePart = when {
                 stats.isLocalSource -> ""
-                stats.isRamDirectCacheMode -> " · RAM Direct (Zero eMMC)"
+                stats.isRamDirectCacheMode -> " · RAM Direct"
                 stats.diskCacheMaxBytes > 0L ->
                     " · Edge ${PlayerStatsFormatter.formatBytes(stats.diskCacheUsedBytes)}/${PlayerStatsFormatter.formatBytes(stats.diskCacheMaxBytes)}"
                 else -> ""
             }
+            val prefetchPart = when {
+                stats.isLocalSource || stats.prefetchDepth <= 0 -> ""
+                stats.prefetchHits > 0L -> " · ${stats.prefetchDepth}× Prefetch (${stats.prefetchHitRatePercent}%)"
+                else -> " · ${stats.prefetchDepth}× Prefetch"
+            }
             StatLine(
                 label = "CDN / Cache",
-                value = "$cdnNodePart$cachePart",
+                value = "$cdnNodePart$cachePart$prefetchPart",
                 valueColor = if (stats.cdnFailoverCount > 0) CinemaAmberBright else SubtitleEmerald,
                 labelSize = labelFontSize,
                 valueSize = valueFontSize
@@ -372,11 +380,11 @@ private fun StatSparklineRow(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(14.dp)
+                    .height(12.dp)
                     .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(3.dp))
                     .padding(horizontal = 2.dp, vertical = 1.dp)
             ) {
-                Canvas(modifier = Modifier.fillMaxWidth().height(12.dp)) {
+                Canvas(modifier = Modifier.fillMaxWidth().height(10.dp)) {
                     val slotCount = 24
                     val gapPx = 1.5.dp.toPx()
                     val barW = ((size.width - gapPx * (slotCount - 1)) / slotCount).coerceAtLeast(1.5f)

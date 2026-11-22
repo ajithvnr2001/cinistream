@@ -9,8 +9,10 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.example.player.CinePlayerManager
 import com.example.player.FastDnsResolver
+import com.example.player.ParallelHlsPrefetchManager
 import com.example.player.StreamingNetworkEngine
 import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import java.io.File
@@ -19,7 +21,8 @@ import java.util.concurrent.TimeUnit
 /**
  * Application class providing:
  * - Asynchronous Play Services Cronet HTTP/3 (QUIC + TLS 1.3 + BBR) initialization on Android 9+ TVs & phones.
- * - A single shared HTTP/2-capable OkHttpClient with 5-minute IPv4-first DNS caching (zero body logging).
+ * - A single shared HTTP/2-capable OkHttpClient with 5-minute IPv4-first DNS caching and a tuned
+ *   high-concurrency Dispatcher (`maxRequestsPerHost = 12`) so parallel segment prefetches never queue.
  * - A memory-bounded RGB_565 Coil ImageLoader so low-RAM Android TVs stream fast without OOMs.
  */
 class CineStreamApplication : Application(), ImageLoaderFactory {
@@ -27,13 +30,18 @@ class CineStreamApplication : Application(), ImageLoaderFactory {
     val fastDnsResolver: FastDnsResolver by lazy { FastDnsResolver() }
 
     val sharedOkHttpClient: OkHttpClient by lazy {
+        val dispatcher = Dispatcher().apply {
+            maxRequests = 32
+            maxRequestsPerHost = 12
+        }
         OkHttpClient.Builder()
+            .dispatcher(dispatcher)
             // Cache DNS for 5 min with IPv4-first ordering (eliminates Android 9 & dual-stack stalls)
             .dns(fastDnsResolver)
             // Force HTTP/2 multiplexing + HTTP/1.1 fallback so Android 9 TVs stream demuxed
-            // HLS video + audio .m4s chunks over one warm TLS socket when Cronet isn't active.
+            // HLS video + audio .m4s chunks + parallel prefetches smoothly over warm TLS sockets.
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
-            .connectionPool(ConnectionPool(6, 5, TimeUnit.MINUTES))
+            .connectionPool(ConnectionPool(12, 5, TimeUnit.MINUTES))
             .retryOnConnectionFailure(true)
             .followRedirects(true)
             .followSslRedirects(true)
@@ -78,6 +86,7 @@ class CineStreamApplication : Application(), ImageLoaderFactory {
         if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ||
             level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
         ) {
+            runCatching { ParallelHlsPrefetchManager.trimActiveCaches() }
             runCatching { Coil.imageLoader(this).memoryCache?.clear() }
             runCatching { sharedOkHttpClient.connectionPool.evictAll() }
             runCatching { fastDnsResolver.clear() }
@@ -86,6 +95,7 @@ class CineStreamApplication : Application(), ImageLoaderFactory {
 
     override fun onLowMemory() {
         super.onLowMemory()
+        runCatching { ParallelHlsPrefetchManager.trimActiveCaches() }
         runCatching { Coil.imageLoader(this).memoryCache?.clear() }
         runCatching { sharedOkHttpClient.connectionPool.evictAll() }
         runCatching { fastDnsResolver.clear() }

@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.TrackOption
 import com.example.player.DecoderFallbackHelper
+import com.example.player.NetworkTransportMode
 import com.example.player.PlayerStatsFormatter
 import com.example.player.VideoDecoderMode
 import com.example.ui.components.tvFocusHighlight
@@ -72,6 +73,9 @@ fun TracksSheet(
     effectiveDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
     activeVideoDecoderName: String = "",
     onSelectDecoderMode: (VideoDecoderMode) -> Unit = {},
+    preferredTransportMode: NetworkTransportMode = NetworkTransportMode.AUTO,
+    activeTransportLabel: String = "",
+    onSelectTransportMode: (NetworkTransportMode) -> Unit = {},
     onDismiss: () -> Unit,
     onSelectVideoTrack: (TrackOption?) -> Unit,
     onSelectAudioTrack: (TrackOption) -> Unit
@@ -387,6 +391,96 @@ fun TracksSheet(
                                             VideoDecoderMode.AUTO -> "HW→SW"
                                             VideoDecoderMode.HARDWARE -> "GPU/DSP"
                                             VideoDecoderMode.SOFTWARE -> "CPU Safe"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Network Engine & Parallel Prefetch selector (Auto HTTP/3->HTTP/2, HTTP/2 TCP, HTTP/3 QUIC)
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = ObsidianSurfaceHigh,
+                border = BorderStroke(1.dp, ObsidianOutline.copy(alpha = 0.6f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.NetworkCheck,
+                            contentDescription = null,
+                            tint = SubtitleEmerald,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.network_engine_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            val subtitleText = if (activeTransportLabel.isNotBlank()) {
+                                "Active: $activeTransportLabel · Parallel Prefetch ON"
+                            } else {
+                                preferredTransportMode.description
+                            }
+                            Text(
+                                text = subtitleText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        NetworkTransportMode.entries.forEach { mode ->
+                            val isSelected = preferredTransportMode == mode
+                            val accent = if (mode == NetworkTransportMode.HTTP2_TCP) CinemaAmber else SubtitleEmerald
+                            Surface(
+                                onClick = { onSelectTransportMode(mode) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
+                                    .testTag("tracks_transport_mode_${mode.name.lowercase()}"),
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) accent.copy(alpha = 0.22f) else ObsidianSurface,
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (isSelected) accent else ObsidianOutline.copy(alpha = 0.65f)
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = mode.shortLabel,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (isSelected) accent else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = when (mode) {
+                                            NetworkTransportMode.AUTO -> "H3→H2"
+                                            NetworkTransportMode.HTTP2_TCP -> "TCP Safe"
+                                            NetworkTransportMode.HTTP3_QUIC -> "QUIC"
                                         },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,

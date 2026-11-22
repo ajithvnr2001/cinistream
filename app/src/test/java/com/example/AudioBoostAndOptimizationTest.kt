@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.example.player.AudioBoostMath
 import com.example.ui.player.TracksSheet
 import com.example.ui.player.VerticalVolumeBoostHud
@@ -300,5 +301,312 @@ class AudioBoostAndOptimizationTest {
             adaptive.activeTransportLabel()
         )
         assertTrue(adaptive.createDataSource() is androidx.media3.datasource.okhttp.OkHttpDataSource)
+    }
+
+    @Test
+    fun hlsSegmentIndexParsesRelativeSegmentsSkipsMasterAndByteRangeAndDetectsWindow() {
+        val mediaPlaylist = """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-TARGETDURATION:6
+            #EXTINF:6.000,
+            seg_000.m4s
+            #EXTINF:6.000,
+            seg_001.m4s?token=abc
+            #EXTINF:6.000,
+            ../audio/seg_002.m4s
+            #EXTINF:6.000,
+            https://cdn.example.com/abs/seg_003.m4s
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val index = com.example.player.HlsSegmentIndex()
+        val initial = index.indexPlaylist(
+            playlistUrl = "https://workers.dev/pub/movie/v1080/index.m3u8",
+            content = mediaPlaylist,
+            initialPrefetchCount = 3
+        )
+        assertEquals(
+            listOf(
+                "https://workers.dev/pub/movie/v1080/seg_000.m4s",
+                "https://workers.dev/pub/movie/v1080/seg_001.m4s?token=abc",
+                "https://workers.dev/pub/movie/audio/seg_002.m4s"
+            ),
+            initial
+        )
+        assertTrue(index.isIndexedSegment("https://workers.dev/pub/movie/v1080/seg_000.m4s"))
+        assertEquals(
+            listOf(
+                "https://workers.dev/pub/movie/v1080/seg_001.m4s?token=abc",
+                "https://workers.dev/pub/movie/audio/seg_002.m4s",
+                "https://cdn.example.com/abs/seg_003.m4s"
+            ),
+            index.getNextSegments("https://workers.dev/pub/movie/v1080/seg_000.m4s", 4)
+        )
+        assertTrue(
+            index.isOutsideActiveWindow(
+                currentUrl = "https://workers.dev/pub/movie/audio/seg_002.m4s",
+                candidateUrl = "https://workers.dev/pub/movie/v1080/seg_000.m4s",
+                windowSize = 3
+            )
+        )
+
+        // Master playlist and #EXT-X-BYTERANGE playlists must be safely skipped
+        val masterPlaylist = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+            v1080/index.m3u8
+        """.trimIndent()
+        assertTrue(
+            com.example.player.HlsSegmentIndex.parseMediaPlaylist(
+                "https://workers.dev/master.m3u8",
+                masterPlaylist
+            ).isEmpty()
+        )
+
+        val byteRangePlaylist = """
+            #EXTM3U
+            #EXT-X-BYTERANGE:1000@0
+            single.mp4
+        """.trimIndent()
+        assertTrue(
+            com.example.player.HlsSegmentIndex.parseMediaPlaylist(
+                "https://workers.dev/br.m3u8",
+                byteRangePlaylist
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun parallelHlsPrefetchManagerWarmsSegmentsInParallelServesFromRamAndBoundsMemory() {
+        val baseUrl = "https://cdn.workers.dev/hls/"
+        val playlistUrl = "${baseUrl}index.m3u8"
+        val playlistBody = """
+            #EXTM3U
+            #EXTINF:4.0,
+            seg0.m4s
+            #EXTINF:4.0,
+            seg1.m4s
+            #EXTINF:4.0,
+            seg2.m4s
+            #EXTINF:4.0,
+            seg3.m4s
+        """.trimIndent().toByteArray()
+
+        val seg0 = ByteArray(1024) { 1 }
+        val seg1 = ByteArray(1024) { 2 }
+        val seg2 = ByteArray(1024) { 3 }
+        val seg3 = ByteArray(1024) { 4 }
+
+        val resources = mapOf(
+            playlistUrl to playlistBody,
+            "${baseUrl}seg0.m4s" to seg0,
+            "${baseUrl}seg1.m4s" to seg1,
+            "${baseUrl}seg2.m4s" to seg2,
+            "${baseUrl}seg3.m4s" to seg3
+        )
+        val openCounts = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+
+        val fakeUpstreamFactory = androidx.media3.datasource.DataSource.Factory {
+            object : androidx.media3.datasource.DataSource {
+                private var data: ByteArray = ByteArray(0)
+                private var offset = 0
+                private var remaining = 0
+                private var currentUri: android.net.Uri? = null
+
+                override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {}
+
+                override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
+                    val key = dataSpec.uri.toString()
+                    openCounts.computeIfAbsent(key) { java.util.concurrent.atomic.AtomicInteger(0) }.incrementAndGet()
+                    data = resources[key] ?: throw java.io.IOException("404 $key")
+                    offset = dataSpec.position.toInt().coerceAtMost(data.size)
+                    remaining = (data.size - offset).coerceAtLeast(0)
+                    currentUri = dataSpec.uri
+                    return remaining.toLong()
+                }
+
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    if (remaining <= 0) return androidx.media3.common.C.RESULT_END_OF_INPUT
+                    val n = minOf(length, remaining)
+                    System.arraycopy(data, this.offset, buffer, offset, n)
+                    this.offset += n
+                    remaining -= n
+                    return n
+                }
+
+                override fun getUri(): android.net.Uri? = currentUri
+                override fun close() {}
+            }
+        }
+
+        val config = com.example.player.ParallelPrefetchConfig(
+            hlsPrefetchAheadCount = 3,
+            hlsMaxCacheBytes = 2560, // fits at most 2 segments (2048 B) -> enforces strict RAM cap
+            hlsMaxSingleSegmentBytes = 4096,
+            progressiveChunkBytes = 4096,
+            progressiveLookaheadChunks = 2,
+            workerThreads = 3
+        )
+        val manager = com.example.player.ParallelHlsPrefetchManager(config, fakeUpstreamFactory)
+        try {
+            val prefetchFactory = manager.createDataSourceFactory()
+
+            // 1. Reading the .m3u8 manifest tees it and warms seg0..seg2 in parallel
+            val manifestDs = prefetchFactory.createDataSource()
+            manifestDs.open(androidx.media3.datasource.DataSpec(android.net.Uri.parse(playlistUrl)))
+            val manifestBuf = ByteArray(4096)
+            while (manifestDs.read(manifestBuf, 0, manifestBuf.size) != androidx.media3.common.C.RESULT_END_OF_INPUT) {
+                // drain
+            }
+            manifestDs.close()
+
+            // Wait briefly for background workers to complete initial warm-up
+            Thread.sleep(250L)
+
+            // Cache must never exceed hlsMaxCacheBytes
+            assertTrue(
+                "Prefetch RAM must stay <= hlsMaxCacheBytes",
+                manager.snapshotStats().cachedBytes <= config.hlsMaxCacheBytes.toLong()
+            )
+
+            // 2. Reading seg1 via DataSource hits RAM cache and triggers seg3 prefetch
+            val segDs = prefetchFactory.createDataSource()
+            val len = segDs.open(androidx.media3.datasource.DataSpec(android.net.Uri.parse("${baseUrl}seg1.m4s")))
+            assertEquals(1024L, len)
+            val out = ByteArray(1024)
+            val read = segDs.read(out, 0, out.size)
+            segDs.close()
+            assertEquals(1024, read)
+            assertEquals(2.toByte(), out[0])
+
+            Thread.sleep(200L)
+            assertTrue("seg3 must be prefetched in background after reading seg1", (openCounts["${baseUrl}seg3.m4s"]?.get() ?: 0) >= 1)
+            assertTrue("Prefetch hits should be recorded", manager.snapshotStats().cacheHits >= 1L)
+
+            manager.resetSession()
+            assertEquals(0L, manager.snapshotStats().cachedBytes)
+            assertEquals(0L, manager.snapshotStats().cacheHits)
+        } finally {
+            manager.release()
+        }
+    }
+
+    @Test
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun quicThroughputWatchdogDemotesAfterThreeSlowSegmentsAndTransportSelectorWorks() {
+        val watchdog = com.example.player.QuicThroughputWatchdog()
+
+        // Tiny < 256 KB manifests/init chunks never trip watchdog
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 32_000L, loadDurationMs = 5_000L))
+        assertTrue(!watchdog.isDemoted)
+
+        // Two slow 512 KB chunks (~800 kbps) followed by a fast chunk (~16 Mbps) resets streak
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 1_000_000L, loadDurationMs = 500L))
+        assertTrue(!watchdog.isDemoted)
+
+        // Three consecutive slow chunks (~819 kbps < 2 Mbps) trip automatic demotion to HTTP/2 TCP
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(watchdog.isDemoted)
+
+        // Reset restores AUTO HTTP/3 eligibility
+        watchdog.reset()
+        assertTrue(!watchdog.isDemoted)
+
+        // v1.18: 1 ms RAM prefetch hit between slow network chunks must NOT reset slow streak!
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 1L)) // RAM hit ignored
+        assertTrue(!watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(watchdog.recordCompletedSegment(bytesLoaded = 512_000L, loadDurationMs = 5_000L))
+        assertTrue(watchdog.isDemoted)
+
+        // v1.18: Pure BandwidthMeter network samples & rebuffer stalls trip fast demotion
+        watchdog.reset()
+        assertTrue(!watchdog.recordNetworkSample(measuredBps = 507_000L, totalBytesLoaded = 128_000L))
+        assertTrue(!watchdog.recordNetworkSample(measuredBps = 620_000L, totalBytesLoaded = 128_000L))
+        assertTrue(watchdog.recordNetworkSample(measuredBps = 550_000L, totalBytesLoaded = 128_000L))
+        assertTrue(watchdog.isDemoted)
+
+        watchdog.reset()
+        assertTrue(!watchdog.recordRebufferStall(currentNetworkBps = 507_000L))
+        assertTrue(watchdog.recordRebufferStall(currentNetworkBps = 507_000L))
+        assertTrue(watchdog.isDemoted)
+
+        // Verify TracksSheet Network Engine selector updates transport mode
+        var selectedMode = com.example.player.NetworkTransportMode.AUTO
+        composeRule.setContent {
+            CineStreamTheme {
+                TracksSheet(
+                    videoTracks = emptyList(),
+                    audioTracks = emptyList(),
+                    preferredTransportMode = selectedMode,
+                    activeTransportLabel = com.example.player.StreamingNetworkEngine.TRANSPORT_HTTP2_OKHTTP,
+                    onSelectTransportMode = { selectedMode = it },
+                    onDismiss = {},
+                    onSelectVideoTrack = {},
+                    onSelectAudioTrack = {}
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(180L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("tracks_transport_mode_http2_tcp")
+            .performScrollTo()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals(com.example.player.NetworkTransportMode.HTTP2_TCP, selectedMode)
+    }
+
+    @Test
+    fun streamingPrefetchEntryHandsOffLiveBytesWithoutBlockingAndTvConfigSupports12MbVbrSegments() {
+        val tvConfig = com.example.player.ParallelPrefetchConfig.forDevice(isConstrainedOrTv = true)
+        assertEquals(2, tvConfig.hlsPrefetchAheadCount)
+        assertEquals(12 * 1024 * 1024, tvConfig.hlsMaxSingleSegmentBytes)
+        assertEquals(14 * 1024 * 1024, tvConfig.hlsMaxCacheBytes)
+        assertTrue(com.example.player.HlsSegmentIndex.isLikelyAudioUrl("https://cdn.example.com/audio/seg_01.m4s"))
+        assertTrue(!com.example.player.HlsSegmentIndex.isLikelyAudioUrl("https://cdn.example.com/v1080/seg_01.m4s"))
+
+        val entry = com.example.player.StreamingPrefetchEntry("https://cdn.example.com/v1080/seg_01.m4s")
+        val producer = Thread {
+            entry.markStarted()
+            entry.setHeaders(
+                uri = android.net.Uri.parse("https://cdn.example.com/v1080/seg_01.m4s"),
+                headers = emptyMap(),
+                contentLength = 4096L
+            )
+            for (i in 0 until 4) {
+                entry.appendChunk(ByteArray(1024) { (i + 10).toByte() }, 1024)
+                Thread.sleep(25L)
+            }
+            entry.markCompleted()
+        }
+        producer.start()
+
+        // Wait briefly until started, then claim live while producer is still streaming
+        Thread.sleep(20L)
+        val headers = entry.tryClaimAndAwaitHeaders(headersTimeoutMs = 1_500L)
+        assertTrue("Consumer should attach live before producer completes", headers != null)
+        assertEquals(4096L, headers!!.contentLength)
+
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(512)
+        while (true) {
+            val r = entry.readNext(buf, 0, buf.size, chunkTimeoutMs = 2_000L)
+            if (r == androidx.media3.common.C.RESULT_END_OF_INPUT) break
+            out.write(buf, 0, r)
+        }
+        producer.join(2_000L)
+        val bytes = out.toByteArray()
+        assertEquals(4096, bytes.size)
+        assertEquals(10.toByte(), bytes[0])
+        assertEquals(11.toByte(), bytes[1024])
+        assertEquals(12.toByte(), bytes[2048])
+        assertEquals(13.toByte(), bytes[3072])
+        entry.releaseAfterConsumerClose()
     }
 }

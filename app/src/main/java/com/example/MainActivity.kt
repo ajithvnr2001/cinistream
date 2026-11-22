@@ -217,6 +217,7 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onSwitchCdnMirror = viewModel::switchToNextCdnMirror,
                 onClearEdgeCache = viewModel::clearMediaEdgeCache,
                 onSelectDecoderMode = viewModel::setVideoDecoderMode,
+                onSelectTransportMode = viewModel::setNetworkTransportMode,
                 onRetryWithDecoderMode = viewModel::retryWithDecoderMode,
                 onSkipBadSegment = viewModel::skipBadSegmentAndRetry,
                 onRefreshJsonPlaylist = viewModel::refreshJsonPlaylist,

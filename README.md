@@ -1,17 +1,21 @@
 # CineStream — Universal Cinema Media Player for Android Mobile & Android TV
 
-**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.16 / versionCode 16**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, and **NextLib native FFmpeg (`1.11.1-0.16.0`)**.
+**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.18 / versionCode 18**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, and **NextLib native FFmpeg (`1.11.1-0.16.0`)**.
 
-It runs from a single universal APK (`cinistream-v16.apk`, **36 MB**) across modern 64-bit Android phones/tablets (`arm64-v8a`), legacy 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs), and `x86_64` emulators.
+It runs from a single universal APK (`cinistream-v18.apk`, **36 MB**) across modern 64-bit Android phones/tablets (`arm64-v8a`), legacy 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs), and `x86_64` emulators.
 
 ---
 
 ## Key Features
 
 ### High-Speed Adaptive Streaming Engine (HLS, DASH, MKV, MP4, WebM, TS)
-- **Adaptive HTTP/3 (QUIC) + HTTP/2 Transport (`StreamingNetworkEngine`):**
-  - Asynchronously initializes **Google Play Services Chromium Cronet** (`HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR + 0-RTT`) off the main thread — eliminating Android 9's OpenSSL TLS 1.2 handshake overhead and TCP Head-of-Line stalls on Cloudflare Workers / high-RTT Wi-Fi networks.
-  - Strictly rejects the slow Java HTTP/1.1 Cronet fallback (`PROVIDER_NAME_FALLBACK`) and automatically uses a shared **HTTP/2 `OkHttpDataSource`** (`ConnectionPool(6, 5m)`) on non-GMS devices with zero crashes or playback disruption.
+- **Live-Streaming Parallel HLS & Progressive Byte-Range Prefetching (`ParallelPrefetchEngine`):**
+  - Tees HLS media playlists (`.m3u8` / `mpegurl`) with 0 ms overhead and streams **2× focused parallel segments on Android TV** (`<= 14 MB` RAM cap, `12 MB` single-segment VBR ceiling) and **3× on Mobile/Tablet** (`<= 28 MB` RAM cap, `16 MB` ceiling), backed by a **dedicated non-blocking audio lane** so demuxed 5.1/7.1 audio never queues behind video.
+  - **Zero-Wait Live Streaming Handoff (`StreamingPrefetchEntry`):** If ExoPlayer requests a segment already mid-download, it attaches immediately and streams 32 KB chunks live as they arrive — zero blocking wait, zero mid-download discard, and foreground-first anti-starvation on seeks/low buffer (`< 8s`).
+  - Accelerates direct progressive `.mp4` / `.mkv` / `.webm` URLs via **2–3× parallel `206 Content-Range` lookahead** (1.5–2 MB slices) with automatic single-stream fallback for non-range servers.
+- **Self-Healing HTTP/3 (QUIC) ↔ HTTP/2 (TCP) Engine (`StreamingNetworkEngine` + `QuicThroughputWatchdog`):**
+  - Asynchronously initializes **Google Play Services Chromium Cronet** (`HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR + 0-RTT`) off the main thread, backed by a high-concurrency OkHttp HTTP/2 pool (`Dispatcher(maxRequests = 32, maxRequestsPerHost = 12)`, `ConnectionPool(12, 5m)`).
+  - **`QuicThroughputWatchdog` (RAM-Hit Immune):** Monitors pure `BandwidthMeter` socket throughput (`< 2.5 Mbps` for 3 windows) and mid-playback rebuffer stalls (`>= 2` stalls at `< 2.5 Mbps`) — immune to `1 ms` RAM prefetch hits — and immediately tears down throttled `udp6` QUIC sockets to reconnect over IPv4-first **HTTP/2 TCP** at the exact millisecond. Includes a persistent 1-tap **Network Engine (`Auto` / `HTTP/2` / `HTTP/3`)** selector in Tracks.
 - **In-Memory DNS Cache + IPv4-First Dual-Stack Ordering (`FastDnsResolver`):** 5-minute TTL bounded DNS cache (128 hosts) that orders IPv4 ahead of IPv6 to prevent dual-stack ISP fallback delays (e.g., JioFiber → Cloudflare) while preserving full IPv6 fallback.
 - **Zero-eMMC-Stall TV RAM-Direct Mode & Buffered Mobile Edge Cache (`MediaEdgeCache`):**
   - On Android TV and constrained-RAM devices, streams directly into ExoPlayer's heap-capped RAM buffer with **zero synchronous eMMC disk/SQLite writes** on the loader thread.
@@ -81,7 +85,7 @@ It runs from a single universal APK (`cinistream-v16.apk`, **36 MB**) across mod
 
 ### Build & Verify
 ```bash
-# Run all 41 unit & Robolectric Compose UI tests
+# Run all 45 unit & Robolectric Compose UI tests
 gradle :app:testDebugUnitTest
 
 # Build universal debug APK (arm64-v8a + armeabi-v7a + x86_64)
@@ -89,13 +93,13 @@ gradle :app:assembleDebug
 
 # Output APK location
 # app/build/outputs/apk/debug/app-debug.apk
-# Pre-packaged root artifact: ./cinistream-v16.apk (36 MB)
+# Pre-packaged root artifact: ./cinistream-v18.apk (36 MB)
 ```
 
 ### Installing on Phone or Android TV
-1. Transfer **`cinistream-v16.apk`** to your Android phone, tablet, or Android TV.
+1. Transfer **`cinistream-v18.apk`** to your Android phone, tablet, or Android TV.
 2. Enable **Install Unknown Apps** for your file manager or sideloading tool.
-3. Install `cinistream-v16.apk` (universal build covers both 64-bit phones and 32-bit Android TVs).
+3. Install `cinistream-v18.apk` (universal build covers both 64-bit phones and 32-bit Android TVs).
 4. Optional: load the bundled sample playlist **`eg-playlist.json`** (from a URL or local file) to test Movies, multi-season Series, IMDb posters, and multi-CDN mirrors immediately.
 
 ---
@@ -122,33 +126,35 @@ gradle :app:assembleDebug
 .
 ├── README.md                          # Project overview, quick start & version history
 ├── eg-playlist.json                   # Sample unified Movie + Multi-Season Series + CDN playlist
-├── cinistream-v16.apk                 # Latest universal Phone + Android TV APK (v1.16, 36 MB)
+├── cinistream-v18.apk                 # Latest universal Phone + Android TV APK (v1.18, 36 MB)
 ├── docs/
 │   ├── ARCHITECTURE.md                # Full MVVM architecture, request pipeline & state isolation
 │   ├── DECODER_AND_PLAYBACK_ENGINE.md # Cronet HTTP/3, Media3 1.11.1 + NextLib FFmpeg 10-bit & recovery
 │   ├── PLAYLIST_AND_CDN_GUIDE.md      # JSON/M3U schemas, Series structure, CDN failover & pre-warming
 │   ├── MEMORY_AND_TV_OPTIMIZATION.md  # Zero-OOM Android 9 TV engineering, RAM-Direct & D-pad guide
-│   └── TESTING_AND_TROUBLESHOOTING.md # 41-test suite, Stats for Nerds guide & issue playbooks
+│   └── TESTING_AND_TROUBLESHOOTING.md # 45-test suite, Stats for Nerds guide & issue playbooks
 ├── gradle/libs.versions.toml          # Version catalog (Media3 1.11.1, Cronet 18.1.1, NextLib 1.11.1-0.16.0)
 └── app/src/
     ├── main/java/com/example/
     │   ├── CineStreamApplication.kt   # Async Cronet HTTP/3 init, FastDns + OkHttp pool, RGB_565 Coil & trim hooks
     │   ├── MainActivity.kt            # Edge-to-edge host, Navigation Compose & VIEW intent router
-    │   ├── data/                      # Room history DB & DataStore subtitle/decoder preferences
+    │   ├── data/                      # Room history DB & DataStore subtitle/decoder/transport preferences
     │   ├── model/                     # StreamFormat, JsonPlaylistItem, SeriesSeason, SeriesEpisode, Tracks
-    │   ├── player/                    # CinePlayerManager, StreamingNetworkEngine, DecoderEngine,
-    │   │                              # CdnMirrorResolver, MediaEdgeCache, AudioVolumeBooster,
+    │   ├── player/                    # CinePlayerManager, ParallelPrefetchEngine, StreamingNetworkEngine,
+    │   │                              # DecoderEngine, CdnMirrorResolver, MediaEdgeCache, AudioVolumeBooster,
     │   │                              # JsonPlaylistParser, M3uPlaylistParser, ImdbMetadataClient,
     │   │                              # MediaFormatDetector, PlayerNetworkStats, SeekBarScrubEngine, SubtitleHelper
     │   ├── ui/                        # HomeScreen, PlayerScreen, overlays, sheets, TV focus utils & theme
     │   └── viewmodel/                 # CineStreamViewModel (single source of truth + origin pre-warming)
-    └── test/java/com/example/         # 10 JVM unit & Robolectric Compose UI test suites (41 tests)
+    └── test/java/com/example/         # 10 JVM unit & Robolectric Compose UI test suites (45 tests)
 ```
 
 ---
 
 ## Version History Highlights
 
+- **v1.18 (`cinistream-v18.apk`, 36 MB):** Upgraded `ParallelPrefetchEngine` with **live progressive streaming handoff (`StreamingPrefetchEntry`)** so ExoPlayer attaches mid-download at 0 ms and reads 32 KB chunks live (eliminating blocking waits and the 6 MB VBR segment discard cliff); raised single-segment ceilings to **12 MB (TV) / 16 MB (Mobile)**; added **foreground-first anti-starvation** (`1×` lookahead during seeks/low buffer `< 8s`, focused `2×` TV / `3×` Mobile steady-state) and a **dedicated non-blocking audio prefetch lane**; fixed `QuicThroughputWatchdog` to ignore `1 ms` RAM prefetch hits and monitor pure `BandwidthMeter` samples + rebuffer stalls (`>= 2` stalls at `< 2.5 Mbps`) with immediate HTTP/2 IPv4 TCP socket reconnection; tightened TV `Stats for Nerds` vertical spacing so it never overlaps the bottom-left seekbar timestamp when controls are open.
+- **v1.17 (`cinistream-v17.apk`, 36 MB):** Added `ParallelPrefetchEngine` (`HlsSegmentIndex`, `ParallelHlsPrefetchManager`, `ParallelPrefetchDataSource`) to download **3× parallel HLS segments on Android TV** (`<= 12 MB` consume-once RAM cap) and **4× on Mobile** (`<= 24 MB` cap), plus **2–3× parallel `206 Content-Range` lookahead** for progressive `.mp4`/`.mkv`/`.webm` streams, multiplying cold Cloudflare/S3 origin throughput 2×–4× while staying 100% OOM-proof; raised OkHttp `Dispatcher` (`maxRequests = 32, maxRequestsPerHost = 12`) and `ConnectionPool(12, 5m)`; added `QuicThroughputWatchdog` (auto-demotes Cronet HTTP/3 to HTTP/2 TCP after 3 slow `< 2 Mbps` segments or QUIC I/O errors when ISPs throttle UDP-443); added persistent 1-tap **Network Engine (`Auto` / `HTTP/2` / `HTTP/3`)** selector in `TracksSheet`; added inline `3×/4× Prefetch (hit%)` telemetry in Stats for Nerds and OS `onTrimMemory` prefetch RAM eviction.
 - **v1.16 (`cinistream-v16.apk`, 36 MB):** Added `StreamingNetworkEngine` with asynchronous **Google Play Services Cronet (`HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR + 0-RTT`)** and automatic zero-crash fallback to HTTP/2 OkHttp (strictly excluding slow Java HTTP/1.1 Cronet fallback); added 5-minute IPv4-first `FastDnsResolver`; switched constrained Android TVs to **RAM-Direct mode** (eliminating slow eMMC `SimpleCache` flash-write stalls on ExoPlayer's loader thread) while upgrading mobile disk edge cache writes to `128 KB` buffers; added smart Wi-Fi/Ethernet/5G initial bitrate estimates (`6 Mbps` TV / `10 Mbps` phone) + debounced `HEAD` origin pre-warming; added `FastStreamingLoadErrorHandlingPolicy` (`500 ms` initial transient retry + fail-fast 4xx Multi-CDN failover); added compact `HTTP/3` / `HTTP/2` transport pill and `RAM Direct` telemetry in Stats for Nerds.
 - **v1.15 (`cinistream-v15.apk`, 34 MB):** Switched Media3 streaming transport to HTTP/2 multiplexed `OkHttpDataSource` (fixing 3.95 Mbps Android 9 TV HTTP/1.1 bottleneck on demuxed fMP4 HLS), prioritized 2-channel Stereo hardware DSP audio on Android TV (eliminating 7.1 SW AAC `AudioTrack` underruns), tuned faster TV ABR downshifts (`0.70f` bandwidth fraction, 10s decrease window, 9.5 Mbps 1080p TV cap), and upgraded the heap-capped `LoadControl` to 20–45s / 12–40 MB / 2.5s play / 6s rebuffer / 0–5s back-buffer.
 - **v1.14 (`cinistream-v14.apk`, 34 MB):** Upgraded Media3 to `1.11.1`, integrated **NextLib native FFmpeg (`1.11.1-0.16.0`)** for **10-bit HEVC Main 10**, AV1 (`dav1d`), and DTS/AC-3/TrueHD decoding; blocked `.low_latency` Qualcomm WebRTC codecs; added clean `surfaceResetToken` surface handoff; added deterministic `allocator.trim()` + `clearVideoSurface()` + OkHttp pool eviction; compressed universal APK to 34 MB.

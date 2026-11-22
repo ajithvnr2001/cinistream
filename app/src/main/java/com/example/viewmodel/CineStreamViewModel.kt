@@ -29,6 +29,7 @@ import com.example.player.M3uInspectionResult
 import com.example.player.M3uPlaylistParser
 import com.example.player.MediaEdgeCache
 import com.example.player.MediaFormatDetector
+import com.example.player.NetworkTransportMode
 import com.example.player.PlaybackProgressState
 import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerPlaybackState
@@ -192,6 +193,12 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 playerManager.syncNetworkStats()
             }
         }
+        playerManager.onTransportAutoFallback = { reason ->
+            _uiState.update { it.copy(toastMessage = reason) }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
+        }
         playerManager.onMediaEnded = {
             playNextEpisodeIfAvailable(autoTriggered = true)
         }
@@ -202,6 +209,10 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val savedDecoderMode = prefsRepo.videoDecoderMode.first()
             playerManager.setPreferredDecoderMode(savedDecoderMode, reloadActiveStream = false)
+        }
+        viewModelScope.launch {
+            val savedTransportMode = prefsRepo.networkTransportMode.first()
+            playerManager.setPreferredTransportMode(savedTransportMode, reloadActiveStream = false)
         }
         viewModelScope.launch {
             enrichSamplesWithImdb()
@@ -689,6 +700,19 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
         _uiState.update {
             it.copy(toastMessage = "Decoder set to ${mode.label}")
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    fun setNetworkTransportMode(mode: NetworkTransportMode) {
+        playerManager.setPreferredTransportMode(mode, reloadActiveStream = true)
+        viewModelScope.launch {
+            prefsRepo.updateNetworkTransportMode(mode)
+        }
+        _uiState.update {
+            it.copy(toastMessage = "Network engine set to ${mode.label}")
         }
         if (statsForNerdsEnabled.value) {
             playerManager.syncNetworkStats()

@@ -21,6 +21,8 @@
             <action android:name="android.intent.action.GET_CONTENT" />
             <data android:mimeType="video/*" />
         </intent>
+        <package android:name="com.cloudflare.onedotonedotonedotone" />
+        <package android:name="com.nordvpn.android" />
     </queries>
 
     <!-- Universal Mobile + Android TV feature declarations -->

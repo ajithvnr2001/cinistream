@@ -13,11 +13,27 @@ import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
 import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
+import com.example.player.CredentialVault
 import com.example.player.NetworkTransportMode
+import com.example.player.NordVpnCatalog
+import com.example.player.NordVpnCredentials
+import com.example.player.PrivateDnsMode
 import com.example.player.VideoDecoderMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+
+data class NetworkPrivacyPrefs(
+    val privateDnsMode: PrivateDnsMode = PrivateDnsMode.SYSTEM,
+    val nordVpnEnabled: Boolean = false,
+    val nordVpnServerHost: String = NordVpnCatalog.DEFAULT_SERVERS.first().hostname,
+    val nordVpnServerLabel: String = NordVpnCatalog.DEFAULT_SERVERS.first().label,
+    val nordVpnUsername: String = "",
+    val nordVpnPassword: String = ""
+) {
+    val hasNordCredentials: Boolean
+        get() = nordVpnUsername.isNotBlank() && nordVpnPassword.isNotBlank()
+}
 
 private val Context.cinePrefsDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "cinestream_prefs"
@@ -36,6 +52,12 @@ class SubtitlePrefsRepository(private val context: Context) {
         val STATS_FOR_NERDS_ENABLED = booleanPreferencesKey("stats_for_nerds_enabled")
         val VIDEO_DECODER_MODE = stringPreferencesKey("video_decoder_mode")
         val NETWORK_TRANSPORT_MODE = stringPreferencesKey("network_transport_mode")
+        val PRIVATE_DNS_MODE = stringPreferencesKey("private_dns_mode")
+        val NORDVPN_ENABLED = booleanPreferencesKey("nordvpn_enabled")
+        val NORDVPN_SERVER_HOST = stringPreferencesKey("nordvpn_server_host")
+        val NORDVPN_SERVER_LABEL = stringPreferencesKey("nordvpn_server_label")
+        val NORDVPN_USER_ENC = stringPreferencesKey("nordvpn_user_enc")
+        val NORDVPN_PASS_ENC = stringPreferencesKey("nordvpn_pass_enc")
     }
 
     val appearance: Flow<SubtitleAppearance> = context.cinePrefsDataStore.data.map { prefs ->
@@ -163,6 +185,61 @@ class SubtitlePrefsRepository(private val context: Context) {
             }
             val legacy = legacySingleUrl?.trim().orEmpty()
             return if (legacy.isNotBlank()) listOf(legacy) else emptyList()
+        }
+    }
+
+    val networkPrivacyPrefs: Flow<NetworkPrivacyPrefs> = context.cinePrefsDataStore.data.map { prefs ->
+        val defaultServer = NordVpnCatalog.DEFAULT_SERVERS.first()
+        val mode = prefs[Keys.PRIVATE_DNS_MODE]
+            ?.let { runCatching { PrivateDnsMode.valueOf(it) }.getOrNull() }
+            ?: PrivateDnsMode.SYSTEM
+        val user = CredentialVault.decrypt(prefs[Keys.NORDVPN_USER_ENC])
+        val pass = CredentialVault.decrypt(prefs[Keys.NORDVPN_PASS_ENC])
+        NetworkPrivacyPrefs(
+            privateDnsMode = mode,
+            nordVpnEnabled = (prefs[Keys.NORDVPN_ENABLED] ?: false) && user.isNotBlank() && pass.isNotBlank(),
+            nordVpnServerHost = prefs[Keys.NORDVPN_SERVER_HOST]?.takeIf { it.isNotBlank() } ?: defaultServer.hostname,
+            nordVpnServerLabel = prefs[Keys.NORDVPN_SERVER_LABEL]?.takeIf { it.isNotBlank() } ?: defaultServer.label,
+            nordVpnUsername = user,
+            nordVpnPassword = pass
+        )
+    }
+
+    suspend fun updatePrivateDnsMode(mode: PrivateDnsMode) {
+        context.cinePrefsDataStore.edit { it[Keys.PRIVATE_DNS_MODE] = mode.name }
+    }
+
+    suspend fun saveNordVpnCredentials(
+        credentials: NordVpnCredentials,
+        serverHost: String,
+        serverLabel: String,
+        enableImmediately: Boolean = true
+    ) {
+        context.cinePrefsDataStore.edit { prefs ->
+            prefs[Keys.NORDVPN_USER_ENC] = CredentialVault.encrypt(credentials.username)
+            prefs[Keys.NORDVPN_PASS_ENC] = CredentialVault.encrypt(credentials.password)
+            prefs[Keys.NORDVPN_SERVER_HOST] = serverHost.trim()
+            prefs[Keys.NORDVPN_SERVER_LABEL] = serverLabel.trim()
+            prefs[Keys.NORDVPN_ENABLED] = enableImmediately
+        }
+    }
+
+    suspend fun updateNordVpnEnabled(enabled: Boolean) {
+        context.cinePrefsDataStore.edit { it[Keys.NORDVPN_ENABLED] = enabled }
+    }
+
+    suspend fun updateNordVpnServer(serverHost: String, serverLabel: String) {
+        context.cinePrefsDataStore.edit {
+            it[Keys.NORDVPN_SERVER_HOST] = serverHost.trim()
+            it[Keys.NORDVPN_SERVER_LABEL] = serverLabel.trim()
+        }
+    }
+
+    suspend fun clearNordVpnCredentials() {
+        context.cinePrefsDataStore.edit { prefs ->
+            prefs.remove(Keys.NORDVPN_USER_ENC)
+            prefs.remove(Keys.NORDVPN_PASS_ENC)
+            prefs[Keys.NORDVPN_ENABLED] = false
         }
     }
 

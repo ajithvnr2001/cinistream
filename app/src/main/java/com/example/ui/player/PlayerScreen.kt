@@ -170,6 +170,9 @@ fun PlayerScreen(
     onClearEdgeCache: () -> Unit = {},
     onSelectDecoderMode: (VideoDecoderMode) -> Unit = {},
     onSelectTransportMode: (NetworkTransportMode) -> Unit = {},
+    networkPrivacyBadge: String = "1.1.1.1 / VPN",
+    isPrivacyActive: Boolean = false,
+    onOpenNetworkPrivacy: (() -> Unit)? = null,
     onRetryWithDecoderMode: (VideoDecoderMode) -> Unit = {},
     onSkipBadSegment: () -> Unit = {},
     onRefreshJsonPlaylist: () -> Unit = {},
@@ -887,6 +890,14 @@ fun PlayerScreen(
             onSelectTransportMode = { mode ->
                 onSelectTransportMode(mode)
                 interactionNonce++
+            },
+            networkPrivacyBadge = networkPrivacyBadge,
+            isPrivacyActive = isPrivacyActive,
+            onOpenNetworkPrivacy = onOpenNetworkPrivacy?.let { openPrivacy ->
+                {
+                    showTracksSheet = false
+                    openPrivacy()
+                }
             },
             onDismiss = { showTracksSheet = false },
             onSelectVideoTrack = onSelectVideoTrack,

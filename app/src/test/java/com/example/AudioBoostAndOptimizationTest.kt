@@ -462,8 +462,11 @@ class AudioBoostAndOptimizationTest {
             }
             manifestDs.close()
 
-            // Wait briefly for background workers to complete initial warm-up
-            Thread.sleep(250L)
+            // Wait for background workers to complete initial warm-up
+            val warmupDeadline = System.currentTimeMillis() + 2_000L
+            while ((openCounts["${baseUrl}seg1.m4s"]?.get() ?: 0) < 1 && System.currentTimeMillis() < warmupDeadline) {
+                Thread.sleep(25L)
+            }
 
             // Cache must never exceed hlsMaxCacheBytes
             assertTrue(
@@ -481,7 +484,10 @@ class AudioBoostAndOptimizationTest {
             assertEquals(1024, read)
             assertEquals(2.toByte(), out[0])
 
-            Thread.sleep(200L)
+            val seg3Deadline = System.currentTimeMillis() + 2_000L
+            while ((openCounts["${baseUrl}seg3.m4s"]?.get() ?: 0) < 1 && System.currentTimeMillis() < seg3Deadline) {
+                Thread.sleep(25L)
+            }
             assertTrue("seg3 must be prefetched in background after reading seg1", (openCounts["${baseUrl}seg3.m4s"]?.get() ?: 0) >= 1)
             assertTrue("Prefetch hits should be recorded", manager.snapshotStats().cacheHits >= 1L)
 

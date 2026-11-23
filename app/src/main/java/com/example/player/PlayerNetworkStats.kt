@@ -44,6 +44,10 @@ data class PlayerNetworkStats(
     val prefetchHits: Long = 0L,
     val activeVideoDecoderName: String = "",
     val effectiveDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO,
+    val privateDnsMode: PrivateDnsMode = PrivateDnsMode.SYSTEM,
+    val nordVpnActive: Boolean = false,
+    val nordVpnServerHost: String = "",
+    val systemVpnActive: Boolean = false,
     val networkActivityHistoryKBps: List<Float> = emptyList(),
     val bufferHealthHistorySec: List<Float> = emptyList()
 )

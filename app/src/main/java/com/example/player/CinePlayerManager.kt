@@ -147,6 +147,8 @@ class CinePlayerManager(context: Context) {
         }
     }
 
+    private val appContext: Context = context.applicationContext
+
     private val isTelevisionDevice: Boolean =
         context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
 
@@ -158,8 +160,18 @@ class CinePlayerManager(context: Context) {
 
     private val isRamDirectCacheMode: Boolean = MediaEdgeCache.isRamDirectMode(context)
 
+    val fastDnsResolver: FastDnsResolver =
+        (context.applicationContext as? CineStreamApplication)?.fastDnsResolver
+            ?: FastDnsResolver()
+
+    val socksProxyManager: DynamicSocksProxyManager =
+        (context.applicationContext as? CineStreamApplication)?.socksProxyManager
+            ?: DynamicSocksProxyManager(proxyDnsResolver = fastDnsResolver)
+
     val okHttpClient: OkHttpClient = (context.applicationContext as? CineStreamApplication)?.sharedOkHttpClient
         ?: OkHttpClient.Builder()
+            .dns(fastDnsResolver)
+            .proxySelector(socksProxyManager.proxySelector)
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
             .connectionPool(ConnectionPool(6, 5, TimeUnit.MINUTES))
             .retryOnConnectionFailure(true)
@@ -184,7 +196,7 @@ class CinePlayerManager(context: Context) {
         .setResetOnNetworkTypeChange(true)
         .build()
 
-    // Reuse the shared ConnectionPool, FastDnsResolver & Dispatcher for HTTP/2 fallback
+    // Reuse the shared ConnectionPool, FastDnsResolver, DynamicSocksProxyManager & Dispatcher for HTTP/2
     private val streamingOkHttpClient: OkHttpClient = okHttpClient.newBuilder()
         .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -197,13 +209,18 @@ class CinePlayerManager(context: Context) {
 
     // Dynamically uses Play Services Cronet (HTTP/3 QUIC + TLS 1.3 + BBR) when available,
     // with automatic QUIC-throttle watchdog & zero-crash fallback to HTTP/2 OkHttp.
+    // When per-app Cloudflare 1.1.1.1 DoH or NordVPN SOCKS5 is active, routes via OkHttp HTTP/2.
     private val httpDataSourceFactory: AdaptiveHttpDataSourceFactory =
         StreamingNetworkEngine.createAdaptiveHttpDataSourceFactory(
             okHttpClient = streamingOkHttpClient,
             userAgent = DEFAULT_USER_AGENT,
             transferListener = bandwidthMeter,
             transportModeProvider = { preferredTransportMode },
-            cronetDemotedProvider = { quicWatchdog.isDemoted }
+            cronetDemotedProvider = { quicWatchdog.isDemoted },
+            forceOkHttpProvider = {
+                fastDnsResolver.privateDnsMode != PrivateDnsMode.SYSTEM ||
+                    socksProxyManager.isProxyActive
+            }
         )
 
     // DefaultDataSource wraps AdaptiveHttpDataSourceFactory so remote HTTP/3 / HTTP/2 streams
@@ -871,20 +888,48 @@ class CinePlayerManager(context: Context) {
         parallelPrefetchManager.clearMemoryOnly()
         _state.update { it.copy(preferredTransportMode = mode) }
         if (changed && reloadActiveStream) {
-            val targetUrl = candidateUrls.getOrNull(activeMirrorIndex) ?: activeMediaUri
-            if (!targetUrl.isNullOrBlank()) {
-                val resumeMs = player.currentPosition.takeIf { it > 0L } ?: lastRequestedStartPosMs
-                val wasPlaying = player.playWhenReady || _state.value.errorMessage != null
-                prepareResolvedUrl(
-                    targetUrl = targetUrl,
-                    format = activeMediaFormat,
-                    externalSubtitles = lastLoadedSubtitles,
-                    startPositionMs = resumeMs,
-                    autoPlay = wasPlaying,
-                    autoSelectSubtitleId = lastAutoSelectSubtitleId,
-                    resetSessionCounters = false
-                )
+            reloadActiveStreamAtCurrentPosition()
+        }
+    }
+
+    /**
+     * Applies updated Cloudflare 1.1.1.1 / Google 8.8.8.8 Private DNS and NordVPN SOCKS5 routing
+     * live across all OkHttp streaming sockets, evicts stale pooled connections, and seamlessly
+     * reloads any currently playing stream at the exact playback millisecond.
+     */
+    fun applyNetworkPrivacyConfig(
+        dnsMode: PrivateDnsMode,
+        nordConfig: DynamicSocksProxyManager.ActiveConfig,
+        reloadActiveStream: Boolean = true
+    ) {
+        val changed = fastDnsResolver.privateDnsMode != dnsMode ||
+            socksProxyManager.config != nordConfig
+        fastDnsResolver.setPrivateDnsMode(dnsMode)
+        socksProxyManager.updateConfig(nordConfig)
+        if (changed) {
+            runCatching { okHttpClient.connectionPool.evictAll() }
+            runCatching { streamingOkHttpClient.connectionPool.evictAll() }
+            parallelPrefetchManager.clearMemoryOnly()
+            if (reloadActiveStream) {
+                reloadActiveStreamAtCurrentPosition()
             }
+        }
+    }
+
+    private fun reloadActiveStreamAtCurrentPosition() {
+        val targetUrl = candidateUrls.getOrNull(activeMirrorIndex) ?: activeMediaUri
+        if (!targetUrl.isNullOrBlank()) {
+            val resumeMs = player.currentPosition.takeIf { it > 0L } ?: lastRequestedStartPosMs
+            val wasPlaying = player.playWhenReady || _state.value.errorMessage != null
+            prepareResolvedUrl(
+                targetUrl = targetUrl,
+                format = activeMediaFormat,
+                externalSubtitles = lastLoadedSubtitles,
+                startPositionMs = resumeMs,
+                autoPlay = wasPlaying,
+                autoSelectSubtitleId = lastAutoSelectSubtitleId,
+                resetSessionCounters = false
+            )
         }
     }
 
@@ -1171,7 +1216,11 @@ class CinePlayerManager(context: Context) {
             isRamDirectCacheMode = isRamDirectCacheMode,
             prefetchDepth = prefetchSnapshot.activeDepth,
             prefetchHitRatePercent = prefetchSnapshot.hitRatePercent,
-            prefetchHits = prefetchSnapshot.cacheHits
+            prefetchHits = prefetchSnapshot.cacheHits,
+            privateDnsMode = fastDnsResolver.privateDnsMode,
+            nordVpnActive = socksProxyManager.isProxyActive,
+            nordVpnServerHost = socksProxyManager.config.host,
+            systemVpnActive = SystemVpnMonitor.isSystemVpnActive(appContext)
         )
     }
 
@@ -1293,6 +1342,10 @@ class CinePlayerManager(context: Context) {
             prefetchHits = prefetchSnapshot.cacheHits,
             activeVideoDecoderName = activeVideoDecoderName,
             effectiveDecoderMode = effectiveDecoderMode,
+            privateDnsMode = fastDnsResolver.privateDnsMode,
+            nordVpnActive = socksProxyManager.isProxyActive,
+            nordVpnServerHost = socksProxyManager.config.host,
+            systemVpnActive = SystemVpnMonitor.isSystemVpnActive(appContext),
             networkActivityHistoryKBps = networkHistory.toList(),
             bufferHealthHistorySec = bufferHistory.toList()
         )

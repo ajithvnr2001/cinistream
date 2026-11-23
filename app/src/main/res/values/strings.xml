@@ -60,4 +60,11 @@
     <string name="try_software_decoder">Try Software Decoder (SW)</string>
     <string name="try_hardware_decoder">Try Hardware Decoder (HW)</string>
     <string name="skip_bad_segment">Skip Bad Segment (+5s)</string>
+    <string name="privacy_sheet_title">VPN &amp; 1.1.1.1 Private DNS</string>
+    <string name="privacy_sheet_subtitle">Bypass ISP throttling &amp; DNS blocks with Cloudflare 1.1.1.1 DoH + NordVPN SOCKS5</string>
+    <string name="privacy_dns_section_title">Encrypted DNS (DoH)</string>
+    <string name="privacy_nordvpn_section_title">NordVPN SOCKS5 Tunnel</string>
+    <string name="privacy_system_apps_title">System VPN Companion Apps</string>
+    <string name="privacy_test_connection">Test Connection</string>
+    <string name="cd_open_privacy_vpn">Open Cloudflare 1.1.1.1 and NordVPN settings</string>
 </resources>

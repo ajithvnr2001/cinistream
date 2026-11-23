@@ -19,6 +19,7 @@ import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -76,6 +77,9 @@ fun TracksSheet(
     preferredTransportMode: NetworkTransportMode = NetworkTransportMode.AUTO,
     activeTransportLabel: String = "",
     onSelectTransportMode: (NetworkTransportMode) -> Unit = {},
+    networkPrivacyBadge: String = "1.1.1.1 / VPN",
+    isPrivacyActive: Boolean = false,
+    onOpenNetworkPrivacy: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onSelectVideoTrack: (TrackOption?) -> Unit,
     onSelectAudioTrack: (TrackOption) -> Unit
@@ -488,6 +492,66 @@ fun TracksSheet(
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            if (onOpenNetworkPrivacy != null) {
+                Surface(
+                    onClick = onOpenNetworkPrivacy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tvFocusHighlight(shape = RoundedCornerShape(14.dp), focusedScale = 1.02f)
+                        .testTag("tracks_open_privacy_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isPrivacyActive) SubtitleEmerald.copy(alpha = 0.14f) else ObsidianSurfaceHigh,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (isPrivacyActive) SubtitleEmerald.copy(alpha = 0.6f) else ObsidianOutline.copy(alpha = 0.6f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shield,
+                            contentDescription = null,
+                            tint = if (isPrivacyActive) SubtitleEmerald else CinemaAmber,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.privacy_sheet_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (isPrivacyActive) {
+                                    "Active: $networkPrivacyBadge"
+                                } else {
+                                    "Cloudflare 1.1.1.1 DoH & NordVPN SOCKS5"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isPrivacyActive) SubtitleEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isPrivacyActive) SubtitleEmerald.copy(alpha = 0.22f) else ObsidianOutline.copy(alpha = 0.45f)
+                        ) {
+                            Text(
+                                text = if (isPrivacyActive) "Active" else "Setup",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (isPrivacyActive) SubtitleEmerald else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
                         }
                     }
                 }

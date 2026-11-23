@@ -8,6 +8,7 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.example.player.CinePlayerManager
+import com.example.player.DynamicSocksProxyManager
 import com.example.player.FastDnsResolver
 import com.example.player.ParallelHlsPrefetchManager
 import com.example.player.StreamingNetworkEngine
@@ -21,13 +22,17 @@ import java.util.concurrent.TimeUnit
 /**
  * Application class providing:
  * - Asynchronous Play Services Cronet HTTP/3 (QUIC + TLS 1.3 + BBR) initialization on Android 9+ TVs & phones.
- * - A single shared HTTP/2-capable OkHttpClient with 5-minute IPv4-first DNS caching and a tuned
+ * - A single shared HTTP/2-capable OkHttpClient with 5-minute IPv4-first DNS caching (plus optional
+ *   Cloudflare 1.1.1.1 / Google 8.8.8.8 DoH and NordVPN SOCKS5 proxy routing) and a tuned
  *   high-concurrency Dispatcher (`maxRequestsPerHost = 12`) so parallel segment prefetches never queue.
  * - A memory-bounded RGB_565 Coil ImageLoader so low-RAM Android TVs stream fast without OOMs.
  */
 class CineStreamApplication : Application(), ImageLoaderFactory {
 
     val fastDnsResolver: FastDnsResolver by lazy { FastDnsResolver() }
+    val socksProxyManager: DynamicSocksProxyManager by lazy {
+        DynamicSocksProxyManager(proxyDnsResolver = fastDnsResolver)
+    }
 
     val sharedOkHttpClient: OkHttpClient by lazy {
         val dispatcher = Dispatcher().apply {
@@ -36,8 +41,10 @@ class CineStreamApplication : Application(), ImageLoaderFactory {
         }
         OkHttpClient.Builder()
             .dispatcher(dispatcher)
-            // Cache DNS for 5 min with IPv4-first ordering (eliminates Android 9 & dual-stack stalls)
+            // Cache DNS for 5 min with IPv4-first ordering & optional Cloudflare 1.1.1.1 DoH
             .dns(fastDnsResolver)
+            // Live-switchable NordVPN SOCKS5 proxy selector (Proxy.NO_PROXY when disabled)
+            .proxySelector(socksProxyManager.proxySelector)
             // Force HTTP/2 multiplexing + HTTP/1.1 fallback so Android 9 TVs stream demuxed
             // HLS video + audio .m4s chunks + parallel prefetches smoothly over warm TLS sockets.
             .protocols(listOf(Protocol.HTTP_2, Protocol.HTTP_1_1))

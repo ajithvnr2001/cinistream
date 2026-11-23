@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.cinestream.vqxkpm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 19
-    versionName = "1.19"
+    versionCode = 21
+    versionName = "1.21"
 
     ndk {
       // Keep 64-bit phones (arm64-v8a), 32-bit Android TVs (armeabi-v7a), and 64-bit emulators (x86_64)

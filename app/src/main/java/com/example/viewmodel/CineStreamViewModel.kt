@@ -21,7 +21,9 @@ import com.example.model.SubtitleBgPreset
 import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
 import com.example.model.TrackOption
+import com.example.BuildConfig
 import com.example.player.CinePlayerManager
+import com.example.player.DynamicSocksProxyManager
 import com.example.player.ImdbMetadataClient
 import com.example.player.JsonPlaylistLoadResult
 import com.example.player.JsonPlaylistParser
@@ -30,11 +32,17 @@ import com.example.player.M3uPlaylistParser
 import com.example.player.MediaEdgeCache
 import com.example.player.MediaFormatDetector
 import com.example.player.NetworkTransportMode
+import com.example.player.NordVpnApiClient
+import com.example.player.NordVpnCatalog
+import com.example.player.NordVpnLoginResult
+import com.example.player.NordVpnServer
 import com.example.player.PlaybackProgressState
 import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerPlaybackState
+import com.example.player.PrivateDnsMode
 import com.example.player.StreamingNetworkEngine
 import com.example.player.SubtitleHelper
+import com.example.player.SystemVpnMonitor
 import com.example.player.VideoDecoderMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -104,12 +112,31 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private val m3uParser = M3uPlaylistParser(application, playerManager.okHttpClient)
     private val jsonParser = JsonPlaylistParser(application, playerManager.okHttpClient)
     private val imdbClient = ImdbMetadataClient(playerManager.okHttpClient)
+    private val nordVpnClient = NordVpnApiClient()
+    private var activeNordUsername: String = ""
+    private var activeNordPassword: String = ""
 
     private val _uiState = MutableStateFlow(CineStreamUiState())
     val uiState: StateFlow<CineStreamUiState> = _uiState.asStateFlow()
 
     private val _jsonPlaylistState = MutableStateFlow(JsonPlaylistUiState())
     val jsonPlaylistState: StateFlow<JsonPlaylistUiState> = _jsonPlaylistState.asStateFlow()
+
+    private fun configuredBuildToken(): String {
+        val raw = BuildConfig.NORDVPN_ACCESS_TOKEN.trim()
+        return if (raw.isBlank() || raw.equals("YOUR_NORDVPN_ACCESS_TOKEN", ignoreCase = true)) {
+            ""
+        } else {
+            raw
+        }
+    }
+
+    private val _networkPrivacyState = MutableStateFlow(
+        NetworkPrivacyUiState(
+            hasConfiguredBuildToken = configuredBuildToken().isNotBlank()
+        )
+    )
+    val networkPrivacyState: StateFlow<NetworkPrivacyUiState> = _networkPrivacyState.asStateFlow()
 
     private val _sampleStreams = MutableStateFlow(SampleStreamsCatalog.items)
     val sampleStreams: StateFlow<List<SampleStream>> = _sampleStreams.asStateFlow()
@@ -201,6 +228,44 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val savedTransportMode = prefsRepo.networkTransportMode.first()
             playerManager.setPreferredTransportMode(savedTransportMode, reloadActiveStream = false)
+        }
+        viewModelScope.launch {
+            val savedPrivacy = prefsRepo.networkPrivacyPrefs.first()
+            activeNordUsername = savedPrivacy.nordVpnUsername
+            activeNordPassword = savedPrivacy.nordVpnPassword
+            val nordConfig = DynamicSocksProxyManager.ActiveConfig(
+                enabled = savedPrivacy.nordVpnEnabled && savedPrivacy.hasNordCredentials,
+                host = savedPrivacy.nordVpnServerHost,
+                username = savedPrivacy.nordVpnUsername,
+                password = savedPrivacy.nordVpnPassword
+            )
+            playerManager.applyNetworkPrivacyConfig(
+                dnsMode = savedPrivacy.privateDnsMode,
+                nordConfig = nordConfig,
+                reloadActiveStream = false
+            )
+            val appCtx = getApplication<Application>()
+            val sysVpn = SystemVpnMonitor.isSystemVpnActive(appCtx)
+            val warpInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_CLOUDFLARE_WARP)
+            val nordInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_NORDVPN)
+            _networkPrivacyState.update {
+                it.copy(
+                    privateDnsMode = savedPrivacy.privateDnsMode,
+                    nordVpnLoggedIn = savedPrivacy.hasNordCredentials,
+                    nordVpnEnabled = nordConfig.isActive,
+                    selectedNordServerHost = savedPrivacy.nordVpnServerHost,
+                    selectedNordServerLabel = savedPrivacy.nordVpnServerLabel,
+                    systemVpnActive = sysVpn,
+                    warpAppInstalled = warpInstalled,
+                    nordAppInstalled = nordInstalled
+                )
+            }
+            if (savedPrivacy.hasNordCredentials) {
+                val liveServers = nordVpnClient.fetchRecommendedSocksServers()
+                if (liveServers.isNotEmpty()) {
+                    _networkPrivacyState.update { it.copy(availableNordServers = liveServers) }
+                }
+            }
         }
         viewModelScope.launch {
             enrichSamplesWithImdb()
@@ -879,6 +944,295 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         if (statsForNerdsEnabled.value) {
             playerManager.syncNetworkStats()
         }
+    }
+
+    // ==================== CLOUDFLARE 1.1.1.1 DoH & NORDVPN ====================
+
+    fun refreshSystemVpnStatus() {
+        val appCtx = getApplication<Application>()
+        val sysVpn = SystemVpnMonitor.isSystemVpnActive(appCtx)
+        val warpInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_CLOUDFLARE_WARP)
+        val nordInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_NORDVPN)
+        _networkPrivacyState.update {
+            it.copy(
+                systemVpnActive = sysVpn,
+                warpAppInstalled = warpInstalled,
+                nordAppInstalled = nordInstalled
+            )
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    fun setPrivateDnsMode(mode: PrivateDnsMode) {
+        val current = _networkPrivacyState.value
+        val nordConfig = buildCurrentNordConfig(current)
+        playerManager.applyNetworkPrivacyConfig(
+            dnsMode = mode,
+            nordConfig = nordConfig,
+            reloadActiveStream = true
+        )
+        _networkPrivacyState.update {
+            it.copy(privateDnsMode = mode, probeResult = null)
+        }
+        viewModelScope.launch {
+            prefsRepo.updatePrivateDnsMode(mode)
+        }
+        _uiState.update {
+            it.copy(toastMessage = "Private DNS set to ${mode.label}")
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    fun loginNordVpnWithConfiguredSecret() {
+        val configuredToken = configuredBuildToken()
+        if (configuredToken.isBlank()) {
+            _networkPrivacyState.update {
+                it.copy(loginError = "No NordVPN token configured in build secrets. Paste your token below.")
+            }
+            return
+        }
+        loginNordVpnWithToken(configuredToken)
+    }
+
+    fun loginNordVpnWithToken(token: String) {
+        val trimmed = token.trim()
+        if (trimmed.isBlank()) {
+            _networkPrivacyState.update { it.copy(loginError = "Enter your NordVPN Access Key.") }
+            return
+        }
+        val wasAlreadyLoggedIn = _networkPrivacyState.value.nordVpnLoggedIn
+        viewModelScope.launch {
+            _networkPrivacyState.update { it.copy(isLoggingInNord = true, loginError = null) }
+            when (val result = nordVpnClient.loginWithAccessToken(trimmed)) {
+                is NordVpnLoginResult.Success -> {
+                    activeNordUsername = result.credentials.username
+                    activeNordPassword = result.credentials.password
+
+                    val servers = result.servers.ifEmpty { NordVpnCatalog.DEFAULT_SERVERS }
+                    val currentState = _networkPrivacyState.value
+                    val chosen = NordVpnCatalog.findByHostname(currentState.selectedNordServerHost, servers)
+                    // Auto-enable Cloudflare 1.1.1.1 DoH when connecting with NordVPN key if still on System DNS
+                    val effectiveDnsMode = if (currentState.privateDnsMode == PrivateDnsMode.SYSTEM) {
+                        PrivateDnsMode.CLOUDFLARE_1111
+                    } else {
+                        currentState.privateDnsMode
+                    }
+
+                    if (effectiveDnsMode != currentState.privateDnsMode) {
+                        prefsRepo.updatePrivateDnsMode(effectiveDnsMode)
+                    }
+                    prefsRepo.saveNordVpnCredentials(
+                        credentials = result.credentials,
+                        serverHost = chosen.hostname,
+                        serverLabel = chosen.label,
+                        enableImmediately = true
+                    )
+
+                    val activeNordConfig = DynamicSocksProxyManager.ActiveConfig(
+                        enabled = true,
+                        host = chosen.hostname,
+                        port = chosen.port,
+                        username = activeNordUsername,
+                        password = activeNordPassword
+                    )
+                    playerManager.applyNetworkPrivacyConfig(
+                        dnsMode = effectiveDnsMode,
+                        nordConfig = activeNordConfig,
+                        reloadActiveStream = true
+                    )
+
+                    _networkPrivacyState.update {
+                        it.copy(
+                            privateDnsMode = effectiveDnsMode,
+                            nordVpnLoggedIn = true,
+                            nordVpnEnabled = true,
+                            selectedNordServerHost = chosen.hostname,
+                            selectedNordServerLabel = chosen.label,
+                            availableNordServers = servers,
+                            isLoggingInNord = false,
+                            loginError = null,
+                            probeResult = null
+                        )
+                    }
+                    _uiState.update {
+                        it.copy(
+                            toastMessage = if (wasAlreadyLoggedIn) {
+                                "NordVPN key updated · 1.1.1.1 + ${chosen.label}"
+                            } else {
+                                "Connected: ${effectiveDnsMode.shortBadge.ifBlank { "DNS" }} + NordVPN (${chosen.label})"
+                            }
+                        )
+                    }
+                    if (statsForNerdsEnabled.value) {
+                        playerManager.syncNetworkStats()
+                    }
+                    probeNetworkPrivacyRoute()
+                }
+                is NordVpnLoginResult.Error -> {
+                    _networkPrivacyState.update {
+                        it.copy(isLoggingInNord = false, loginError = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun setNordVpnEnabled(enabled: Boolean) {
+        val current = _networkPrivacyState.value
+        val hasCreds = activeNordUsername.isNotBlank() && activeNordPassword.isNotBlank()
+        if (enabled && !hasCreds) {
+            _networkPrivacyState.update {
+                it.copy(loginError = "Log in with your NordVPN Access Token first.")
+            }
+            return
+        }
+        val updatedState = current.copy(nordVpnEnabled = enabled, probeResult = null)
+        _networkPrivacyState.value = updatedState
+        playerManager.applyNetworkPrivacyConfig(
+            dnsMode = updatedState.privateDnsMode,
+            nordConfig = buildCurrentNordConfig(updatedState),
+            reloadActiveStream = true
+        )
+        viewModelScope.launch {
+            prefsRepo.updateNordVpnEnabled(enabled)
+        }
+        _uiState.update {
+            it.copy(
+                toastMessage = if (enabled) {
+                    "NordVPN routing ON (${updatedState.selectedNordServerLabel})"
+                } else {
+                    "NordVPN routing paused"
+                }
+            )
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    fun selectNordVpnServer(server: NordVpnServer) {
+        val current = _networkPrivacyState.value
+        val updatedState = current.copy(
+            selectedNordServerHost = server.hostname,
+            selectedNordServerLabel = server.label,
+            probeResult = null
+        )
+        _networkPrivacyState.value = updatedState
+        playerManager.applyNetworkPrivacyConfig(
+            dnsMode = updatedState.privateDnsMode,
+            nordConfig = buildCurrentNordConfig(updatedState),
+            reloadActiveStream = true
+        )
+        viewModelScope.launch {
+            prefsRepo.updateNordVpnServer(server.hostname, server.label)
+        }
+        _uiState.update {
+            it.copy(toastMessage = "NordVPN location switched to ${server.label}")
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+        if (updatedState.nordVpnLoggedIn && updatedState.nordVpnEnabled) {
+            probeNetworkPrivacyRoute()
+        }
+    }
+
+    fun logoutNordVpn() {
+        activeNordUsername = ""
+        activeNordPassword = ""
+        val current = _networkPrivacyState.value
+        val updatedState = current.copy(
+            nordVpnLoggedIn = false,
+            nordVpnEnabled = false,
+            loginError = null,
+            probeResult = null
+        )
+        _networkPrivacyState.value = updatedState
+        playerManager.applyNetworkPrivacyConfig(
+            dnsMode = updatedState.privateDnsMode,
+            nordConfig = DynamicSocksProxyManager.ActiveConfig(),
+            reloadActiveStream = true
+        )
+        viewModelScope.launch {
+            prefsRepo.clearNordVpnCredentials()
+        }
+        _uiState.update {
+            it.copy(toastMessage = "Signed out of NordVPN")
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    /**
+     * Disables both Cloudflare 1.1.1.1 / Google 8.8.8.8 Private DNS (back to System DNS) and
+     * NordVPN SOCKS5 routing in a single tap, while keeping the saved NordVPN key & location
+     * intact so the user can re-enable anytime without re-entering their key.
+     */
+    fun disableAllPrivacyRouting() {
+        val current = _networkPrivacyState.value
+        val updatedState = current.copy(
+            privateDnsMode = PrivateDnsMode.SYSTEM,
+            nordVpnEnabled = false,
+            probeResult = null
+        )
+        _networkPrivacyState.value = updatedState
+        playerManager.applyNetworkPrivacyConfig(
+            dnsMode = PrivateDnsMode.SYSTEM,
+            nordConfig = DynamicSocksProxyManager.ActiveConfig(),
+            reloadActiveStream = true
+        )
+        viewModelScope.launch {
+            prefsRepo.updatePrivateDnsMode(PrivateDnsMode.SYSTEM)
+            prefsRepo.updateNordVpnEnabled(false)
+        }
+        _uiState.update {
+            it.copy(toastMessage = "1.1.1.1 & NordVPN disabled (Direct ISP)")
+        }
+        if (statsForNerdsEnabled.value) {
+            playerManager.syncNetworkStats()
+        }
+    }
+
+    fun probeNetworkPrivacyRoute() {
+        viewModelScope.launch {
+            refreshSystemVpnStatus()
+            val state = _networkPrivacyState.value
+            _networkPrivacyState.update { it.copy(isProbingRoute = true) }
+            val result = nordVpnClient.probeActiveRoute(
+                activeStreamingClient = playerManager.okHttpClient,
+                dnsMode = state.privateDnsMode,
+                nordEnabled = state.nordVpnLoggedIn && state.nordVpnEnabled,
+                nordServerHost = state.selectedNordServerHost,
+                systemVpnActive = state.systemVpnActive
+            )
+            _networkPrivacyState.update {
+                it.copy(isProbingRoute = false, probeResult = result)
+            }
+        }
+    }
+
+    fun launchCompanionVpnApp(packageName: String) {
+        val launched = SystemVpnMonitor.launchOrOpenStore(getApplication(), packageName)
+        if (!launched) {
+            _uiState.update {
+                it.copy(toastMessage = "Unable to open companion app or Play Store on this device")
+            }
+        }
+    }
+
+    private fun buildCurrentNordConfig(state: NetworkPrivacyUiState): DynamicSocksProxyManager.ActiveConfig {
+        return DynamicSocksProxyManager.ActiveConfig(
+            enabled = state.nordVpnLoggedIn && state.nordVpnEnabled,
+            host = state.selectedNordServerHost,
+            port = NordVpnServer.DEFAULT_SOCKS5_PORT,
+            username = activeNordUsername,
+            password = activeNordPassword
+        )
     }
 
     fun retryWithDecoderMode(mode: VideoDecoderMode) {

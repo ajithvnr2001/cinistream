@@ -41,7 +41,8 @@ class FastDnsResolver(
     private val delegate: Dns = Dns.SYSTEM,
     private val ttlMs: Long = DEFAULT_TTL_MS,
     private val maxEntries: Int = MAX_CACHE_ENTRIES,
-    private val clockMs: () -> Long = SystemClock::elapsedRealtime
+    private val clockMs: () -> Long = SystemClock::elapsedRealtime,
+    private val dohClient: DohDnsClient = DohDnsClient()
 ) : Dns {
 
     companion object {
@@ -70,7 +71,18 @@ class FastDnsResolver(
         val expiresAtMs: Long
     )
 
+    @Volatile
+    var privateDnsMode: PrivateDnsMode = PrivateDnsMode.SYSTEM
+        private set
+
     private val cache = ConcurrentHashMap<String, CacheEntry>()
+
+    fun setPrivateDnsMode(mode: PrivateDnsMode) {
+        if (privateDnsMode != mode) {
+            privateDnsMode = mode
+            cache.clear()
+        }
+    }
 
     @Throws(UnknownHostException::class)
     override fun lookup(hostname: String): List<InetAddress> {
@@ -84,7 +96,14 @@ class FastDnsResolver(
             cache.remove(key, cached)
         }
 
-        val resolved = delegate.lookup(hostname)
+        val activeMode = privateDnsMode
+        val dohResolved = if (activeMode != PrivateDnsMode.SYSTEM && !DohJsonParser.isIpLiteral(key)) {
+            dohClient.resolve(hostname, activeMode)
+        } else {
+            emptyList()
+        }
+
+        val resolved = dohResolved.ifEmpty { delegate.lookup(hostname) }
         if (resolved.isEmpty()) {
             throw UnknownHostException("Empty DNS lookup for $hostname")
         }
@@ -307,6 +326,7 @@ class AdaptiveHttpDataSourceFactory(
     private val cronetEngineProvider: () -> CronetEngine? = { StreamingNetworkEngine.cronetEngine },
     private val transportModeProvider: () -> NetworkTransportMode = { NetworkTransportMode.AUTO },
     private val cronetDemotedProvider: () -> Boolean = { false },
+    private val forceOkHttpProvider: () -> Boolean = { false },
     private val cronetExecutor: ExecutorService = StreamingNetworkEngine.cronetExecutor
 ) : HttpDataSource.Factory {
 
@@ -332,6 +352,8 @@ class AdaptiveHttpDataSourceFactory(
     }
 
     fun shouldUseCronet(): Boolean {
+        // Per-app Cloudflare 1.1.1.1 DoH & NordVPN SOCKS5 proxy run through OkHttp HTTP/2
+        if (forceOkHttpProvider()) return false
         val engine = cronetEngineProvider() ?: return false
         val mode = transportModeProvider()
         return when (mode) {
@@ -489,7 +511,8 @@ object StreamingNetworkEngine {
         userAgent: String,
         transferListener: TransferListener?,
         transportModeProvider: () -> NetworkTransportMode = { NetworkTransportMode.AUTO },
-        cronetDemotedProvider: () -> Boolean = { false }
+        cronetDemotedProvider: () -> Boolean = { false },
+        forceOkHttpProvider: () -> Boolean = { false }
     ): AdaptiveHttpDataSourceFactory {
         val okHttpFactory = OkHttpDataSource.Factory(okHttpClient)
             .setUserAgent(userAgent)
@@ -498,7 +521,8 @@ object StreamingNetworkEngine {
             okHttpFactory = okHttpFactory,
             transferListener = transferListener,
             transportModeProvider = transportModeProvider,
-            cronetDemotedProvider = cronetDemotedProvider
+            cronetDemotedProvider = cronetDemotedProvider,
+            forceOkHttpProvider = forceOkHttpProvider
         )
     }
 

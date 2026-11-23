@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -42,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.player.DecoderFallbackHelper
 import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerStatsFormatter
+import com.example.player.PrivateDnsMode
 import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.CinemaAmberBright
@@ -74,6 +77,7 @@ fun PlayerStatsOverlay(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PlayerStatsCard(
     stats: PlayerNetworkStats,
@@ -121,9 +125,10 @@ internal fun PlayerStatsCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                FlowRow(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.NetworkCheck,
@@ -169,6 +174,45 @@ internal fun PlayerStatsCard(
                                 fontSize = 9.sp,
                                 color = transportAccent,
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                    if (!stats.isLocalSource && stats.privateDnsMode != PrivateDnsMode.SYSTEM) {
+                        val dnsAccent = Color(0xFF38BDF8)
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = dnsAccent.copy(alpha = 0.18f),
+                            border = BorderStroke(0.75.dp, dnsAccent.copy(alpha = 0.55f))
+                        ) {
+                            Text(
+                                text = stats.privateDnsMode.shortBadge,
+                                fontFamily = JetBrainsMonoFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 9.sp,
+                                color = dnsAccent,
+                                modifier = Modifier
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                                    .testTag("stats_dns_badge")
+                            )
+                        }
+                    }
+                    if (!stats.isLocalSource && (stats.nordVpnActive || stats.systemVpnActive)) {
+                        val vpnLabel = if (stats.nordVpnActive) "NORD" else "VPN"
+                        val vpnAccent = if (stats.nordVpnActive) SubtitleEmerald else Color(0xFF38BDF8)
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = vpnAccent.copy(alpha = 0.2f),
+                            border = BorderStroke(0.75.dp, vpnAccent.copy(alpha = 0.6f))
+                        ) {
+                            Text(
+                                text = vpnLabel,
+                                fontFamily = JetBrainsMonoFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 9.sp,
+                                color = vpnAccent,
+                                modifier = Modifier
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                                    .testTag("stats_vpn_badge")
                             )
                         }
                     }

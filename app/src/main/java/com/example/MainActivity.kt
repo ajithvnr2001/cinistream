@@ -22,6 +22,7 @@ import androidx.navigation.compose.rememberNavController
 import com.example.ui.home.HomeScreen
 import com.example.ui.player.JsonPlaylistSheet
 import com.example.ui.player.M3uPlaylistSheet
+import com.example.ui.player.NetworkPrivacySheet
 import com.example.ui.player.PlayerScreen
 import com.example.ui.player.SeriesDetailSheet
 import com.example.ui.theme.CineStreamTheme
@@ -71,6 +72,11 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
     val navController = rememberNavController()
     var showHomeM3uSheet by remember { mutableStateOf(false) }
     var showHomeJsonSheet by remember { mutableStateOf(false) }
+    var showPrivacySheet by remember { mutableStateOf(false) }
+    val openPrivacySheet: () -> Unit = {
+        viewModel.refreshSystemVpnStatus()
+        showPrivacySheet = true
+    }
 
     LaunchedEffect(Unit) {
         viewModel.navEvents.collect { event ->
@@ -110,6 +116,7 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
         ) {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
             val jsonPlaylistState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
+            val networkPrivacyState by viewModel.networkPrivacyState.collectAsStateWithLifecycle()
             val sampleStreams by viewModel.sampleStreams.collectAsStateWithLifecycle()
             val history by viewModel.history.collectAsStateWithLifecycle()
 
@@ -141,7 +148,9 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onDeleteHistory = viewModel::deleteHistoryItem,
                 onOpenM3uSheet = { showHomeM3uSheet = true },
                 onResumeActiveSession = viewModel::resumeActiveSession,
-                onToastShown = viewModel::consumeToast
+                onToastShown = viewModel::consumeToast,
+                networkPrivacyState = networkPrivacyState,
+                onOpenNetworkPrivacy = openPrivacySheet
             )
         }
 
@@ -158,6 +167,7 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
             val subtitleAppearance by viewModel.subtitleAppearance.collectAsStateWithLifecycle()
             val aspectRatioMode by viewModel.aspectRatioMode.collectAsStateWithLifecycle()
             val statsForNerdsEnabled by viewModel.statsForNerdsEnabled.collectAsStateWithLifecycle()
+            val networkPrivacyState by viewModel.networkPrivacyState.collectAsStateWithLifecycle()
 
             val activeSeries = remember(jsonPlaylistState.playlists, jsonPlaylistState.items, uiState.activeSession?.seriesItemId) {
                 val seriesId = uiState.activeSession?.seriesItemId ?: return@remember null
@@ -225,6 +235,9 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onClearEdgeCache = viewModel::clearMediaEdgeCache,
                 onSelectDecoderMode = viewModel::setVideoDecoderMode,
                 onSelectTransportMode = viewModel::setNetworkTransportMode,
+                networkPrivacyBadge = networkPrivacyState.compactStatusBadge,
+                isPrivacyActive = networkPrivacyState.isAnyPrivacyActive,
+                onOpenNetworkPrivacy = openPrivacySheet,
                 onRetryWithDecoderMode = viewModel::retryWithDecoderMode,
                 onSkipBadSegment = viewModel::skipBadSegmentAndRetry,
                 onRefreshJsonPlaylist = viewModel::refreshJsonPlaylist,
@@ -276,6 +289,23 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
             activeEpisodeId = globalJsonState.activeEpisodeId,
             onDismiss = viewModel::dismissSeriesSheet,
             onSelectEpisode = viewModel::playSeriesEpisode
+        )
+    }
+
+    if (showPrivacySheet) {
+        val privacyState by viewModel.networkPrivacyState.collectAsStateWithLifecycle()
+        NetworkPrivacySheet(
+            state = privacyState,
+            onSelectDnsMode = viewModel::setPrivateDnsMode,
+            onLoginNordToken = viewModel::loginNordVpnWithToken,
+            onLoginNordConfiguredSecret = viewModel::loginNordVpnWithConfiguredSecret,
+            onToggleNordEnabled = viewModel::setNordVpnEnabled,
+            onSelectNordServer = viewModel::selectNordVpnServer,
+            onLogoutNord = viewModel::logoutNordVpn,
+            onDisableAll = viewModel::disableAllPrivacyRouting,
+            onProbeRoute = viewModel::probeNetworkPrivacyRoute,
+            onLaunchCompanionApp = viewModel::launchCompanionVpnApp,
+            onDismiss = { showPrivacySheet = false }
         )
     }
 }

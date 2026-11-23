@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.VideoFile
@@ -111,8 +113,10 @@ import com.example.ui.theme.ObsidianCanvas
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
+import com.example.ui.theme.SubtitleEmerald
 import com.example.viewmodel.CineStreamUiState
 import com.example.viewmodel.JsonPlaylistUiState
+import com.example.viewmodel.NetworkPrivacyUiState
 import kotlinx.coroutines.launch
 
 @Composable
@@ -144,7 +148,9 @@ fun HomeScreen(
     onDeleteHistory: (MediaHistoryEntity) -> Unit,
     onOpenM3uSheet: () -> Unit,
     onResumeActiveSession: () -> Unit,
-    onToastShown: () -> Unit
+    onToastShown: () -> Unit,
+    networkPrivacyState: NetworkPrivacyUiState = NetworkPrivacyUiState(),
+    onOpenNetworkPrivacy: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -249,6 +255,8 @@ fun HomeScreen(
                             isTv = isTv,
                             hasActiveSession = uiState.activeSession != null,
                             activeTitle = uiState.activeSession?.title,
+                            networkPrivacyState = networkPrivacyState,
+                            onOpenNetworkPrivacy = onOpenNetworkPrivacy,
                             onResumeActiveSession = onResumeActiveSession
                         )
                         StreamLauncherCard(
@@ -398,6 +406,8 @@ fun HomeScreen(
                             CinemaHeroHeader(
                                 hasActiveSession = uiState.activeSession != null,
                                 activeTitle = uiState.activeSession?.title,
+                                networkPrivacyState = networkPrivacyState,
+                                onOpenNetworkPrivacy = onOpenNetworkPrivacy,
                                 onResumeActiveSession = onResumeActiveSession
                             )
                         }
@@ -574,17 +584,21 @@ private fun TvCompactHeroHeader(
     isTv: Boolean,
     hasActiveSession: Boolean,
     activeTitle: String?,
+    networkPrivacyState: NetworkPrivacyUiState,
+    onOpenNetworkPrivacy: () -> Unit,
     onResumeActiveSession: () -> Unit
 ) {
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(148.dp),
+        modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = ObsidianSurface,
         border = BorderStroke(1.dp, ObsidianOutline)
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 152.dp)
+        ) {
             val heroContext = LocalContext.current
             AsyncImage(
                 model = ImageRequest.Builder(heroContext)
@@ -595,11 +609,11 @@ private fun TvCompactHeroHeader(
                     .build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.matchParentSize()
             )
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .matchParentSize()
                     .background(
                         Brush.horizontalGradient(
                             colors = listOf(
@@ -612,16 +626,17 @@ private fun TvCompactHeroHeader(
             )
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.SpaceBetween
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
+                        modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -640,40 +655,23 @@ private fun TvCompactHeroHeader(
                         Text(
                             text = stringResource(R.string.app_name),
                             style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.onBackground
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
-                    if (hasActiveSession && !activeTitle.isNullOrBlank()) {
-                        Surface(
-                            onClick = onResumeActiveSession,
-                            shape = RoundedCornerShape(20.dp),
-                            color = CinemaAmber.copy(alpha = 0.2f),
-                            border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.55f)),
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .tvFocusHighlight(shape = RoundedCornerShape(20.dp))
-                                .testTag("resume_active_player_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.PlayArrow,
-                                    contentDescription = null,
-                                    tint = CinemaAmber,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = "Now Playing",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = CinemaAmber
-                                )
-                            }
-                        }
-                    }
+                    HomePrivacyPillButton(
+                        state = networkPrivacyState,
+                        onClick = onOpenNetworkPrivacy
+                    )
+                }
+
+                if (hasActiveSession && !activeTitle.isNullOrBlank()) {
+                    NowPlayingBannerPill(
+                        activeTitle = activeTitle,
+                        onClick = onResumeActiveSession
+                    )
                 }
 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -698,12 +696,14 @@ private fun TvCompactHeroHeader(
 private fun CinemaHeroHeader(
     hasActiveSession: Boolean,
     activeTitle: String?,
+    networkPrivacyState: NetworkPrivacyUiState,
+    onOpenNetworkPrivacy: () -> Unit,
     onResumeActiveSession: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(216.dp)
+            .heightIn(min = 216.dp)
     ) {
         val heroContext = LocalContext.current
         AsyncImage(
@@ -715,11 +715,11 @@ private fun CinemaHeroHeader(
                 .build(),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.matchParentSize()
         )
         Box(
             modifier = Modifier
-                .fillMaxSize()
+                .matchParentSize()
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
@@ -732,17 +732,18 @@ private fun CinemaHeroHeader(
         )
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.statusBars)
                 .padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -761,40 +762,25 @@ private fun CinemaHeroHeader(
                     Text(
                         text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                if (hasActiveSession && !activeTitle.isNullOrBlank()) {
-                    Surface(
-                        onClick = onResumeActiveSession,
-                        shape = RoundedCornerShape(20.dp),
-                        color = CinemaAmber.copy(alpha = 0.18f),
-                        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.5f)),
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .tvFocusHighlight(shape = RoundedCornerShape(20.dp))
-                            .testTag("resume_active_player_button")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.PlayArrow,
-                                contentDescription = null,
-                                tint = CinemaAmber,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "Now Playing",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = CinemaAmber
-                            )
-                        }
-                    }
-                }
+                HomePrivacyPillButton(
+                    state = networkPrivacyState,
+                    onClick = onOpenNetworkPrivacy
+                )
+            }
+
+            if (hasActiveSession && !activeTitle.isNullOrBlank()) {
+                NowPlayingBannerPill(
+                    activeTitle = activeTitle,
+                    onClick = onResumeActiveSession
+                )
+            } else {
+                Spacer(modifier = Modifier.height(16.dp))
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -810,6 +796,95 @@ private fun CinemaHeroHeader(
                     maxLines = 2
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun NowPlayingBannerPill(
+    activeTitle: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = CinemaAmber.copy(alpha = 0.18f),
+        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .minimumInteractiveComponentSize()
+            .tvFocusHighlight(shape = RoundedCornerShape(14.dp), focusedScale = 1.02f)
+            .testTag("resume_active_player_button")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.PlayArrow,
+                contentDescription = null,
+                tint = CinemaAmber,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = "Now Playing",
+                style = MaterialTheme.typography.labelMedium,
+                color = CinemaAmber,
+                maxLines = 1
+            )
+            Text(
+                text = "· $activeTitle",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomePrivacyPillButton(
+    state: NetworkPrivacyUiState,
+    onClick: () -> Unit
+) {
+    val active = state.isAnyPrivacyActive
+    val accent = if (active) SubtitleEmerald else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = if (active) SubtitleEmerald.copy(alpha = 0.18f) else ObsidianSurfaceHigh.copy(alpha = 0.86f),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (active) SubtitleEmerald.copy(alpha = 0.6f) else ObsidianOutline.copy(alpha = 0.8f)
+        ),
+        modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .tvFocusHighlight(shape = RoundedCornerShape(20.dp))
+            .testTag("home_privacy_vpn_button")
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Shield,
+                contentDescription = stringResource(R.string.cd_open_privacy_vpn),
+                tint = accent,
+                modifier = Modifier.size(15.dp)
+            )
+            Text(
+                text = state.compactStatusBadge,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (active) SubtitleEmerald else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

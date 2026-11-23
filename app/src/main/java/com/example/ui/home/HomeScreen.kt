@@ -133,6 +133,8 @@ fun HomeScreen(
     onClearJsonPlaylist: () -> Unit,
     onOpenJsonSheet: () -> Unit,
     onPlayJsonItem: (JsonPlaylistItem) -> Unit,
+    onSelectJsonPlaylist: (String?) -> Unit = {},
+    onRemoveJsonPlaylist: (String) -> Unit = {},
     onStageLocalSubtitle: (Uri) -> Unit,
     onStageRemoteSubtitle: (String) -> Unit,
     onClearStagedSubtitle: () -> Unit,
@@ -289,7 +291,7 @@ fun HomeScreen(
                         contentPadding = PaddingValues(bottom = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        if (jsonPlaylistState.items.isNotEmpty()) {
+                        if (jsonPlaylistState.allItems.isNotEmpty()) {
                             item(key = "tv_json_header") {
                                 JsonCatalogSectionHeader(
                                     title = jsonPlaylistState.sourceLabel
@@ -298,6 +300,17 @@ fun HomeScreen(
                                     isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
                                     onBrowseAll = onOpenJsonSheet
                                 )
+                            }
+                            if (jsonPlaylistState.playlists.size > 1) {
+                                item(key = "tv_json_playlist_switcher") {
+                                    JsonPlaylistSwitcherBar(
+                                        playlists = jsonPlaylistState.playlists,
+                                        selectedPlaylistId = jsonPlaylistState.selectedPlaylistId,
+                                        onSelectPlaylist = onSelectJsonPlaylist,
+                                        onRemovePlaylist = onRemoveJsonPlaylist,
+                                        testTagPrefix = "home_playlist_chip"
+                                    )
+                                }
                             }
                             item(key = "tv_json_row") {
                                 LazyRow(
@@ -425,7 +438,7 @@ fun HomeScreen(
                             }
                         }
 
-                        if (jsonPlaylistState.items.isNotEmpty()) {
+                        if (jsonPlaylistState.allItems.isNotEmpty()) {
                             item(key = "json_header") {
                                 JsonCatalogSectionHeader(
                                     title = jsonPlaylistState.sourceLabel
@@ -433,8 +446,20 @@ fun HomeScreen(
                                     count = jsonPlaylistState.items.size,
                                     isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
                                     onBrowseAll = onOpenJsonSheet,
-                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 10.dp)
+                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 8.dp)
                                 )
+                            }
+                            if (jsonPlaylistState.playlists.size > 1) {
+                                item(key = "json_playlist_switcher") {
+                                    JsonPlaylistSwitcherBar(
+                                        playlists = jsonPlaylistState.playlists,
+                                        selectedPlaylistId = jsonPlaylistState.selectedPlaylistId,
+                                        onSelectPlaylist = onSelectJsonPlaylist,
+                                        onRemovePlaylist = onRemoveJsonPlaylist,
+                                        testTagPrefix = "home_playlist_chip",
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
                             item(key = "json_row") {
                                 LazyRow(
@@ -533,7 +558,8 @@ fun HomeScreen(
 
     if (showJsonUrlDialog) {
         JsonPlaylistUrlInputDialog(
-            initialUrl = jsonPlaylistState.sourceUrl?.takeIf { it.startsWith("http") }.orEmpty(),
+            initialUrl = "",
+            existingPlaylistCount = jsonPlaylistState.playlists.size,
             onDismiss = { showJsonUrlDialog = false },
             onConfirm = { url ->
                 onLoadJsonUrl(url)

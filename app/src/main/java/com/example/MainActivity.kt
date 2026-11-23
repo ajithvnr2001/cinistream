@@ -130,6 +130,8 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onClearJsonPlaylist = viewModel::clearJsonPlaylist,
                 onOpenJsonSheet = { showHomeJsonSheet = true },
                 onPlayJsonItem = viewModel::playJsonPlaylistItem,
+                onSelectJsonPlaylist = viewModel::selectJsonPlaylist,
+                onRemoveJsonPlaylist = viewModel::removeJsonPlaylist,
                 onStageLocalSubtitle = viewModel::stageLocalSubtitle,
                 onStageRemoteSubtitle = viewModel::stageRemoteSubtitle,
                 onClearStagedSubtitle = viewModel::clearStagedSubtitle,
@@ -157,9 +159,9 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
             val aspectRatioMode by viewModel.aspectRatioMode.collectAsStateWithLifecycle()
             val statsForNerdsEnabled by viewModel.statsForNerdsEnabled.collectAsStateWithLifecycle()
 
-            val activeSeries = remember(jsonPlaylistState.items, uiState.activeSession?.seriesItemId) {
+            val activeSeries = remember(jsonPlaylistState.playlists, jsonPlaylistState.items, uiState.activeSession?.seriesItemId) {
                 val seriesId = uiState.activeSession?.seriesItemId ?: return@remember null
-                jsonPlaylistState.items.firstOrNull { it.id == seriesId }
+                jsonPlaylistState.allItems.firstOrNull { it.id == seriesId }
             }
             val hasNextEpisode = remember(activeSeries, uiState.activeSession?.episodeId) {
                 activeSeries?.findNextEpisode(uiState.activeSession?.episodeId) != null
@@ -178,12 +180,14 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 activeM3uEntryId = uiState.activeM3uEntryId,
                 jsonPlaylistLabel = jsonPlaylistState.sourceLabel,
                 jsonPlaylistItems = jsonPlaylistState.items,
+                jsonPlaylists = jsonPlaylistState.playlists,
+                selectedJsonPlaylistId = jsonPlaylistState.selectedPlaylistId,
                 activeJsonItemId = jsonPlaylistState.activeItemId,
                 activeSeries = activeSeries,
                 activeEpisodeId = uiState.activeSession?.episodeId,
                 hasNextEpisode = hasNextEpisode,
                 isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
-                canRefreshJson = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
+                canRefreshJson = jsonPlaylistState.canRefreshRemote,
                 toastMessage = uiState.toastMessage,
                 onBack = {
                     // Stop playback and trim ExoPlayer buffers BEFORE popping back to HomeScreen
@@ -212,6 +216,9 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
                 onRetryFormat = viewModel::retryWithFormat,
                 onSelectM3uEntry = viewModel::playM3uEntry,
                 onSelectJsonItem = viewModel::playJsonPlaylistItem,
+                onSelectJsonPlaylist = viewModel::selectJsonPlaylist,
+                onRemoveJsonPlaylist = viewModel::removeJsonPlaylist,
+                onAddJsonPlaylistUrl = { url -> viewModel.loadJsonPlaylistFromUrl(url, openSheetOnSuccess = false) },
                 onSelectSeriesEpisode = viewModel::playSeriesEpisode,
                 onPlayNextEpisode = viewModel::playNextEpisode,
                 onSwitchCdnMirror = viewModel::switchToNextCdnMirror,
@@ -240,17 +247,24 @@ private fun CineStreamApp(viewModel: CineStreamViewModel) {
 
     if (showHomeJsonSheet) {
         val jsonPlaylistState by viewModel.jsonPlaylistState.collectAsStateWithLifecycle()
-        if (jsonPlaylistState.items.isNotEmpty()) {
+        if (jsonPlaylistState.allItems.isNotEmpty()) {
             JsonPlaylistSheet(
                 sourceLabel = jsonPlaylistState.sourceLabel,
                 items = jsonPlaylistState.items,
                 activeItemId = jsonPlaylistState.activeItemId,
                 isEnrichingImdb = jsonPlaylistState.isEnrichingImdb,
-                canRefreshUrl = jsonPlaylistState.sourceUrl?.startsWith("http") == true,
+                canRefreshUrl = jsonPlaylistState.canRefreshRemote,
                 onRefresh = viewModel::refreshJsonPlaylist,
                 onDismiss = { showHomeJsonSheet = false },
-                onSelectItem = viewModel::playJsonPlaylistItem
+                onSelectItem = viewModel::playJsonPlaylistItem,
+                playlists = jsonPlaylistState.playlists,
+                selectedPlaylistId = jsonPlaylistState.selectedPlaylistId,
+                onSelectPlaylist = viewModel::selectJsonPlaylist,
+                onRemovePlaylist = viewModel::removeJsonPlaylist,
+                onAddPlaylistUrl = { url -> viewModel.loadJsonPlaylistFromUrl(url, openSheetOnSuccess = false) }
             )
+        } else {
+            showHomeJsonSheet = false
         }
     }
 

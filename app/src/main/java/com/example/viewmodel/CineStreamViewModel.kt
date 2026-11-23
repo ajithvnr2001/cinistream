@@ -74,18 +74,6 @@ data class ActiveMediaSession(
     val episodeCodeLabel: String? = null
 )
 
-data class JsonPlaylistUiState(
-    val sourceLabel: String? = null,
-    val sourceUrl: String? = null,
-    val items: List<JsonPlaylistItem> = emptyList(),
-    val activeItemId: String? = null,
-    val activeEpisodeId: String? = null,
-    val selectedSeriesForSheet: JsonPlaylistItem? = null,
-    val isLoading: Boolean = false,
-    val isEnrichingImdb: Boolean = false,
-    val errorMessage: String? = null
-)
-
 data class CineStreamUiState(
     val urlInput: String = "",
     val selectedFormat: StreamFormat = StreamFormat.AUTO,
@@ -218,9 +206,13 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             enrichSamplesWithImdb()
         }
         viewModelScope.launch {
-            val savedJsonUrl = prefsRepo.loadJsonPlaylistUrl()
-            if (!savedJsonUrl.isNullOrBlank()) {
-                loadJsonPlaylistFromUrl(savedJsonUrl, openSheetOnSuccess = false, silentOnError = true)
+            val savedJsonUrls = prefsRepo.loadJsonPlaylistUrls()
+            if (savedJsonUrls.isNotEmpty()) {
+                loadMultipleJsonPlaylistsInternal(
+                    urls = savedJsonUrls,
+                    silentOnError = true,
+                    showSummaryToast = false
+                )
             }
         }
         startProgressPolling()
@@ -441,7 +433,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     fun loadJsonPlaylistFromUrl(
         url: String,
         openSheetOnSuccess: Boolean = true,
-        silentOnError: Boolean = false
+        silentOnError: Boolean = false,
+        selectLoadedPlaylist: Boolean = true
     ) {
         val trimmed = url.trim()
         if (!trimmed.startsWith("http://", ignoreCase = true) &&
@@ -453,31 +446,51 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             _jsonPlaylistState.update {
-                it.copy(isLoading = true, errorMessage = null, sourceUrl = trimmed)
+                it.copy(isLoading = true, errorMessage = null)
             }
             when (val result = jsonParser.loadFromUrl(trimmed)) {
                 is JsonPlaylistLoadResult.Success -> {
-                    prefsRepo.saveJsonPlaylistUrl(trimmed)
-                    val label = result.sourceTitle ?: MediaFormatDetector.inferTitle(trimmed)
-                    _jsonPlaylistState.update {
-                        it.copy(
-                            sourceLabel = label,
-                            sourceUrl = trimmed,
-                            items = result.items,
-                            isLoading = false,
-                            errorMessage = null
-                        )
+                    val playlistId = MultiJsonPlaylistReducer.stablePlaylistId(trimmed, isLocal = false)
+                    val label = result.sourceTitle?.takeIf { it.isNotBlank() }
+                        ?: MediaFormatDetector.inferTitle(trimmed)
+                    val loaded = LoadedJsonPlaylist(
+                        id = playlistId,
+                        label = label,
+                        sourceUrl = trimmed,
+                        isLocal = false,
+                        items = result.items
+                    )
+                    var updatedState = _jsonPlaylistState.value
+                    _jsonPlaylistState.update { current ->
+                        MultiJsonPlaylistReducer.upsertPlaylist(
+                            state = current,
+                            playlist = loaded,
+                            selectPlaylist = selectLoadedPlaylist
+                        ).also { updatedState = it }
                     }
+                    // Preserve any already-saved remote URLs that might have failed to boot earlier
+                    val mergedRemoteUrls = SubtitlePrefsRepository.normalizeUrlList(
+                        prefsRepo.loadJsonPlaylistUrls() + updatedState.remotePlaylistUrls + trimmed
+                    )
+                    prefsRepo.saveJsonPlaylistUrls(mergedRemoteUrls)
+
                     if (!silentOnError) {
+                        val playlistCountSuffix = if (updatedState.playlists.size > 1) {
+                            " (${updatedState.playlists.size} playlists active)"
+                        } else {
+                            ""
+                        }
                         _uiState.update {
-                            it.copy(toastMessage = "Loaded ${result.items.size} items from JSON playlist")
+                            it.copy(
+                                toastMessage = "Loaded ${result.items.size} items from $label$playlistCountSuffix"
+                            )
                         }
                     }
                     if (openSheetOnSuccess) {
                         _navEvents.tryEmit(CineNavigationEvent.OpenJsonSheet)
                     }
-                    prewarmFirstItemOrigin(result.items)
-                    startJsonImdbEnrichment(result.items)
+                    prewarmFirstItemOrigin(updatedState.items.ifEmpty { updatedState.allItems })
+                    startJsonImdbEnrichment(updatedState.allItems)
                 }
                 is JsonPlaylistLoadResult.Error -> {
                     _jsonPlaylistState.update {
@@ -491,29 +504,123 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    private suspend fun loadMultipleJsonPlaylistsInternal(
+        urls: List<String>,
+        silentOnError: Boolean,
+        showSummaryToast: Boolean
+    ) {
+        val cleanedUrls = SubtitlePrefsRepository.normalizeUrlList(urls).filter {
+            it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
+        }
+        if (cleanedUrls.isEmpty()) return
+
+        _jsonPlaylistState.update { it.copy(isLoading = true, errorMessage = null) }
+        val semaphore = Semaphore(3)
+        val fetched = coroutineScope {
+            cleanedUrls.map { url ->
+                async {
+                    semaphore.withPermit {
+                        url to jsonParser.loadFromUrl(url)
+                    }
+                }
+            }.awaitAll()
+        }
+
+        var successCount = 0
+        var firstError: String? = null
+        var latestState = _jsonPlaylistState.value
+        for ((url, result) in fetched) {
+            when (result) {
+                is JsonPlaylistLoadResult.Success -> {
+                    successCount++
+                    val playlistId = MultiJsonPlaylistReducer.stablePlaylistId(url, isLocal = false)
+                    val label = result.sourceTitle?.takeIf { it.isNotBlank() }
+                        ?: MediaFormatDetector.inferTitle(url)
+                    val loaded = LoadedJsonPlaylist(
+                        id = playlistId,
+                        label = label,
+                        sourceUrl = url,
+                        isLocal = false,
+                        items = result.items
+                    )
+                    _jsonPlaylistState.update { current ->
+                        MultiJsonPlaylistReducer.upsertPlaylist(
+                            state = current,
+                            playlist = loaded,
+                            selectPlaylist = false
+                        ).also { latestState = it }
+                    }
+                }
+                is JsonPlaylistLoadResult.Error -> {
+                    if (firstError == null) firstError = result.message
+                }
+            }
+        }
+
+        _jsonPlaylistState.update {
+            it.copy(
+                isLoading = false,
+                errorMessage = if (successCount == 0 && !silentOnError) firstError else null
+            )
+        }
+
+        if (successCount > 0) {
+            if (showSummaryToast) {
+                val totalItems = latestState.allItems.size
+                val failedSuffix = if (successCount < cleanedUrls.size) {
+                    " (${cleanedUrls.size - successCount} unreachable)"
+                } else {
+                    ""
+                }
+                _uiState.update {
+                    it.copy(
+                        toastMessage = "Refreshed $successCount JSON playlist${if (successCount == 1) "" else "s"} · $totalItems titles$failedSuffix"
+                    )
+                }
+            }
+            prewarmFirstItemOrigin(latestState.allItems)
+            startJsonImdbEnrichment(latestState.allItems)
+        } else if (!silentOnError && !firstError.isNullOrBlank()) {
+            _uiState.update { it.copy(toastMessage = firstError) }
+        }
+    }
+
     fun loadJsonPlaylistFromUri(uri: Uri) {
         viewModelScope.launch {
             subtitleHelper.takePersistableReadPermission(uri)
             val displayName = subtitleHelper.resolveDisplayName(uri)
-            _jsonPlaylistState.update { it.copy(isLoading = true, errorMessage = null, sourceUrl = null) }
+            val uriStr = uri.toString()
+            _jsonPlaylistState.update { it.copy(isLoading = true, errorMessage = null) }
             when (val result = jsonParser.loadFromLocalUri(uri)) {
                 is JsonPlaylistLoadResult.Success -> {
-                    val label = result.sourceTitle ?: displayName
-                    _jsonPlaylistState.update {
-                        it.copy(
-                            sourceLabel = label,
-                            sourceUrl = uri.toString(),
-                            items = result.items,
-                            isLoading = false,
-                            errorMessage = null
-                        )
+                    val playlistId = MultiJsonPlaylistReducer.stablePlaylistId(uriStr, isLocal = true)
+                    val label = result.sourceTitle?.takeIf { it.isNotBlank() } ?: displayName
+                    val loaded = LoadedJsonPlaylist(
+                        id = playlistId,
+                        label = label,
+                        sourceUrl = uriStr,
+                        isLocal = true,
+                        items = result.items
+                    )
+                    var updatedState = _jsonPlaylistState.value
+                    _jsonPlaylistState.update { current ->
+                        MultiJsonPlaylistReducer.upsertPlaylist(
+                            state = current,
+                            playlist = loaded,
+                            selectPlaylist = true
+                        ).also { updatedState = it }
+                    }
+                    val playlistCountSuffix = if (updatedState.playlists.size > 1) {
+                        " (${updatedState.playlists.size} playlists active)"
+                    } else {
+                        ""
                     }
                     _uiState.update {
-                        it.copy(toastMessage = "Loaded ${result.items.size} items from $label")
+                        it.copy(toastMessage = "Loaded ${result.items.size} items from $label$playlistCountSuffix")
                     }
                     _navEvents.tryEmit(CineNavigationEvent.OpenJsonSheet)
-                    prewarmFirstItemOrigin(result.items)
-                    startJsonImdbEnrichment(result.items)
+                    prewarmFirstItemOrigin(updatedState.items.ifEmpty { updatedState.allItems })
+                    startJsonImdbEnrichment(updatedState.allItems)
                 }
                 is JsonPlaylistLoadResult.Error -> {
                     _jsonPlaylistState.update { it.copy(isLoading = false, errorMessage = result.message) }
@@ -523,18 +630,73 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun selectJsonPlaylist(playlistId: String?) {
+        _jsonPlaylistState.update { current ->
+            MultiJsonPlaylistReducer.selectPlaylist(current, playlistId)
+        }
+    }
+
+    fun removeJsonPlaylist(playlistId: String) {
+        val target = _jsonPlaylistState.value.playlists.firstOrNull { it.id == playlistId } ?: return
+        var updatedState = _jsonPlaylistState.value
+        _jsonPlaylistState.update { current ->
+            MultiJsonPlaylistReducer.removePlaylist(current, playlistId).also { updatedState = it }
+        }
+        viewModelScope.launch {
+            if (target.isRemoteHttp) {
+                val persisted = prefsRepo.loadJsonPlaylistUrls()
+                    .filterNot { it.equals(target.sourceUrl, ignoreCase = true) }
+                prefsRepo.saveJsonPlaylistUrls(persisted)
+            }
+            if (updatedState.playlists.isEmpty()) {
+                jsonEnrichJob?.cancel()
+            }
+        }
+        _uiState.update { it.copy(toastMessage = "Removed playlist: ${target.label}") }
+    }
+
     fun refreshJsonPlaylist() {
-        val currentUrl = _jsonPlaylistState.value.sourceUrl ?: return
-        if (currentUrl.startsWith("http://", ignoreCase = true) ||
-            currentUrl.startsWith("https://", ignoreCase = true)
+        val state = _jsonPlaylistState.value
+        val selectedId = state.selectedPlaylistId
+        if (selectedId != null) {
+            val selected = state.playlists.firstOrNull { it.id == selectedId }
+            if (selected != null && selected.isRemoteHttp) {
+                loadJsonPlaylistFromUrl(
+                    url = selected.sourceUrl,
+                    openSheetOnSuccess = false,
+                    silentOnError = false,
+                    selectLoadedPlaylist = true
+                )
+                return
+            }
+        }
+        val remoteUrls = state.remotePlaylistUrls
+        if (remoteUrls.isNotEmpty()) {
+            viewModelScope.launch {
+                loadMultipleJsonPlaylistsInternal(
+                    urls = remoteUrls,
+                    silentOnError = false,
+                    showSummaryToast = true
+                )
+            }
+            return
+        }
+        val legacyUrl = state.sourceUrl ?: return
+        if (legacyUrl.startsWith("http://", ignoreCase = true) ||
+            legacyUrl.startsWith("https://", ignoreCase = true)
         ) {
-            loadJsonPlaylistFromUrl(currentUrl, openSheetOnSuccess = false, silentOnError = false)
+            loadJsonPlaylistFromUrl(
+                url = legacyUrl,
+                openSheetOnSuccess = false,
+                silentOnError = false,
+                selectLoadedPlaylist = true
+            )
         }
     }
 
     fun clearJsonPlaylist() {
         jsonEnrichJob?.cancel()
-        viewModelScope.launch { prefsRepo.saveJsonPlaylistUrl(null) }
+        viewModelScope.launch { prefsRepo.saveJsonPlaylistUrls(emptyList()) }
         _jsonPlaylistState.value = JsonPlaylistUiState()
     }
 
@@ -650,7 +812,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private fun playNextEpisodeIfAvailable(autoTriggered: Boolean) {
         val session = _uiState.value.activeSession ?: return
         val seriesId = session.seriesItemId ?: return
-        val series = _jsonPlaylistState.value.items.firstOrNull { it.id == seriesId } ?: return
+        val series = _jsonPlaylistState.value.allItems.firstOrNull { it.id == seriesId } ?: return
         val nextEp = series.findNextEpisode(session.episodeId) ?: return
         _uiState.update {
             it.copy(
@@ -778,9 +940,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 if (updatedMap.isNotEmpty()) {
                     _jsonPlaylistState.update { state ->
-                        state.copy(
-                            items = state.items.map { existing -> updatedMap[existing.id] ?: existing }
-                        )
+                        MultiJsonPlaylistReducer.applyImdbUpdates(state, updatedMap)
                     }
                 }
             } finally {

@@ -31,6 +31,7 @@ class SubtitlePrefsRepository(private val context: Context) {
         val BG_PRESET = stringPreferencesKey("sub_bg_preset")
         val ASPECT_RATIO = stringPreferencesKey("aspect_ratio_mode")
         val JSON_PLAYLIST_URL = stringPreferencesKey("json_playlist_url")
+        val JSON_PLAYLIST_URLS = stringPreferencesKey("json_playlist_urls")
         val VOLUME_BOOST_PERCENT = intPreferencesKey("volume_boost_percent")
         val STATS_FOR_NERDS_ENABLED = booleanPreferencesKey("stats_for_nerds_enabled")
         val VIDEO_DECODER_MODE = stringPreferencesKey("video_decoder_mode")
@@ -93,18 +94,75 @@ class SubtitlePrefsRepository(private val context: Context) {
         context.cinePrefsDataStore.edit { it[Keys.ASPECT_RATIO] = mode.name }
     }
 
-    suspend fun loadJsonPlaylistUrl(): String? {
+    suspend fun loadJsonPlaylistUrls(): List<String> {
         val prefs = context.cinePrefsDataStore.data.first()
-        return prefs[Keys.JSON_PLAYLIST_URL]?.takeIf { it.isNotBlank() }
+        return decodeUrlList(
+            encodedJson = prefs[Keys.JSON_PLAYLIST_URLS],
+            legacySingleUrl = prefs[Keys.JSON_PLAYLIST_URL]
+        )
     }
 
-    suspend fun saveJsonPlaylistUrl(url: String?) {
-        context.cinePrefsDataStore.edit {
-            if (url.isNullOrBlank()) {
-                it.remove(Keys.JSON_PLAYLIST_URL)
+    suspend fun saveJsonPlaylistUrls(urls: List<String>) {
+        val cleaned = normalizeUrlList(urls)
+        context.cinePrefsDataStore.edit { prefs ->
+            if (cleaned.isEmpty()) {
+                prefs.remove(Keys.JSON_PLAYLIST_URLS)
+                prefs.remove(Keys.JSON_PLAYLIST_URL)
             } else {
-                it[Keys.JSON_PLAYLIST_URL] = url.trim()
+                prefs[Keys.JSON_PLAYLIST_URLS] = encodeUrlList(cleaned)
+                prefs[Keys.JSON_PLAYLIST_URL] = cleaned.first()
             }
+        }
+    }
+
+    suspend fun loadJsonPlaylistUrl(): String? = loadJsonPlaylistUrls().firstOrNull()
+
+    suspend fun saveJsonPlaylistUrl(url: String?) {
+        if (url.isNullOrBlank()) {
+            saveJsonPlaylistUrls(emptyList())
+        } else {
+            val existing = loadJsonPlaylistUrls()
+            saveJsonPlaylistUrls(existing + url.trim())
+        }
+    }
+
+    companion object {
+        fun normalizeUrlList(urls: List<String>): List<String> {
+            val seen = LinkedHashSet<String>()
+            val result = mutableListOf<String>()
+            for (raw in urls) {
+                val trimmed = raw.trim()
+                if (trimmed.isBlank()) continue
+                val key = trimmed.lowercase()
+                if (seen.add(key)) {
+                    result.add(trimmed)
+                }
+            }
+            return result
+        }
+
+        fun encodeUrlList(urls: List<String>): String {
+            val arr = org.json.JSONArray()
+            normalizeUrlList(urls).forEach { arr.put(it) }
+            return arr.toString()
+        }
+
+        fun decodeUrlList(encodedJson: String?, legacySingleUrl: String? = null): List<String> {
+            if (!encodedJson.isNullOrBlank()) {
+                val parsed = runCatching {
+                    val arr = org.json.JSONArray(encodedJson)
+                    buildList {
+                        for (i in 0 until arr.length()) {
+                            val item = arr.optString(i, "").trim()
+                            if (item.isNotBlank()) add(item)
+                        }
+                    }
+                }.getOrDefault(emptyList())
+                val normalized = normalizeUrlList(parsed)
+                if (normalized.isNotEmpty()) return normalized
+            }
+            val legacy = legacySingleUrl?.trim().orEmpty()
+            return if (legacy.isNotBlank()) listOf(legacy) else emptyList()
         }
     }
 

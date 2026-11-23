@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.cinestream.vqxkpm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 18
-    versionName = "1.18"
+    versionCode = 19
+    versionName = "1.19"
 
     ndk {
       // Keep 64-bit phones (arm64-v8a), 32-bit Android TVs (armeabi-v7a), and 64-bit emulators (x86_64)
@@ -68,7 +68,17 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      all {
+        it.systemProperty(
+          "robolectric.dependency.repo.url",
+          "https://maven-central.storage-download.googleapis.com/maven2"
+        )
+      }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true

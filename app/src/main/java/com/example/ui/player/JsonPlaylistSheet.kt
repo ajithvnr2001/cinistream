@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
@@ -60,11 +61,14 @@ import com.example.ui.components.ImdbBadgePill
 import com.example.ui.components.PosterImageThumbnail
 import com.example.ui.components.SubtitlePillBadge
 import com.example.ui.components.tvFocusHighlight
+import com.example.ui.home.JsonPlaylistSwitcherBar
+import com.example.ui.home.JsonPlaylistUrlInputDialog
 import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.SubtitleEmerald
+import com.example.viewmodel.LoadedJsonPlaylist
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,13 +81,36 @@ fun JsonPlaylistSheet(
     canRefreshUrl: Boolean,
     onRefresh: () -> Unit,
     onDismiss: () -> Unit,
-    onSelectItem: (JsonPlaylistItem) -> Unit
+    onSelectItem: (JsonPlaylistItem) -> Unit,
+    playlists: List<LoadedJsonPlaylist> = emptyList(),
+    selectedPlaylistId: String? = null,
+    onSelectPlaylist: (String?) -> Unit = {},
+    onRemovePlaylist: ((String) -> Unit)? = null,
+    onAddPlaylistUrl: ((String) -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val firstItemFocusRequester = remember { FocusRequester() }
     var query by rememberSaveable { mutableStateOf("") }
     var selectedCategory by rememberSaveable { mutableStateOf("All") }
     var selectedTypeFilter by rememberSaveable { mutableStateOf("ALL") }
+    var showAddUrlDialog by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(selectedPlaylistId) {
+        selectedCategory = "All"
+        selectedTypeFilter = "ALL"
+    }
+
+    val itemPlaylistLabelMap = remember(playlists, selectedPlaylistId) {
+        if (playlists.size > 1 && selectedPlaylistId == null) {
+            buildMap {
+                playlists.forEach { pl ->
+                    pl.items.forEach { put(it.id, pl.label) }
+                }
+            }
+        } else {
+            emptyMap()
+        }
+    }
 
     val hasMixedTypes = remember(items) {
         val hasSeries = items.any { it.isSeries }
@@ -161,20 +188,49 @@ fun JsonPlaylistSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (canRefreshUrl) {
-                    IconButton(
-                        onClick = onRefresh,
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = CircleShape)
-                            .testTag("json_sheet_refresh_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Refresh,
-                            contentDescription = "Refresh JSON playlist",
-                            tint = CinemaAmber
-                        )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (onAddPlaylistUrl != null) {
+                        IconButton(
+                            onClick = { showAddUrlDialog = true },
+                            modifier = Modifier
+                                .tvFocusHighlight(shape = CircleShape)
+                                .testTag("json_sheet_add_url_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = "Add another JSON playlist URL",
+                                tint = CinemaAmber
+                            )
+                        }
+                    }
+                    if (canRefreshUrl) {
+                        IconButton(
+                            onClick = onRefresh,
+                            modifier = Modifier
+                                .tvFocusHighlight(shape = CircleShape)
+                                .testTag("json_sheet_refresh_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = "Refresh JSON playlist",
+                                tint = CinemaAmber
+                            )
+                        }
                     }
                 }
+            }
+
+            if (playlists.isNotEmpty()) {
+                JsonPlaylistSwitcherBar(
+                    playlists = playlists,
+                    selectedPlaylistId = selectedPlaylistId,
+                    onSelectPlaylist = onSelectPlaylist,
+                    onRemovePlaylist = onRemovePlaylist,
+                    testTagPrefix = "json_sheet_playlist_chip"
+                )
             }
 
             if (isEnrichingImdb) {
@@ -272,6 +328,7 @@ fun JsonPlaylistSheet(
             ) {
                 itemsIndexed(filtered, key = { _, item -> item.id }) { idx, item ->
                     val isActive = item.id == activeItemId
+                    val sourcePlaylistBadge = itemPlaylistLabelMap[item.id]
                     Surface(
                         onClick = {
                             onSelectItem(item)
@@ -350,6 +407,12 @@ fun JsonPlaylistSheet(
                                     if (!item.subtitleUrl.isNullOrBlank()) {
                                         SubtitlePillBadge(text = "CC")
                                     }
+                                    if (!sourcePlaylistBadge.isNullOrBlank()) {
+                                        SubtitlePillBadge(
+                                            text = sourcePlaylistBadge.take(14),
+                                            accent = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
                                 }
 
                                 val summary = item.description?.takeIf { it.isNotBlank() } ?: item.groupTitle
@@ -384,5 +447,17 @@ fun JsonPlaylistSheet(
                 }
             }
         }
+    }
+
+    if (showAddUrlDialog && onAddPlaylistUrl != null) {
+        JsonPlaylistUrlInputDialog(
+            initialUrl = "",
+            existingPlaylistCount = playlists.size,
+            onDismiss = { showAddUrlDialog = false },
+            onConfirm = { url ->
+                onAddPlaylistUrl(url)
+                showAddUrlDialog = false
+            }
+        )
     }
 }

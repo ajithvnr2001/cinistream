@@ -99,6 +99,7 @@ import com.example.ui.components.rememberIsAndroidTv
 import com.example.ui.components.rememberLocalFilePicker
 import com.example.ui.theme.CinemaAmber
 import com.example.viewmodel.ActiveMediaSession
+import com.example.viewmodel.LoadedJsonPlaylist
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -126,6 +127,8 @@ fun PlayerScreen(
     activeM3uEntryId: String?,
     jsonPlaylistLabel: String? = null,
     jsonPlaylistItems: List<JsonPlaylistItem> = emptyList(),
+    jsonPlaylists: List<LoadedJsonPlaylist> = emptyList(),
+    selectedJsonPlaylistId: String? = null,
     activeJsonItemId: String? = null,
     activeSeries: JsonPlaylistItem? = null,
     activeEpisodeId: String? = null,
@@ -158,6 +161,9 @@ fun PlayerScreen(
     onRetryFormat: (StreamFormat) -> Unit,
     onSelectM3uEntry: (M3uEntry) -> Unit,
     onSelectJsonItem: (JsonPlaylistItem) -> Unit = {},
+    onSelectJsonPlaylist: (String?) -> Unit = {},
+    onRemoveJsonPlaylist: ((String) -> Unit)? = null,
+    onAddJsonPlaylistUrl: ((String) -> Unit)? = null,
     onSelectSeriesEpisode: (JsonPlaylistItem, SeriesEpisode) -> Unit = { _, _ -> },
     onPlayNextEpisode: () -> Unit = {},
     onSwitchCdnMirror: () -> Unit = {},
@@ -681,7 +687,7 @@ fun PlayerScreen(
                         statsForNerdsEnabled = statsForNerdsEnabled,
                         hasSeriesEpisodes = activeSeries != null,
                         episodeCodeBadge = session?.episodeCodeLabel,
-                        hasJsonPlaylist = jsonPlaylistItems.isNotEmpty(),
+                        hasJsonPlaylist = jsonPlaylistItems.isNotEmpty() || jsonPlaylists.isNotEmpty(),
                         hasM3uPlaylist = m3uEntries.isNotEmpty(),
                         isTv = isTv,
                         tvOverscanHorizontal = tvOverscanHorizontal,
@@ -908,7 +914,7 @@ fun PlayerScreen(
         )
     }
 
-    if (showJsonSheet && jsonPlaylistItems.isNotEmpty()) {
+    if (showJsonSheet && (jsonPlaylistItems.isNotEmpty() || jsonPlaylists.isNotEmpty())) {
         JsonPlaylistSheet(
             sourceLabel = jsonPlaylistLabel,
             items = jsonPlaylistItems,
@@ -917,7 +923,12 @@ fun PlayerScreen(
             canRefreshUrl = canRefreshJson,
             onRefresh = onRefreshJsonPlaylist,
             onDismiss = { showJsonSheet = false },
-            onSelectItem = onSelectJsonItem
+            onSelectItem = onSelectJsonItem,
+            playlists = jsonPlaylists,
+            selectedPlaylistId = selectedJsonPlaylistId,
+            onSelectPlaylist = onSelectJsonPlaylist,
+            onRemovePlaylist = onRemoveJsonPlaylist,
+            onAddPlaylistUrl = onAddJsonPlaylistUrl
         )
     }
 

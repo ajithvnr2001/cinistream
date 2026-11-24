@@ -1,6 +1,5 @@
 package com.example.ui.home
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -28,7 +27,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -48,7 +46,6 @@ import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
-import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.viewmodel.JsonPlaylistUiState
 import com.example.viewmodel.LoadedJsonPlaylist
 
@@ -65,198 +62,179 @@ fun JsonPlaylistLauncherRow(
     val hasItems = allItems.isNotEmpty()
     val playlistCount = state.playlists.size.coerceAtLeast(if (hasItems) 1 else 0)
 
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = ObsidianSurfaceHigh,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (hasItems) CinemaAmber.copy(alpha = 0.55f) else ObsidianOutline.copy(alpha = 0.65f)
-        )
-    ) {
-        if (state.isLoading && !hasItems) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+    if (state.isLoading && !hasItems) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = CinemaAmber
+            )
+            Text(
+                text = "Loading catalog…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = CinemaAmber
+            )
+        }
+    } else if (hasItems) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (state.isLoading) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(16.dp),
                     strokeWidth = 2.dp,
                     color = CinemaAmber
                 )
-                Text(
-                    text = "Loading JSON playlists & IMDb info…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = CinemaAmber
+            } else {
+                Icon(
+                    imageVector = Icons.Rounded.VideoLibrary,
+                    contentDescription = null,
+                    tint = CinemaAmber,
+                    modifier = Modifier.size(18.dp)
                 )
             }
-        } else if (hasItems) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+            Column(modifier = Modifier.weight(1f)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (state.isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = CinemaAmber
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.VideoLibrary,
-                            contentDescription = null,
-                            tint = CinemaAmber,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = if (playlistCount > 1) {
-                                    "$playlistCount JSON Playlists"
-                                } else {
-                                    state.sourceLabel ?: "JSON Catalog"
-                                },
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            ImdbBadgePill(rating = null, imdbId = "tt0000001")
-                        }
-                        Text(
-                            text = if (playlistCount > 1) {
-                                "${allItems.size} titles across $playlistCount lists · Tap + to add more"
-                            } else {
-                                "${allItems.size} titles loaded · Tap + to add another URL"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = CinemaAmber,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    IconButton(
-                        onClick = onOpenJsonUrlDialog,
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = CircleShape)
-                            .testTag("add_json_url_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Add,
-                            contentDescription = "Add another JSON playlist URL",
-                            tint = CinemaAmber,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    TextButton(
-                        onClick = onOpenJsonSheet,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                            .testTag("open_json_sheet_button")
-                    ) {
-                        Text("Browse", color = CinemaAmber)
-                    }
-                    if (state.canRefreshRemote) {
-                        IconButton(
-                            onClick = onRefreshJsonPlaylist,
-                            modifier = Modifier
-                                .tvFocusHighlight(shape = CircleShape)
-                                .testTag("refresh_json_playlist_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Refresh,
-                                contentDescription = "Reload JSON playlists",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = onClearJsonPlaylist,
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = CircleShape)
-                            .testTag("clear_json_playlist_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = stringResource(R.string.action_clear),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                    Text(
+                        text = if (playlistCount > 1) {
+                            "$playlistCount Catalogs"
+                        } else {
+                            state.sourceLabel ?: "JSON Catalog"
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    ImdbBadgePill(rating = null, imdbId = "tt0000001")
                 }
+                Text(
+                    text = "${allItems.size} titles",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
-        } else {
-            Row(
+            IconButton(
+                onClick = onOpenJsonUrlDialog,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .size(34.dp)
+                    .tvFocusHighlight(shape = CircleShape)
+                    .testTag("add_json_url_button")
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                Icon(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = "Add another JSON playlist URL",
+                    tint = CinemaAmber,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            TextButton(
+                onClick = onOpenJsonSheet,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
+                    .testTag("open_json_sheet_button")
+            ) {
+                Text("Browse", color = CinemaAmber)
+            }
+            if (state.canRefreshRemote) {
+                IconButton(
+                    onClick = onRefreshJsonPlaylist,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .tvFocusHighlight(shape = CircleShape)
+                        .testTag("refresh_json_playlist_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.VideoLibrary,
-                        contentDescription = null,
-                        tint = CinemaAmber,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "JSON Playlists (IMDb)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = "Reload JSON playlists",
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(17.dp)
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextButton(
-                        onClick = onPickJsonFile,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                            .testTag("load_json_file_button")
-                    ) {
-                        Text("File", color = MaterialTheme.colorScheme.tertiary)
-                    }
-                    TextButton(
-                        onClick = onOpenJsonUrlDialog,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                            .testTag("load_json_url_button")
-                    ) {
-                        Text("URL", color = CinemaAmber)
-                    }
+            }
+            IconButton(
+                onClick = onClearJsonPlaylist,
+                modifier = Modifier
+                    .size(34.dp)
+                    .tvFocusHighlight(shape = CircleShape)
+                    .testTag("clear_json_playlist_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = stringResource(R.string.action_clear),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+        }
+    } else {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.VideoLibrary,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(17.dp)
+                )
+                Text(
+                    text = "JSON Catalog",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(
+                    onClick = onPickJsonFile,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
+                        .testTag("load_json_file_button")
+                ) {
+                    Text("File", color = MaterialTheme.colorScheme.tertiary)
+                }
+                TextButton(
+                    onClick = onOpenJsonUrlDialog,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
+                        .testTag("load_json_url_button")
+                ) {
+                    Text("URL", color = CinemaAmber)
                 }
             }
         }
     }
 }
 
-/**
- * Horizontal TV-focusable switcher bar allowing instant switching between "All" combined titles
- * and individual loaded JSON playlists, with an optional per-playlist remove action.
- */
 @Composable
 fun JsonPlaylistSwitcherBar(
     playlists: List<LoadedJsonPlaylist>,
@@ -280,19 +258,20 @@ fun JsonPlaylistSwitcherBar(
             FilterChip(
                 selected = allSelected,
                 onClick = { onSelectPlaylist(null) },
-                label = { Text("All ($totalTitles)") },
+                label = { Text("All ($totalTitles)", style = MaterialTheme.typography.labelMedium) },
+                shape = RoundedCornerShape(8.dp),
                 modifier = Modifier
-                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                    .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
                     .testTag("${testTagPrefix}_all"),
                 colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = CinemaAmber.copy(alpha = 0.24f),
+                    selectedContainerColor = CinemaAmber.copy(alpha = 0.18f),
                     selectedLabelColor = CinemaAmber
                 ),
                 border = FilterChipDefaults.filterChipBorder(
                     enabled = true,
                     selected = allSelected,
                     borderColor = ObsidianOutline,
-                    selectedBorderColor = CinemaAmber.copy(alpha = 0.7f)
+                    selectedBorderColor = CinemaAmber.copy(alpha = 0.65f)
                 )
             )
         }
@@ -304,22 +283,24 @@ fun JsonPlaylistSwitcherBar(
                 label = {
                     Text(
                         text = "${playlist.label} (${playlist.items.size})",
+                        style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 },
+                shape = RoundedCornerShape(8.dp),
                 modifier = Modifier
-                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                    .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
                     .testTag("${testTagPrefix}_${playlist.id}"),
                 colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = CinemaAmber.copy(alpha = 0.24f),
+                    selectedContainerColor = CinemaAmber.copy(alpha = 0.18f),
                     selectedLabelColor = CinemaAmber
                 ),
                 border = FilterChipDefaults.filterChipBorder(
                     enabled = true,
                     selected = isSelected,
                     borderColor = ObsidianOutline,
-                    selectedBorderColor = CinemaAmber.copy(alpha = 0.7f)
+                    selectedBorderColor = CinemaAmber.copy(alpha = 0.65f)
                 )
             )
         }
@@ -359,11 +340,11 @@ fun JsonPlaylistUrlInputDialog(
             ) {
                 Text(
                     text = if (existingPlaylistCount > 0) {
-                        "Add JSON Playlist URL"
+                        "Add JSON Catalog"
                     } else {
                         stringResource(R.string.load_json_playlist_url)
                     },
-                    style = MaterialTheme.typography.titleLarge
+                    style = MaterialTheme.typography.headlineSmall
                 )
                 ImdbBadgePill(rating = null, imdbId = "tt0000001")
             }
@@ -372,9 +353,9 @@ fun JsonPlaylistUrlInputDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
                     text = if (existingPlaylistCount > 0) {
-                        "Add another JSON playlist URL alongside your $existingPlaylistCount active playlist${if (existingPlaylistCount == 1) "" else "s"}. All saved URLs auto-load on launch and can be switched anytime."
+                        "Add another JSON catalog URL. Saved lists reload on launch."
                     } else {
-                        "Load one or more JSON playlist URLs containing Movies and/or Series (seasons & episodes). Supports imdbId/imdbUrl, mirrors/cdnMirrors failover, custom headers, subtitleUrl, and auto-fetched IMDb posters."
+                        "Paste a JSON catalog URL for movies or series. IMDb metadata and mirrors load automatically."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -399,16 +380,16 @@ fun JsonPlaylistUrlInputDialog(
                     contentColor = MaterialTheme.colorScheme.onPrimary
                 ),
                 modifier = Modifier
-                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
                     .testTag("dialog_json_url_confirm")
             ) {
-                Text(if (existingPlaylistCount > 0) "Add Catalog" else "Load Catalog")
+                Text(if (existingPlaylistCount > 0) "Add" else "Load")
             }
         },
         dismissButton = {
             TextButton(
                 onClick = onDismiss,
-                modifier = Modifier.tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                modifier = Modifier.tvFocusHighlight(shape = RoundedCornerShape(10.dp))
             ) {
                 Text("Cancel")
             }

@@ -30,11 +30,13 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Refresh
@@ -75,8 +77,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.SkipPrevious
 import com.example.R
+import com.example.model.AbLoopState
 import com.example.model.AspectRatioMode
+import com.example.model.ChapterMarker
 import com.example.model.StreamFormat
 import com.example.player.AudioBoostMath
 import com.example.player.PlaybackProgressState
@@ -89,6 +97,7 @@ import com.example.ui.theme.CinemaAmberBright
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.SignalRose
+import com.example.ui.theme.StreamCyan
 import com.example.ui.theme.SubtitleEmerald
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -108,25 +117,25 @@ internal fun PlayerLockedOverlay(
     ) {
         Surface(
             onClick = onUnlock,
-            shape = RoundedCornerShape(24.dp),
-            color = Color.Black.copy(alpha = 0.75f),
-            border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.55f)),
+            shape = RoundedCornerShape(10.dp),
+            color = Color(0xCC0E0E11),
+            border = BorderStroke(0.75.dp, CinemaAmber.copy(alpha = 0.6f)),
             modifier = Modifier
                 .align(Alignment.CenterStart)
                 .minimumInteractiveComponentSize()
-                .tvFocusHighlight(shape = RoundedCornerShape(24.dp))
+                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
                 .testTag("player_unlock_button")
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 Icon(
                     imageVector = Icons.Rounded.LockOpen,
                     contentDescription = stringResource(R.string.cd_unlock_controls),
                     tint = CinemaAmber,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(17.dp)
                 )
                 Text(
                     text = "Unlock",
@@ -150,6 +159,7 @@ internal fun PlayerTopBar(
     hasJsonPlaylist: Boolean,
     hasM3uPlaylist: Boolean,
     isTv: Boolean,
+    backgroundAudioEnabled: Boolean = false,
     tvOverscanHorizontal: Dp,
     tvOverscanVertical: Dp,
     subButtonFocusRequester: FocusRequester,
@@ -165,7 +175,17 @@ internal fun PlayerTopBar(
     onOpenJsonCatalog: () -> Unit,
     onOpenM3uQueue: () -> Unit,
     onOpenTracks: () -> Unit,
+    onToggleBackgroundAudio: (() -> Unit)? = null,
+    onEnterPip: (() -> Unit)? = null,
     onLockControls: () -> Unit,
+    isFavorited: Boolean = false,
+    onToggleFavorite: (() -> Unit)? = null,
+    canDownload: Boolean = false,
+    onDownloadStream: (() -> Unit)? = null,
+    sleepTimerBadge: String? = null,
+    hasM3uZapping: Boolean = false,
+    onChannelPrev: (() -> Unit)? = null,
+    onChannelNext: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -173,7 +193,9 @@ internal fun PlayerTopBar(
             .fillMaxWidth()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(Color.Black.copy(alpha = 0.84f), Color.Transparent)
+                    0.0f to Color.Black.copy(alpha = 0.86f),
+                    0.55f to Color.Black.copy(alpha = 0.42f),
+                    1.0f to Color.Transparent
                 )
             )
             .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
@@ -239,6 +261,13 @@ internal fun PlayerTopBar(
                             text = "· NET HUD",
                             style = MaterialTheme.typography.labelSmall,
                             color = CinemaAmber
+                        )
+                    }
+                    if (!sleepTimerBadge.isNullOrBlank()) {
+                        Text(
+                            text = "· $sleepTimerBadge",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StreamCyan
                         )
                     }
                 }
@@ -376,6 +405,48 @@ internal fun PlayerTopBar(
                 }
             }
 
+            if (hasM3uZapping && onChannelPrev != null && onChannelNext != null) {
+                IconButton(
+                    onClick = onChannelPrev,
+                    modifier = Modifier
+                        .tvFocusHighlight(shape = CircleShape)
+                        .testTag("player_channel_prev_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SkipPrevious,
+                        contentDescription = stringResource(R.string.cd_channel_prev),
+                        tint = StreamCyan
+                    )
+                }
+                IconButton(
+                    onClick = onChannelNext,
+                    modifier = Modifier
+                        .tvFocusHighlight(shape = CircleShape)
+                        .testTag("player_channel_next_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SkipNext,
+                        contentDescription = stringResource(R.string.cd_channel_next),
+                        tint = StreamCyan
+                    )
+                }
+            }
+
+            if (onToggleFavorite != null) {
+                IconButton(
+                    onClick = onToggleFavorite,
+                    modifier = Modifier
+                        .tvFocusHighlight(shape = CircleShape)
+                        .testTag("player_favorite_button")
+                ) {
+                    Icon(
+                        imageVector = if (isFavorited) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                        contentDescription = stringResource(R.string.cd_favorite_toggle),
+                        tint = if (isFavorited) SignalRose else Color.White
+                    )
+                }
+            }
+
             IconButton(
                 onClick = onOpenTracks,
                 modifier = Modifier
@@ -391,6 +462,48 @@ internal fun PlayerTopBar(
             }
 
             if (!isTv) {
+                if (canDownload && onDownloadStream != null) {
+                    IconButton(
+                        onClick = onDownloadStream,
+                        modifier = Modifier
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_download_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Download,
+                            contentDescription = stringResource(R.string.cd_download_stream),
+                            tint = Color.White
+                        )
+                    }
+                }
+                if (onToggleBackgroundAudio != null) {
+                    IconButton(
+                        onClick = onToggleBackgroundAudio,
+                        modifier = Modifier
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_bg_audio_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Headphones,
+                            contentDescription = stringResource(R.string.cd_background_audio),
+                            tint = if (backgroundAudioEnabled) SubtitleEmerald else Color.White
+                        )
+                    }
+                }
+                if (onEnterPip != null) {
+                    IconButton(
+                        onClick = onEnterPip,
+                        modifier = Modifier
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_pip_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PictureInPictureAlt,
+                            contentDescription = stringResource(R.string.cd_enter_pip),
+                            tint = Color.White
+                        )
+                    }
+                }
                 IconButton(
                     onClick = onLockControls,
                     modifier = Modifier
@@ -513,6 +626,8 @@ internal fun PlayerBottomBar(
     onSeekCommit: (Long) -> Unit,
     onScrubbingStateChanged: (Boolean) -> Unit,
     onInteraction: () -> Unit,
+    chapters: List<ChapterMarker> = emptyList(),
+    abLoop: AbLoopState = AbLoopState(),
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -672,7 +787,9 @@ internal fun PlayerBottomBar(
                 focusRequester = seekBarFocusRequester,
                 onSeekCommit = onSeekCommit,
                 onScrubbingStateChanged = onScrubbingStateChanged,
-                onInteraction = onInteraction
+                onInteraction = onInteraction,
+                chapters = chapters,
+                abLoop = abLoop
             )
         }
     }
@@ -710,7 +827,9 @@ private fun PlayerIsolatedSeekBar(
     focusRequester: FocusRequester,
     onSeekCommit: (Long) -> Unit,
     onScrubbingStateChanged: (Boolean) -> Unit,
-    onInteraction: () -> Unit
+    onInteraction: () -> Unit,
+    chapters: List<ChapterMarker> = emptyList(),
+    abLoop: AbLoopState = AbLoopState()
 ) {
     val progress by progressStateFlow.collectAsStateWithLifecycle()
     if (!progress.isLiveStream || progress.durationMs > 0L) {
@@ -722,7 +841,9 @@ private fun PlayerIsolatedSeekBar(
             focusRequester = focusRequester,
             onSeekCommit = onSeekCommit,
             onScrubbingStateChanged = onScrubbingStateChanged,
-            onInteraction = onInteraction
+            onInteraction = onInteraction,
+            chapters = chapters,
+            abLoop = abLoop
         )
     }
 }

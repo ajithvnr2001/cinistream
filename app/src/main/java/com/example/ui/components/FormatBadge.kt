@@ -36,15 +36,15 @@ fun FormatBadge(
     val accent = format.accentColor()
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
-        color = accent.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.38f))
+        shape = RoundedCornerShape(4.dp),
+        color = Color(0xBF09090B),
+        border = BorderStroke(0.75.dp, accent.copy(alpha = 0.45f))
     ) {
         Text(
             text = format.badge,
             style = MaterialTheme.typography.labelSmall,
             color = accent,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
         )
     }
 }
@@ -57,15 +57,15 @@ fun SubtitlePillBadge(
 ) {
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(4.dp),
         color = accent.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.38f))
+        border = BorderStroke(0.75.dp, accent.copy(alpha = 0.4f))
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelSmall,
             color = accent,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
         )
     }
 }

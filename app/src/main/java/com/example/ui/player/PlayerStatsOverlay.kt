@@ -42,6 +42,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.player.DecoderFallbackHelper
+import com.example.player.FrameDropDiagnosis
+import com.example.player.FrameDropSnapshot
+import com.example.player.MediaCodecQueueingPolicy
 import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerStatsFormatter
 import com.example.player.PrivateDnsMode
@@ -108,9 +111,9 @@ internal fun PlayerStatsCard(
         modifier = modifier
             .widthIn(min = 250.dp, max = maxCardWidth)
             .testTag("player_stats_overlay"),
-        shape = RoundedCornerShape(14.dp),
-        color = Color(0xCC0A0C12),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xD90E0E11),
+        border = BorderStroke(0.75.dp, Color.White.copy(alpha = 0.14f))
     ) {
         Column(
             modifier = Modifier.padding(
@@ -344,19 +347,36 @@ internal fun PlayerStatsCard(
             val decoderLabel = DecoderFallbackHelper.formatDecoderTag(stats.activeVideoDecoderName)
             val isSwDecoder = stats.activeVideoDecoderName.isNotBlank() &&
                 DecoderFallbackHelper.isSoftwareCodecName(stats.activeVideoDecoderName)
+            val baseDecoder = if (decoderLabel != "—") decoderLabel else stats.effectiveDecoderMode.label
+            val queueingTag = if (stats.asyncQueueingActive) "Async" else "Sync"
             StatLine(
                 label = "Decoder",
-                value = if (decoderLabel != "—") decoderLabel else stats.effectiveDecoderMode.label,
+                value = "$baseDecoder · $queueingTag",
                 valueColor = if (isSwDecoder) CinemaAmberBright else SubtitleEmerald,
                 labelSize = labelFontSize,
-                valueSize = valueFontSize
+                valueSize = valueFontSize,
+                valueTestTag = "stats_decoder_value"
             )
+            val dropSnapshot = FrameDropSnapshot(
+                totalDropped = stats.droppedFrames,
+                steadyDropped = stats.steadyDroppedFrames,
+                seekJoinDropped = stats.seekJoinDroppedFrames,
+                liveDropsPerSec = stats.liveDroppedFramesPerSec,
+                diagnosis = stats.frameDropDiagnosis
+            )
+            val droppedColor = when (stats.frameDropDiagnosis) {
+                FrameDropDiagnosis.HEALTHY -> SubtitleEmerald
+                FrameDropDiagnosis.SEEK_BURST -> Color.White.copy(alpha = 0.88f)
+                FrameDropDiagnosis.STREAM_PTS_OR_RESYNC -> CinemaAmberBright
+                FrameDropDiagnosis.SW_CPU_LOAD -> SignalRose
+            }
             StatLine(
                 label = "Dropped",
-                value = "${stats.droppedFrames} frames",
-                valueColor = if (stats.droppedFrames > 5L) SignalRose else Color.White.copy(alpha = 0.9f),
+                value = MediaCodecQueueingPolicy.formatDroppedSummary(dropSnapshot),
+                valueColor = droppedColor,
                 labelSize = labelFontSize,
-                valueSize = valueFontSize
+                valueSize = valueFontSize,
+                valueTestTag = "stats_dropped_value"
             )
         }
     }
@@ -368,7 +388,8 @@ private fun StatLine(
     value: String,
     valueColor: Color = Color.White.copy(alpha = 0.92f),
     labelSize: androidx.compose.ui.unit.TextUnit,
-    valueSize: androidx.compose.ui.unit.TextUnit
+    valueSize: androidx.compose.ui.unit.TextUnit,
+    valueTestTag: String? = null
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -391,7 +412,9 @@ private fun StatLine(
             color = valueColor,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .weight(1f)
+                .then(if (valueTestTag != null) Modifier.testTag(valueTestTag) else Modifier)
         )
     }
 }

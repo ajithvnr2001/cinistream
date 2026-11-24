@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.cinestream.vqxkpm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 21
-    versionName = "1.21"
+    versionCode = 25
+    versionName = "1.25"
 
     ndk {
       // Keep 64-bit phones (arm64-v8a), 32-bit Android TVs (armeabi-v7a), and 64-bit emulators (x86_64)
@@ -61,8 +61,9 @@ android {
     }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    isCoreLibraryDesugaringEnabled = true
   }
   buildFeatures {
     compose = true
@@ -85,9 +86,11 @@ android {
   }
   packaging {
     jniLibs {
-      // Compress native FFmpeg .so binaries inside the APK so the universal phone + TV APK
-      // stays compact (~33 MB instead of 57 MB) for fast sideloading & workspace sync
+      // Compress native FFmpeg + WireGuard .so binaries inside the APK so the universal
+      // phone + TV APK stays compact (<28 MB) for fast sideloading & workspace persistence
       useLegacyPackaging = true
+      // CineStream uses GoBackend (libwg-go.so); root-only wg-quick/wg CLI binaries are unused
+      excludes += setOf("**/libwg-quick.so", "**/libwg.so")
     }
   }
 }
@@ -114,7 +117,8 @@ dependencies {
   // implementation(libs.androidx.camera.lifecycle)
   // implementation(libs.androidx.camera.view)
   implementation(libs.androidx.compose.material.icons.core)
-  implementation(libs.androidx.compose.material.icons.extended)
+  // Replaced ~15 MB material-icons-extended DEX with compact local vectors in ui/icons/
+  // implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
@@ -155,6 +159,8 @@ dependencies {
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
+  implementation(libs.wireguard.tunnel)
+  coreLibraryDesugaring(libs.desugar.jdk.libs)
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

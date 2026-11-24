@@ -63,6 +63,7 @@ class AudioVolumeBooster {
 
     private var currentSessionId: Int = 0
     private var currentPercent: Int = AudioBoostMath.NORMAL_MAX_PERCENT
+    private var nightModeEnabled: Boolean = false
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var dynamicsProcessing: DynamicsProcessing? = null
 
@@ -75,7 +76,7 @@ class AudioVolumeBooster {
         }
         releaseEffectsLocked()
         currentSessionId = audioSessionId
-        if (currentPercent > AudioBoostMath.NORMAL_MAX_PERCENT) {
+        if (needsEffectsLocked()) {
             createEffectsLocked(audioSessionId)
             applyCurrentSettingsLocked()
         }
@@ -89,11 +90,27 @@ class AudioVolumeBooster {
             releaseEffectsLocked()
             currentSessionId = fallbackAudioSessionId
         }
-        if (clamped > AudioBoostMath.NORMAL_MAX_PERCENT && currentSessionId > 0 && loudnessEnhancer == null) {
+        if (needsEffectsLocked() && currentSessionId > 0 && loudnessEnhancer == null) {
             createEffectsLocked(currentSessionId)
         }
         applyCurrentSettingsLocked()
     }
+
+    @Synchronized
+    fun setNightModeEnabled(enabled: Boolean, fallbackAudioSessionId: Int = 0) {
+        nightModeEnabled = enabled
+        if (fallbackAudioSessionId > 0 && currentSessionId != fallbackAudioSessionId) {
+            releaseEffectsLocked()
+            currentSessionId = fallbackAudioSessionId
+        }
+        if (needsEffectsLocked() && currentSessionId > 0 && loudnessEnhancer == null) {
+            createEffectsLocked(currentSessionId)
+        }
+        applyCurrentSettingsLocked()
+    }
+
+    private fun needsEffectsLocked(): Boolean =
+        currentPercent > AudioBoostMath.NORMAL_MAX_PERCENT || nightModeEnabled
 
     private fun createEffectsLocked(sessionId: Int) {
         runCatching {
@@ -101,13 +118,14 @@ class AudioVolumeBooster {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             runCatching {
+                // 4-band Pre-EQ + 1-band MBC + Limiter for clean Night Mode dialogue clarity + boost protection
                 val config = DynamicsProcessing.Config.Builder(
                     DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
                     1,
-                    false,
-                    0,
-                    false,
-                    0,
+                    true,
+                    4,
+                    true,
+                    1,
                     false,
                     0,
                     true
@@ -115,34 +133,65 @@ class AudioVolumeBooster {
                     .setPreferredFrameDuration(10f)
                     .build()
                 val dp = DynamicsProcessing(0, sessionId, config)
-                val limiter = DynamicsProcessing.Limiter(
-                    true,
-                    true,
-                    0,
-                    2.0f,
-                    60.0f,
-                    6.0f,
-                    -1.0f,
-                    0.0f
-                )
-                dp.setLimiterAllChannelsTo(limiter)
                 dynamicsProcessing = dp
             }
         }
     }
 
     private fun applyCurrentSettingsLocked() {
-        val gainMb = AudioBoostMath.computeTargetGainMb(currentPercent)
-        val boostActive = gainMb > 0
+        val boostGainMb = AudioBoostMath.computeTargetGainMb(currentPercent)
+        // Pre-API 28 fallback: gentle +3.5 dB loudness boost in Night Mode so dialogue stays audible at low volume
+        val nightFallbackMb = if (nightModeEnabled && Build.VERSION.SDK_INT < Build.VERSION_CODES.P) 350 else 0
+        val effectiveGainMb = (boostGainMb + nightFallbackMb).coerceAtMost(AudioBoostMath.MAX_GAIN_MB)
+        val boostActive = effectiveGainMb > 0
         runCatching {
             loudnessEnhancer?.apply {
-                setTargetGain(gainMb)
+                setTargetGain(effectiveGainMb)
                 enabled = boostActive
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             runCatching {
-                dynamicsProcessing?.enabled = boostActive
+                val dp = dynamicsProcessing ?: return@runCatching
+                val preEq = DynamicsProcessing.Eq(true, nightModeEnabled, 4).apply {
+                    // Roll off rumbling sub-bass explosions, lift 1–4 kHz human dialogue presence
+                    setBand(0, DynamicsProcessing.EqBand(true, 120f, -4.5f))
+                    setBand(1, DynamicsProcessing.EqBand(true, 500f, 0.0f))
+                    setBand(2, DynamicsProcessing.EqBand(true, 2200f, 4.5f))
+                    setBand(3, DynamicsProcessing.EqBand(true, 8000f, -1.5f))
+                }
+                dp.setPreEqAllChannelsTo(preEq)
+
+                val mbc = DynamicsProcessing.Mbc(true, nightModeEnabled, 1).apply {
+                    val band = DynamicsProcessing.MbcBand(
+                        true,
+                        20_000f,
+                        15f,   // attack ms
+                        180f,  // release ms
+                        4.5f,  // compression ratio (tames loud explosions)
+                        -22f,  // threshold dB
+                        6f,    // knee width dB
+                        -60f,  // noise gate threshold
+                        1.0f,  // expander ratio
+                        2.5f,  // pre-gain dB
+                        1.5f   // post-gain dB
+                    )
+                    setBand(0, band)
+                }
+                dp.setMbcAllChannelsTo(mbc)
+
+                val limiter = DynamicsProcessing.Limiter(
+                    true,
+                    boostActive || nightModeEnabled,
+                    0,
+                    2.0f,
+                    60.0f,
+                    if (nightModeEnabled) 8.0f else 6.0f,
+                    if (nightModeEnabled) -3.0f else -1.0f,
+                    0.0f
+                )
+                dp.setLimiterAllChannelsTo(limiter)
+                dp.enabled = boostActive || nightModeEnabled
             }
         }
     }

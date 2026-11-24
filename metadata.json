@@ -1,6 +1,6 @@
 {
   "name": "CineStream",
-  "description": "Universal Android video player for MKV, MP4, M3U/M3U8, and HLS streams with external and embedded subtitle support across all formats.",
+  "description": "Universal Android Mobile & TV media player for MKV, MP4, HLS, IPTV/EPG, NAS/Jellyfin, and multi-JSON catalogs with Cronet HTTP/3, WireGuard VPN, FFmpeg fallback, OpenSubtitles, and phone-to-TV remote.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -7,7 +7,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 
-private val ColorMixHighest = androidx.compose.ui.graphics.Color(0xFF2B3548)
+private val ColorMixHighest = androidx.compose.ui.graphics.Color(0xFF2D2D35)
 
 private val CineStreamDarkColorScheme = darkColorScheme(
     primary = CinemaAmber,
@@ -42,11 +42,11 @@ private val CineStreamDarkColorScheme = darkColorScheme(
 )
 
 val CineStreamShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(22.dp),
-    extraLarge = RoundedCornerShape(28.dp)
+    extraSmall = RoundedCornerShape(4.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp),
+    extraLarge = RoundedCornerShape(22.dp)
 )
 
 @Composable

@@ -22,6 +22,8 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -92,7 +94,10 @@ data class PlayerPlaybackState(
     val isDecoderError: Boolean = false,
     val failedDecoderName: String? = null,
     val surfaceResetToken: Int = 0,
-    val ffmpegAvailable: Boolean = false
+    val ffmpegAvailable: Boolean = false,
+    val audioDelayMs: Long = 0L,
+    val nightModeAudioEnabled: Boolean = false,
+    val temporarySpeedActive: Boolean = false
 )
 
 @OptIn(UnstableApi::class)
@@ -329,6 +334,11 @@ class CinePlayerManager(context: Context) {
     }
 
     private val volumeBooster = AudioVolumeBooster()
+    private val delayAudioProcessor = DelayAudioProcessor()
+    private val frameDropAnalyzer = FrameDropAnalyzer()
+    private val asyncQueueingEnabled: Boolean = MediaCodecQueueingPolicy.shouldUseAsyncQueueing(
+        isConstrainedOrTv = isTelevisionDevice || isConstrainedDevice
+    )
 
     // Dynamic HW/SW video decoder selection & failed-codec blocklist (auto-recovers from c2.qti.hevc.decoder & c2.android.hevc.decoder)
     @Volatile private var preferredDecoderMode: VideoDecoderMode = VideoDecoderMode.AUTO
@@ -353,13 +363,30 @@ class CinePlayerManager(context: Context) {
 
     // NextRenderersFactory injects native FFmpeg software video (10-bit HEVC Main10, AV1, H.264, VP9)
     // and audio (DTS, AC-3, E-AC-3, TrueHD, FLAC) renderers right behind platform HW MediaCodec.
-    // Synchronous MediaCodec queueing prevents Qualcomm C2 async queue HEVC crashes on Snapdragon devices.
-    private val renderersFactory = NextRenderersFactory(context)
-        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
-        .setEnableDecoderFallback(true)
-        .forceDisableMediaCodecAsynchronousQueueing()
-        .setMediaCodecSelector(smartMediaCodecSelector)
-        .setAllowedVideoJoiningTimeMs(5_000L)
+    // Selective MediaCodec async queueing enabled on API 31+ modern devices; synchronous on API < 31 / TV.
+    private val renderersFactory = object : NextRenderersFactory(context) {
+        override fun buildAudioSink(
+            context: Context,
+            enableFloatOutput: Boolean,
+            enableAudioTrackPlaybackParams: Boolean
+        ): AudioSink {
+            return DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                .setAudioProcessors(arrayOf(delayAudioProcessor))
+                .build()
+        }
+    }.apply {
+        setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+        setEnableDecoderFallback(true)
+        if (asyncQueueingEnabled) {
+            forceEnableMediaCodecAsynchronousQueueing()
+        } else {
+            forceDisableMediaCodecAsynchronousQueueing()
+        }
+        setMediaCodecSelector(smartMediaCodecSelector)
+        setAllowedVideoJoiningTimeMs(5_000L)
+    }
 
     val player: ExoPlayer = ExoPlayer.Builder(context, renderersFactory)
         .setMediaSourceFactory(mediaSourceFactory)
@@ -378,6 +405,8 @@ class CinePlayerManager(context: Context) {
         .apply {
             // Snap rapidly to nearest sync keyframe for instant multi-minute scrubbing on MKV/MP4/HLS
             setSeekParameters(SeekParameters.CLOSEST_SYNC)
+            // Seamless display refresh-rate matching eliminates 24fps->60Hz pulldown judder without black flashes
+            videoChangeFrameRateStrategy = C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
         }
 
     private val _state = MutableStateFlow(PlayerPlaybackState())
@@ -410,6 +439,8 @@ class CinePlayerManager(context: Context) {
     var onTrackFallback: ((trackLabel: String) -> Unit)? = null
     var onTransportAutoFallback: ((reason: String) -> Unit)? = null
     var onMediaEnded: (() -> Unit)? = null
+    var onSmartVpnStallCandidate: ((estimatedBps: Long) -> Unit)? = null
+    var onSmartVpnFatalNetworkError: ((reason: String) -> Boolean)? = null
 
     private val windowBytesLoaded = AtomicLong(0L)
     private val sessionBytesLoaded = AtomicLong(0L)
@@ -442,19 +473,21 @@ class CinePlayerManager(context: Context) {
                     if (hasReachedReadyOnce && rebufferStartedAtElapsedMs == 0L) {
                         rebufferCount++
                         rebufferStartedAtElapsedMs = nowElapsed
+                        val currentBps = latestBandwidthEstimateBps.takeIf { it > 0L }
+                            ?: bandwidthMeter.bitrateEstimate.takeIf { it != C.TIME_UNSET && it > 0L }
+                            ?: 0L
                         // Fast self-healing: if Cronet HTTP/3 is stalling repeatedly at < 2.5 Mbps,
                         // immediately tear down the throttled UDP socket and switch to HTTP/2 TCP.
                         if (!activeMediaIsLocal &&
                             preferredTransportMode == NetworkTransportMode.AUTO &&
-                            httpDataSourceFactory.isUsingCronet()
+                            httpDataSourceFactory.isUsingCronet() &&
+                            quicWatchdog.recordRebufferStall(currentBps)
                         ) {
-                            val currentBps = latestBandwidthEstimateBps.takeIf { it > 0L }
-                                ?: bandwidthMeter.bitrateEstimate.takeIf { it != C.TIME_UNSET && it > 0L }
-                                ?: 0L
-                            if (quicWatchdog.recordRebufferStall(currentBps)) {
-                                triggerAutoHttp2Recovery("Slow HTTP/3 QUIC stalled → Switched to HTTP/2 TCP")
-                                return
-                            }
+                            triggerAutoHttp2Recovery("Slow HTTP/3 QUIC stalled → Switched to HTTP/2 TCP")
+                            return
+                        }
+                        if (!activeMediaIsLocal) {
+                            onSmartVpnStallCandidate?.invoke(currentBps)
                         }
                     }
                 }
@@ -646,6 +679,14 @@ class CinePlayerManager(context: Context) {
                 return
             }
 
+            // 2C. Smart Auto-VPN Failover after QUIC & mirror fallbacks are exhausted
+            if (isRecoverableCdnError(error) && !activeMediaIsLocal) {
+                val reason = error.errorCodeName.replace('_', ' ').lowercase(Locale.US)
+                if (onSmartVpnFatalNetworkError?.invoke(reason) == true) {
+                    return
+                }
+            }
+
             val bothHwAndSwFailed = isDecErr &&
                 sessionBlockedCodecs.any { !DecoderFallbackHelper.isSoftwareCodecName(it) } &&
                 sessionBlockedCodecs.any { DecoderFallbackHelper.isSoftwareCodecName(it) }
@@ -758,6 +799,7 @@ class CinePlayerManager(context: Context) {
         ) {
             if (droppedFrames > 0) {
                 droppedFramesCount.addAndGet(droppedFrames.toLong())
+                frameDropAnalyzer.recordDroppedFrames(droppedFrames, SystemClock.elapsedRealtime())
             }
         }
     }
@@ -892,20 +934,32 @@ class CinePlayerManager(context: Context) {
         }
     }
 
+    @Volatile
+    private var nordLynxTunnelActive: Boolean = false
+
+    @Volatile
+    private var nordLynxEndpointHost: String = ""
+
     /**
-     * Applies updated Cloudflare 1.1.1.1 / Google 8.8.8.8 Private DNS and NordVPN SOCKS5 routing
-     * live across all OkHttp streaming sockets, evicts stale pooled connections, and seamlessly
-     * reloads any currently playing stream at the exact playback millisecond.
+     * Applies updated Cloudflare 1.1.1.1 / Google 8.8.8.8 Private DNS and NordVPN (NordLynx or
+     * SOCKS5) routing live across all streaming sockets, evicts stale pooled connections, and
+     * seamlessly reloads any currently playing stream at the exact playback millisecond.
      */
     fun applyNetworkPrivacyConfig(
         dnsMode: PrivateDnsMode,
         nordConfig: DynamicSocksProxyManager.ActiveConfig,
+        nordLynxActive: Boolean = false,
+        nordLynxHost: String = "",
         reloadActiveStream: Boolean = true
     ) {
         val changed = fastDnsResolver.privateDnsMode != dnsMode ||
-            socksProxyManager.config != nordConfig
+            socksProxyManager.config != nordConfig ||
+            nordLynxTunnelActive != nordLynxActive ||
+            !nordLynxEndpointHost.equals(nordLynxHost, ignoreCase = true)
         fastDnsResolver.setPrivateDnsMode(dnsMode)
         socksProxyManager.updateConfig(nordConfig)
+        nordLynxTunnelActive = nordLynxActive
+        nordLynxEndpointHost = nordLynxHost
         if (changed) {
             runCatching { okHttpClient.connectionPool.evictAll() }
             runCatching { streamingOkHttpClient.connectionPool.evictAll() }
@@ -916,7 +970,7 @@ class CinePlayerManager(context: Context) {
         }
     }
 
-    private fun reloadActiveStreamAtCurrentPosition() {
+    fun reloadActiveStreamAtCurrentPosition() {
         val targetUrl = candidateUrls.getOrNull(activeMirrorIndex) ?: activeMediaUri
         if (!targetUrl.isNullOrBlank()) {
             val resumeMs = player.currentPosition.takeIf { it > 0L } ?: lastRequestedStartPosMs
@@ -1062,6 +1116,7 @@ class CinePlayerManager(context: Context) {
         } else {
             activeMediaUri = targetUrl
             activeMediaIsLocal = targetUrl.startsWith("content://") || targetUrl.startsWith("file://")
+            frameDropAnalyzer.markSeekOrTransition(SystemClock.elapsedRealtime())
         }
 
         val mimeType = MediaFormatDetector.resolveExoPlayerMimeType(format)
@@ -1193,6 +1248,7 @@ class CinePlayerManager(context: Context) {
         windowBytesLoaded.set(0L)
         sessionBytesLoaded.set(0L)
         droppedFramesCount.set(0L)
+        frameDropAnalyzer.reset(SystemClock.elapsedRealtime())
         hasReachedReadyOnce = false
         rebufferCount = 0
         rebufferStartedAtElapsedMs = 0L
@@ -1207,6 +1263,7 @@ class CinePlayerManager(context: Context) {
             isLocalSource = activeMediaIsLocal,
             playbackStateLabel = "BUFFERING",
             targetBufferBytes = targetBufferBytes,
+            asyncQueueingActive = asyncQueueingEnabled,
             activeCdnIndex = activeMirrorIndex + 1,
             totalCdnNodes = candidateUrls.size.coerceAtLeast(1),
             cdnFailoverCount = cdnFailoverCount,
@@ -1218,8 +1275,8 @@ class CinePlayerManager(context: Context) {
             prefetchHitRatePercent = prefetchSnapshot.hitRatePercent,
             prefetchHits = prefetchSnapshot.cacheHits,
             privateDnsMode = fastDnsResolver.privateDnsMode,
-            nordVpnActive = socksProxyManager.isProxyActive,
-            nordVpnServerHost = socksProxyManager.config.host,
+            nordVpnActive = nordLynxTunnelActive || socksProxyManager.isProxyActive,
+            nordVpnServerHost = nordLynxEndpointHost.ifBlank { socksProxyManager.config.host },
             systemVpnActive = SystemVpnMonitor.isSystemVpnActive(appContext)
         )
     }
@@ -1235,7 +1292,17 @@ class CinePlayerManager(context: Context) {
         val isLive = player.isCurrentMediaItemLive
         val bufferAheadMs = (buffered - pos).coerceAtLeast(0L)
         parallelPrefetchManager.setLowBufferMode(bufferAheadMs < 8_000L)
+        val isSwDec = DecoderFallbackHelper.isSoftwareCodecName(activeVideoDecoderName) ||
+            effectiveDecoderMode == VideoDecoderMode.SOFTWARE
+        val fdSnap = frameDropAnalyzer.snapshot(SystemClock.elapsedRealtime(), isSoftwareDecoder = isSwDec)
+        parallelPrefetchManager.setCpuThrottleMode(fdSnap.shouldThrottlePrefetch)
         val cur = _progressState.value
+        val loopStart = activeAbLoopStartMs
+        val loopEnd = activeAbLoopEndMs
+        if (loopStart != null && loopEnd != null && loopEnd > loopStart + 500L && pos >= loopEnd) {
+            seekTo(loopStart)
+            return
+        }
         if (pos == cur.currentPositionMs &&
             buffered == cur.bufferedPositionMs &&
             dur == cur.durationMs &&
@@ -1304,6 +1371,10 @@ class CinePlayerManager(context: Context) {
         }
 
         val prefetchSnapshot = parallelPrefetchManager.snapshotStats()
+        val isSwDec = DecoderFallbackHelper.isSoftwareCodecName(activeVideoDecoderName) ||
+            effectiveDecoderMode == VideoDecoderMode.SOFTWARE
+        val fdSnap = frameDropAnalyzer.snapshot(nowElapsed, isSoftwareDecoder = isSwDec)
+        parallelPrefetchManager.setCpuThrottleMode(fdSnap.shouldThrottlePrefetch)
         _networkStats.value = PlayerNetworkStats(
             streamHost = PlayerStatsFormatter.extractHostLabel(activeMediaUri, activeMediaIsLocal),
             streamFormatLabel = activeMediaFormat.label,
@@ -1329,7 +1400,12 @@ class CinePlayerManager(context: Context) {
             audioChannels = audioFmt?.channelCount?.takeIf { it > 0 } ?: 0,
             audioSampleRateHz = audioFmt?.sampleRate?.takeIf { it > 0 } ?: 0,
             audioBitrateBps = audioFmt?.bitrate?.takeIf { it > 0 } ?: 0,
-            droppedFrames = droppedFramesCount.get(),
+            droppedFrames = fdSnap.totalDropped,
+            liveDroppedFramesPerSec = fdSnap.liveDropsPerSec,
+            steadyDroppedFrames = fdSnap.steadyDropped,
+            seekJoinDroppedFrames = fdSnap.seekJoinDropped,
+            frameDropDiagnosis = fdSnap.diagnosis,
+            asyncQueueingActive = asyncQueueingEnabled,
             activeCdnIndex = activeMirrorIndex + 1,
             totalCdnNodes = candidateUrls.size.coerceAtLeast(1),
             cdnFailoverCount = cdnFailoverCount,
@@ -1343,8 +1419,8 @@ class CinePlayerManager(context: Context) {
             activeVideoDecoderName = activeVideoDecoderName,
             effectiveDecoderMode = effectiveDecoderMode,
             privateDnsMode = fastDnsResolver.privateDnsMode,
-            nordVpnActive = socksProxyManager.isProxyActive,
-            nordVpnServerHost = socksProxyManager.config.host,
+            nordVpnActive = nordLynxTunnelActive || socksProxyManager.isProxyActive,
+            nordVpnServerHost = nordLynxEndpointHost.ifBlank { socksProxyManager.config.host },
             systemVpnActive = SystemVpnMonitor.isSystemVpnActive(appContext),
             networkActivityHistoryKBps = networkHistory.toList(),
             bufferHealthHistorySec = bufferHistory.toList()
@@ -1393,6 +1469,7 @@ class CinePlayerManager(context: Context) {
 
     fun seekTo(positionMs: Long) {
         val clamped = positionMs.coerceAtLeast(0L)
+        frameDropAnalyzer.markSeekOrTransition(SystemClock.elapsedRealtime())
         player.seekTo(clamped)
         _progressState.update { it.copy(currentPositionMs = clamped) }
     }
@@ -1404,16 +1481,93 @@ class CinePlayerManager(context: Context) {
         seekTo(clamped)
     }
 
+    @Volatile private var activeAbLoopStartMs: Long? = null
+    @Volatile private var activeAbLoopEndMs: Long? = null
+    @Volatile private var sleepFadeMultiplier: Float = 1.0f
+    @Volatile private var savedBaseSpeed: Float = 1.0f
+
+    fun setAbLoopBounds(startMs: Long?, endMs: Long?) {
+        activeAbLoopStartMs = startMs
+        activeAbLoopEndMs = endMs
+    }
+
     fun setPlaybackSpeed(speed: Float) {
+        savedBaseSpeed = speed
         player.playbackParameters = PlaybackParameters(speed)
-        _state.update { it.copy(playbackSpeed = speed) }
+        _state.update { it.copy(playbackSpeed = speed, temporarySpeedActive = false) }
+    }
+
+    fun setTemporarySpeed(tempSpeed: Float?) {
+        if (tempSpeed != null) {
+            if (!_state.value.temporarySpeedActive) {
+                savedBaseSpeed = _state.value.playbackSpeed
+            }
+            player.playbackParameters = PlaybackParameters(tempSpeed)
+            _state.update { it.copy(temporarySpeedActive = true) }
+        } else {
+            player.playbackParameters = PlaybackParameters(savedBaseSpeed)
+            _state.update { it.copy(playbackSpeed = savedBaseSpeed, temporarySpeedActive = false) }
+        }
     }
 
     fun setVolumePercent(percent: Int) {
         val clamped = AudioBoostMath.clampPercent(percent)
-        player.volume = AudioBoostMath.computePlayerVolume(clamped)
+        val baseVol = AudioBoostMath.computePlayerVolume(clamped)
+        player.volume = (baseVol * sleepFadeMultiplier).coerceIn(0f, 1f)
         volumeBooster.applyBoost(clamped, fallbackAudioSessionId = player.audioSessionId)
         _state.update { it.copy(volumePercent = clamped) }
+    }
+
+    fun setSleepFadeMultiplier(multiplier: Float) {
+        sleepFadeMultiplier = multiplier.coerceIn(0f, 1f)
+        val baseVol = AudioBoostMath.computePlayerVolume(_state.value.volumePercent)
+        player.volume = (baseVol * sleepFadeMultiplier).coerceIn(0f, 1f)
+    }
+
+    fun setNightModeAudio(enabled: Boolean) {
+        volumeBooster.setNightModeEnabled(enabled, fallbackAudioSessionId = player.audioSessionId)
+        _state.update { it.copy(nightModeAudioEnabled = enabled) }
+    }
+
+    fun applyPreferredLanguages(audioLangCode: String, subtitleLangCode: String) {
+        val builder = player.trackSelectionParameters.buildUpon()
+        if (audioLangCode.isBlank()) {
+            builder.setPreferredAudioLanguages()
+        } else {
+            builder.setPreferredAudioLanguage(audioLangCode)
+        }
+        when {
+            subtitleLangCode.equals("off", ignoreCase = true) -> {
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                builder.setPreferredTextLanguages()
+            }
+            subtitleLangCode.isBlank() -> {
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                builder.setPreferredTextLanguages()
+            }
+            else -> {
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                builder.setPreferredTextLanguage(subtitleLangCode)
+            }
+        }
+        player.trackSelectionParameters = builder.build()
+        _state.update { it.copy(subtitlesDisabled = subtitleLangCode.equals("off", ignoreCase = true)) }
+    }
+
+    fun setAudioDelayMs(delayMs: Long) {
+        val clamped = AudioDelayMath.clampDelayMs(delayMs)
+        delayAudioProcessor.setDelayMs(clamped)
+        _state.update { it.copy(audioDelayMs = clamped) }
+    }
+
+    fun adjustAudioDelayMs(deltaMs: Long): Long {
+        val next = AudioDelayMath.clampDelayMs(_state.value.audioDelayMs + deltaMs)
+        setAudioDelayMs(next)
+        return next
+    }
+
+    fun resetAudioDelayMs() {
+        setAudioDelayMs(0L)
     }
 
     fun selectSubtitleTrack(option: TrackOption) {

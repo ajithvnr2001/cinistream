@@ -3,12 +3,9 @@ package com.example.ui.player
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -18,14 +15,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.SwapHoriz
@@ -36,8 +35,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,9 +71,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.player.NordVpnLocation
+import com.example.player.NordVpnLocationCatalog
 import com.example.player.NordVpnServer
 import com.example.player.PrivateDnsMode
-import com.example.player.SystemVpnMonitor
 import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.JetBrainsMonoFamily
@@ -88,9 +86,11 @@ import com.example.ui.theme.SubtitleEmerald
 import com.example.viewmodel.NetworkPrivacyUiState
 import kotlinx.coroutines.delay
 
-private val PrivacyCyan = Color(0xFF38BDF8)
+import com.example.ui.theme.StreamCyan
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+private val PrivacyCyan = StreamCyan
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NetworkPrivacySheet(
     state: NetworkPrivacyUiState,
@@ -98,11 +98,13 @@ fun NetworkPrivacySheet(
     onLoginNordToken: (String) -> Unit,
     onLoginNordConfiguredSecret: () -> Unit,
     onToggleNordEnabled: (Boolean) -> Unit,
-    onSelectNordServer: (NordVpnServer) -> Unit,
+    onToggleSmartAutoVpnFailover: (Boolean) -> Unit = {},
+    onSelectNordLocation: (NordVpnLocation) -> Unit = {},
+    onSelectNordServer: (NordVpnServer) -> Unit = {},
     onLogoutNord: () -> Unit,
     onDisableAll: () -> Unit = {},
     onProbeRoute: () -> Unit,
-    onLaunchCompanionApp: (String) -> Unit,
+    onLaunchCompanionApp: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -112,6 +114,11 @@ fun NetworkPrivacySheet(
     var isReplacingKey by rememberSaveable { mutableStateOf(false) }
     var replaceTokenInput by rememberSaveable { mutableStateOf("") }
     var showReplaceTokenPlaintext by rememberSaveable { mutableStateOf(false) }
+    var locationSearchQuery by rememberSaveable { mutableStateOf("") }
+
+    val matchingLocations = remember(state.allLocations, locationSearchQuery) {
+        NordVpnLocationCatalog.search(state.allLocations, locationSearchQuery, limit = 6)
+    }
 
     LaunchedEffect(state.nordVpnLoggedIn, state.isLoggingInNord, state.loginError) {
         if (state.nordVpnLoggedIn && !state.isLoggingInNord && state.loginError == null) {
@@ -148,55 +155,49 @@ fun NetworkPrivacySheet(
             // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (state.isAnyPrivacyActive) {
-                            SubtitleEmerald.copy(alpha = 0.18f)
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (state.isAnyPrivacyActive) {
+                        SubtitleEmerald.copy(alpha = 0.18f)
+                    } else {
+                        PrivacyCyan.copy(alpha = 0.16f)
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (state.isAnyPrivacyActive) {
+                            SubtitleEmerald.copy(alpha = 0.55f)
                         } else {
-                            PrivacyCyan.copy(alpha = 0.16f)
-                        },
-                        border = BorderStroke(
-                            1.dp,
-                            if (state.isAnyPrivacyActive) {
-                                SubtitleEmerald.copy(alpha = 0.55f)
-                            } else {
-                                PrivacyCyan.copy(alpha = 0.45f)
-                            }
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Shield,
-                            contentDescription = null,
-                            tint = if (state.isAnyPrivacyActive) SubtitleEmerald else PrivacyCyan,
-                            modifier = Modifier.padding(8.dp).size(20.dp)
-                        )
-                    }
-                    Column {
-                        Text(
-                            text = stringResource(R.string.privacy_sheet_title),
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = stringResource(R.string.privacy_sheet_subtitle),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                            PrivacyCyan.copy(alpha = 0.45f)
+                        }
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Shield,
+                        contentDescription = null,
+                        tint = if (state.isAnyPrivacyActive) SubtitleEmerald else PrivacyCyan,
+                        modifier = Modifier.padding(8.dp).size(20.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.privacy_sheet_title),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Built-in Cloudflare 1.1.1.1 + all 118+ NordVPN countries inside CineStream",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
-            // Live Route Status & 1-Tap Connection Test Card
+            // Live Route Status, 1-Tap Disable & Connection Test Card
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -234,27 +235,31 @@ fun NetworkPrivacySheet(
                                 style = MaterialTheme.typography.titleSmall,
                                 color = if (state.isAnyPrivacyActive) SubtitleEmerald else MaterialTheme.colorScheme.onSurface
                             )
-                            val sysLabel = if (state.systemVpnActive) {
-                                "Android System VPN detected (active)"
-                            } else if (state.nordVpnLoggedIn && state.nordVpnEnabled) {
-                                "Location: ${state.selectedNordServerLabel}"
-                            } else {
-                                "Connect with your NordVPN key + 1.1.1.1 below"
+                            val statusSubtitle = when {
+                                state.isConnectingVpn -> "Connecting in-app NordLynx (${state.selectedLocation.displayLabel})…"
+                                state.nordLynxTunnelUp && state.activeNordLynxHostname.isNotBlank() ->
+                                    "NordLynx · ${state.selectedLocation.displayLabel} (${state.activeNordLynxHostname})"
+                                state.nordVpnLoggedIn && state.nordVpnEnabled ->
+                                    "Location: ${state.selectedLocation.displayLabel}"
+                                state.systemVpnActive -> "Active VPN tunnel detected"
+                                else -> "Search any country & connect with your NordVPN key below"
                             }
                             Text(
-                                text = sysLabel,
+                                text = statusSubtitle,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (state.systemVpnActive || (state.nordVpnLoggedIn && state.nordVpnEnabled)) {
+                                color = if (state.isAnyPrivacyActive || state.isConnectingVpn) {
                                     PrivacyCyan
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
-                                }
+                                },
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
 
                         Button(
                             onClick = onProbeRoute,
-                            enabled = !state.isProbingRoute,
+                            enabled = !state.isProbingRoute && !state.isConnectingVpn,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = PrivacyCyan,
                                 contentColor = Color(0xFF061018)
@@ -266,7 +271,7 @@ fun NetworkPrivacySheet(
                                 .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
                                 .testTag("privacy_test_connection_button")
                         ) {
-                            if (state.isProbingRoute) {
+                            if (state.isProbingRoute || state.isConnectingVpn) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(16.dp),
                                     strokeWidth = 2.dp,
@@ -281,14 +286,19 @@ fun NetworkPrivacySheet(
                             }
                             Spacer(modifier = Modifier.size(6.dp))
                             Text(
-                                text = if (state.isProbingRoute) "Testing…" else stringResource(R.string.privacy_test_connection),
+                                text = when {
+                                    state.isConnectingVpn -> "Connecting…"
+                                    state.isProbingRoute -> "Testing…"
+                                    else -> stringResource(R.string.privacy_test_connection)
+                                },
                                 style = MaterialTheme.typography.labelLarge
                             )
                         }
                     }
 
                     val hasInAppPrivacyEnabled = state.privateDnsMode != PrivateDnsMode.SYSTEM ||
-                        (state.nordVpnLoggedIn && state.nordVpnEnabled)
+                        (state.nordVpnLoggedIn && state.nordVpnEnabled) ||
+                        state.nordLynxTunnelUp
                     if (hasInAppPrivacyEnabled) {
                         OutlinedButton(
                             onClick = onDisableAll,
@@ -463,7 +473,7 @@ fun NetworkPrivacySheet(
                 }
             }
 
-            // Section 2: NordVPN Access Key + Replace Anytime + Location Selector
+            // Section 2: Built-In All-Countries NordVPN (Searchable Location + Access Key + NordLynx)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -496,15 +506,15 @@ fun NetworkPrivacySheet(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = stringResource(R.string.privacy_nordvpn_section_title),
+                                text = "NordVPN Built-In (All Locations · NordLynx)",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = if (state.nordVpnLoggedIn) {
-                                    "Key Active · ${state.selectedNordServerLabel}"
+                                    "In-app WireGuard tunnel · No external app needed"
                                 } else {
-                                    "Pick a location & connect with your NordVPN Access Key (auto-pairs 1.1.1.1)"
+                                    "Search any country & connect with your NordVPN Access Key"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -513,47 +523,192 @@ fun NetworkPrivacySheet(
                         }
                     }
 
-                    // Always-available Location Selector (works both before and after login)
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            text = "Location (${state.availableNordServers.size} NordVPN SOCKS5 Regions)",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    // Currently Selected Location Pill
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("nordvpn_selected_location_card"),
+                        shape = RoundedCornerShape(10.dp),
+                        color = ObsidianSurface,
+                        border = BorderStroke(
+                            1.dp,
+                            if (state.nordVpnEnabled) SubtitleEmerald.copy(alpha = 0.55f) else ObsidianOutline.copy(alpha = 0.7f)
                         )
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            state.availableNordServers.forEach { server ->
-                                val selected = server.hostname.equals(state.selectedNordServerHost, ignoreCase = true)
-                                FilterChip(
-                                    selected = selected,
-                                    onClick = { onSelectNordServer(server) },
-                                    label = { Text(server.label, maxLines = 1) },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Public,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
+                            Icon(
+                                imageVector = Icons.Rounded.Public,
+                                contentDescription = null,
+                                tint = if (state.nordVpnEnabled) SubtitleEmerald else PrivacyCyan,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = state.selectedLocation.displayLabel,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (state.activeNordLynxHostname.isNotBlank() && state.nordVpnEnabled) {
+                                        "NordLynx · ${state.activeNordLynxHostname}"
+                                    } else {
+                                        "Selected Location · Type below to change"
                                     },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = SubtitleEmerald.copy(alpha = 0.22f),
-                                        selectedLabelColor = SubtitleEmerald,
-                                        selectedLeadingIconColor = SubtitleEmerald
-                                    ),
-                                    modifier = Modifier
-                                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
-                                        .testTag("nordvpn_server_${server.id}")
+                                    fontFamily = JetBrainsMonoFamily,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (state.nordVpnEnabled) SubtitleEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = PrivacyCyan.copy(alpha = 0.16f)
+                            ) {
+                                Text(
+                                    text = state.selectedLocation.compactBadge,
+                                    fontFamily = JetBrainsMonoFamily,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = PrivacyCyan,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
                             }
                         }
-                        Text(
-                            text = "These are all 12 official NordVPN SOCKS5 proxy regions. For all 118+ countries (India, UK, Singapore, Japan, etc.), use the official NordVPN App below.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+
+                    // Searchable All-Locations Input (NO static list dumped on screen!)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(
+                            value = locationSearchQuery,
+                            onValueChange = { locationSearchQuery = it },
+                            label = { Text("Search Location (All 118+ Countries)") },
+                            placeholder = { Text("Type India, Singapore, Tokyo, UK, USA…") },
+                            singleLine = true,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Search,
+                                    contentDescription = "Search NordVPN locations",
+                                    tint = PrivacyCyan
+                                )
+                            },
+                            trailingIcon = {
+                                if (locationSearchQuery.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = { locationSearchQuery = "" },
+                                        modifier = Modifier.testTag("nordvpn_location_search_clear")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "Clear search"
+                                        )
+                                    }
+                                }
+                            },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(
+                                onSearch = {
+                                    matchingLocations.firstOrNull()?.let { top ->
+                                        onSelectNordLocation(top)
+                                        locationSearchQuery = ""
+                                    }
+                                }
+                            ),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrivacyCyan,
+                                unfocusedBorderColor = ObsidianOutline,
+                                focusedLabelColor = PrivacyCyan
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("nordvpn_location_search_input")
                         )
+
+                        if (locationSearchQuery.isBlank()) {
+                            Text(
+                                text = "Search any country or city across ${state.allLocations.size} global NordVPN endpoints — connects directly inside CineStream.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else if (matchingLocations.isEmpty()) {
+                            Text(
+                                text = "No NordVPN location matched \"$locationSearchQuery\". Try a country name or 2-letter code (e.g. IN, SG, JP, UK, US).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.testTag("nordvpn_location_no_results")
+                            )
+                        } else {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                color = ObsidianSurface,
+                                border = BorderStroke(1.dp, PrivacyCyan.copy(alpha = 0.45f))
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    matchingLocations.forEachIndexed { idx, loc ->
+                                        val isCurrent = loc.id == state.selectedLocation.id
+                                        Surface(
+                                            onClick = {
+                                                onSelectNordLocation(loc)
+                                                locationSearchQuery = ""
+                                            },
+                                            color = if (isCurrent) SubtitleEmerald.copy(alpha = 0.14f) else Color.Transparent,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .minimumInteractiveComponentSize()
+                                                .tvFocusHighlight(shape = RoundedCornerShape(8.dp), focusedScale = 1.01f)
+                                                .testTag("nordvpn_location_result_${loc.id}")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isCurrent) Icons.Rounded.Check else Icons.Rounded.Public,
+                                                    contentDescription = null,
+                                                    tint = if (isCurrent) SubtitleEmerald else PrivacyCyan,
+                                                    modifier = Modifier.size(17.dp)
+                                                )
+                                                Text(
+                                                    text = loc.displayLabel,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = if (isCurrent) SubtitleEmerald else MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Text(
+                                                    text = loc.compactBadge,
+                                                    fontFamily = JetBrainsMonoFamily,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                        if (idx < matchingLocations.lastIndex) {
+                                            HorizontalDivider(
+                                                color = ObsidianOutline.copy(alpha = 0.35f),
+                                                modifier = Modifier.padding(horizontal = 12.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if (!state.nordVpnLoggedIn) {
@@ -618,11 +773,7 @@ fun NetworkPrivacySheet(
                                         } else {
                                             Icons.Rounded.Visibility
                                         },
-                                        contentDescription = if (showTokenPlaintext) {
-                                            "Hide key"
-                                        } else {
-                                            "Show key"
-                                        }
+                                        contentDescription = if (showTokenPlaintext) "Hide key" else "Show key"
                                     )
                                 }
                             },
@@ -679,12 +830,12 @@ fun NetworkPrivacySheet(
                         }
 
                         Text(
-                            text = "Exchanged via HTTPS over 1.1.1.1 DoH directly with api.nordvpn.com and encrypted on-device with Android Keystore AES-256-GCM. You can replace your key anytime.",
+                            text = "Exchanged over 1.1.1.1 DoH directly with api.nordvpn.com for your NordLynx WireGuard key and encrypted on-device with Android Keystore AES-256-GCM. Replace your key anytime.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        // Logged-in controls: Enable Switch, Replace Key anytime, Logout
+                        // Logged-in controls: Enable Switch, Replace Key anytime, Sign Out
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -692,15 +843,17 @@ fun NetworkPrivacySheet(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Route Streams Through NordVPN",
+                                    text = "In-App NordVPN Tunnel",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = if (state.nordVpnEnabled) {
-                                        "Active exit: ${state.selectedNordServerHost}:1080"
-                                    } else {
-                                        "Paused — toggle ON to tunnel streams"
+                                    text = when {
+                                        state.isConnectingVpn -> "Connecting NordLynx to ${state.selectedLocation.displayLabel}…"
+                                        state.nordVpnEnabled && state.activeNordLynxHostname.isNotBlank() ->
+                                            "Connected · ${state.activeNordLynxHostname}"
+                                        state.nordVpnEnabled -> "Active · ${state.selectedLocation.displayLabel}"
+                                        else -> "Disconnected — toggle ON to connect"
                                     },
                                     fontFamily = JetBrainsMonoFamily,
                                     style = MaterialTheme.typography.labelSmall,
@@ -723,7 +876,55 @@ fun NetworkPrivacySheet(
                             )
                         }
 
-                        // Inline Replace Key flow (replace NordVPN key anytime without signing out!)
+                        HorizontalDivider(color = ObsidianOutline.copy(alpha = 0.4f))
+
+                        // Smart Auto-VPN Failover (Direct ISP first; auto-connect NordVPN on stalls/failures)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.smart_vpn_failover_title),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = stringResource(R.string.smart_vpn_failover_subtitle),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (state.smartAutoVpnFailoverEnabled) PrivacyCyan else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Switch(
+                                checked = state.smartAutoVpnFailoverEnabled,
+                                onCheckedChange = onToggleSmartAutoVpnFailover,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color(0xFF061018),
+                                    checkedTrackColor = PrivacyCyan
+                                ),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .tvFocusHighlight(shape = RoundedCornerShape(16.dp))
+                                    .testTag("nordvpn_smart_failover_switch")
+                            )
+                        }
+
+                        if (!state.loginError.isNullOrBlank() && !isReplacingKey) {
+                            Text(
+                                text = state.loginError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SignalRose,
+                                modifier = Modifier.testTag("nordvpn_login_error")
+                            )
+                        }
+
                         if (isReplacingKey) {
                             OutlinedTextField(
                                 value = replaceTokenInput,
@@ -832,25 +1033,21 @@ fun NetworkPrivacySheet(
                                 OutlinedButton(
                                     onClick = { isReplacingKey = true },
                                     shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.6f)),
+                                    border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.65f)),
                                     modifier = Modifier
                                         .weight(1f)
                                         .minimumInteractiveComponentSize()
-                                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
                                         .testTag("nordvpn_replace_key_button")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.SwapHoriz,
                                         contentDescription = null,
                                         tint = CinemaAmber,
-                                        modifier = Modifier.size(17.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.size(6.dp))
-                                    Text(
-                                        text = "Replace Key",
-                                        color = CinemaAmber,
-                                        maxLines = 1
-                                    )
+                                    Text("Replace Key", color = CinemaAmber)
                                 }
 
                                 OutlinedButton(
@@ -860,109 +1057,23 @@ fun NetworkPrivacySheet(
                                     modifier = Modifier
                                         .weight(1f)
                                         .minimumInteractiveComponentSize()
-                                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
+                                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
                                         .testTag("nordvpn_logout_button")
                                 ) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Rounded.Logout,
                                         contentDescription = null,
                                         tint = SignalRose,
-                                        modifier = Modifier.size(17.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.size(6.dp))
-                                    Text(
-                                        text = "Sign Out",
-                                        color = SignalRose,
-                                        maxLines = 1
-                                    )
+                                    Text("Sign Out", color = SignalRose)
                                 }
                             }
                         }
                     }
                 }
             }
-
-            // Section 3: 1-Tap System VPN Companion Launchers (Full Device Tunnel)
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = ObsidianSurfaceHigh,
-                border = BorderStroke(1.dp, ObsidianOutline.copy(alpha = 0.6f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = stringResource(R.string.privacy_system_apps_title),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "Need full-device WireGuard/NordLynx encryption? Launch the official Android / Android TV app directly:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { onLaunchCompanionApp(SystemVpnMonitor.PACKAGE_CLOUDFLARE_WARP) },
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, PrivacyCyan.copy(alpha = 0.55f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .minimumInteractiveComponentSize()
-                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
-                                .testTag("launch_warp_app_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                contentDescription = null,
-                                tint = PrivacyCyan,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.size(6.dp))
-                            Text(
-                                text = if (state.warpAppInstalled) "1.1.1.1 WARP" else "Get 1.1.1.1",
-                                color = PrivacyCyan,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = { onLaunchCompanionApp(SystemVpnMonitor.PACKAGE_NORDVPN) },
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, SubtitleEmerald.copy(alpha = 0.55f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .minimumInteractiveComponentSize()
-                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.03f)
-                                .testTag("launch_nord_app_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                contentDescription = null,
-                                tint = SubtitleEmerald,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.size(6.dp))
-                            Text(
-                                text = if (state.nordAppInstalled) "NordVPN App" else "Get NordVPN",
-                                color = SubtitleEmerald,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
         }
     }
 }

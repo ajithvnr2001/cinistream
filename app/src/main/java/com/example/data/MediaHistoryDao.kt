@@ -9,8 +9,11 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface MediaHistoryDao {
 
-    @Query("SELECT * FROM media_history ORDER BY isPinned DESC, lastPlayedAt DESC LIMIT 50")
+    @Query("SELECT * FROM media_history ORDER BY isPinned DESC, lastPlayedAt DESC LIMIT 100")
     fun observeHistory(): Flow<List<MediaHistoryEntity>>
+
+    @Query("SELECT * FROM media_history ORDER BY isPinned DESC, lastPlayedAt DESC LIMIT 100")
+    suspend fun getAllHistory(): List<MediaHistoryEntity>
 
     @Query("SELECT * FROM media_history WHERE sourceUri = :sourceUri LIMIT 1")
     suspend fun getBySourceUri(sourceUri: String): MediaHistoryEntity?
@@ -37,6 +40,18 @@ interface MediaHistoryDao {
         subtitleName: String?,
         subtitleMimeType: String?
     )
+
+    @Query(
+        "UPDATE media_history SET subtitleOffsetMs = :subtitleOffsetMs, audioDelayMs = :audioDelayMs WHERE sourceUri = :sourceUri"
+    )
+    suspend fun updateSyncOffsets(
+        sourceUri: String,
+        subtitleOffsetMs: Long,
+        audioDelayMs: Long
+    )
+
+    @Query("UPDATE media_history SET lastPositionMs = 0 WHERE id = :id")
+    suspend fun clearResumeProgress(id: Long)
 
     @Query("UPDATE media_history SET isPinned = :pinned WHERE id = :id")
     suspend fun setPinned(id: Long, pinned: Boolean)

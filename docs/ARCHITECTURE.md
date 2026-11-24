@@ -1,190 +1,198 @@
-# CineStream Architecture & Codebase Guide
+# CineStream Architecture & Codebase Guide (v1.25)
 
-This document provides an end-to-end architectural walkthrough of **CineStream v1.16**, explaining how the application coordinates Jetpack Compose UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp networking, Media3 + NextLib FFmpeg playback, persistence, and strict zero-OOM memory management across both Android smartphones and resource-constrained Android TVs.
+This document provides an end-to-end architectural reference for **CineStream v1.25** (`com.aistudio.cinestream.vqxkpm`), detailing how the app coordinates Jetpack Compose Material 3 UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp + WireGuard NordLynx networking, parallel HLS/range prefetching, Media3 + NextLib FFmpeg playback, Room v3 + Android Keystore persistence, and zero-OOM memory engineering across both phones and 32-bit Android TVs.
 
 ---
 
-## 1. High-Level Architecture
+## 1. High-Level System Architecture
 
-CineStream follows **MVVM with Unidirectional Data Flow (UDF)** and **strict state-frequency isolation**:
+CineStream uses **MVVM with Unidirectional Data Flow (UDF)**, **constructor dependency wiring**, and **strict state-frequency isolation**:
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                           CineStreamApplication                                  │
-│  • Async Play Services Cronet HTTP/3 (QUIC + TLS 1.3 + BBR) init off main thread │
-│  • Shared HTTP/2 OkHttpClient (ConnectionPool(6, 5m) + 5-min IPv4-first FastDns) │
-│  • Bounded RGB_565 Coil ImageLoader (10% JVM heap cap, 24 MB disk cache)         │
-│  • onTrimMemory / onLowMemory -> clears Coil cache, idle sockets & DNS cache     │
-└─────────────────────────────────────────┬────────────────────────────────────────┘
-                                          │
-┌─────────────────────────────────────────▼────────────────────────────────────────┐
-│                               MainActivity                                       │
-│  • enableEdgeToEdge() + orientation/TV configChanges handling                    │
-│  • Handles external ACTION_VIEW intents (http/https/content/file/m3u8/mkv)       │
-│  • Navigation Compose: ROUTE_HOME <──> ROUTE_PLAYER                              │
-└─────────────────────────────────────────┬────────────────────────────────────────┘
-                                          │
-┌─────────────────────────────────────────▼────────────────────────────────────────┐
-│                            CineStreamViewModel                                   │
-│  • Owns CinePlayerManager, Repositories, Parsers, and IMDb Client                │
-│  • Triggers debounced background origin pre-warming (playlist/series/next-ep)    │
-│  • Exposes 4 frequency-isolated StateFlows:                                      │
-│      1. uiState / jsonPlaylistState (low frequency: library, playlists, sheets)  │
-│      2. playbackState               (medium frequency: play/pause, tracks, dec)  │
-│      3. progressState               (high frequency: 500ms timeline ticks ONLY)  │
-│      4. networkStats                (on-demand 1s ticks ONLY when overlay open)  │
-└───────────┬─────────────────────────────┬────────────────────────────┬───────────┘
-            │                             │                            │
-┌───────────▼──────────────┐  ┌───────────▼───────────┐  ┌─────────────▼───────────┐
-│   Playback & Net Engine  │  │  Parsing & Metadata   │  │    Local Persistence    │
-│ • CinePlayerManager      │  │ • JsonPlaylistParser  │  │ • Room (AppDatabase)    │
-│ • StreamingNetworkEngine │  │ • M3uPlaylistParser   │  │   MediaHistoryDao       │
-│ • DecoderEngine          │  │ • ImdbMetadataClient  │  │ • DataStore Prefs       │
-│ • NextRenderersFactory   │  │ • MediaFormatDetector │  │   SubtitlePrefsRepo     │
-│ • CdnMirrorResolver      │  │ • SubtitleHelper      │  │   (style, volume, dec)  │
-│ • MediaEdgeCache         │  └───────────────────────┘  └─────────────────────────┘
-│ • AudioVolumeBooster     │
-│ • SeekBarScrubEngine     │
+┌───────────────────────────────────────────────────────────────────────────────────────┐
+│                                CineStreamApplication                                  │
+│  • Async Play Services Cronet HTTP/3 (QUIC + TLS 1.3 + BBR) init off main thread      │
+│  • Shared HTTP/2 OkHttpClient (Dispatcher 32/12, Pool(12, 5m), FastDnsResolver/DoH)   │
+│  • DynamicSocksProxyManager + NordLynxEngine (embedded WireGuard GoBackend)           │
+│  • Bounded RGB_565 Coil ImageLoader (10% JVM heap cap, 24 MB disk cache)              │
+│  • onTrimMemory / onLowMemory -> evicts Coil bitmaps, prefetch RAM, sockets & DNS     │
+└──────────────────────────────────────────┬────────────────────────────────────────────┘
+                                           │
+┌──────────────────────────────────────────▼────────────────────────────────────────────┐
+│                                   MainActivity                                        │
+│  • enableEdgeToEdge() + orientation, PiP (Android 8+), TV configChanges handling      │
+│  • Navigation Compose: ROUTE_HOME <──> ROUTE_PLAYER                                   │
+│  • Handles ACTION_VIEW media links, WireGuard VpnService consent, SAF backup/restore  │
+│  • Hosts modal sheets (Privacy/VPN, Web Remote, Local Network, Offline Downloads)     │
+└──────────────────────────────────────────┬────────────────────────────────────────────┘
+                                           │
+┌──────────────────────────────────────────▼────────────────────────────────────────────┐
+│                               CineStreamViewModel                                     │
+│  • Coordinates CinePlayerManager, Room v3 repos, DataStore prefs, Parsers & Engines   │
+│  • Drives MultiJsonPlaylistReducer, GlobalSearchEngine, SmartVpnFailoverCoordinator   │
+│  • Manages OpenSubtitlesClient (REST v1 + /api/v1/login JWT), SecondarySubtitleEngine │
+│  • Hosts LocalWebRemoteServer (LAN HTTP + QR + Sync), OfflineDownloadManager, NAS     │
+│  • Exposes frequency-isolated StateFlows:                                             │
+│      1. uiState / jsonPlaylistState / v24 states (low frequency)                      │
+│      2. playbackState               (medium frequency: play/pause, tracks, decoder)   │
+│      3. progressState               (high frequency: 500 ms timeline ticks ONLY)      │
+│      4. networkStats                (on-demand 1 s ticks ONLY when Stats HUD open)    │
+└───────────┬──────────────────────────────┬─────────────────────────────┬──────────────┘
+            │                              │                             │
+┌───────────▼──────────────┐  ┌────────────▼──────────────┐  ┌───────────▼──────────────┐
+│  Playback & Net Engines  │  │  Ecosystem & Parsers      │  │   Persistence & Crypto   │
+│ • CinePlayerManager      │  │ • JsonPlaylistParser      │  │ • Room v3 (AppDatabase)  │
+│ • StreamingNetworkEngine │  │ • M3uPlaylistParser       │  │   - media_history        │
+│ • ParallelPrefetchEngine │  │ • XmltvEpgParser          │  │   - favorites            │
+│ • NordLynxEngine         │  │ • ImdbMetadataClient      │  │   - offline_downloads    │
+│ • PrivateDnsAndVpnEngine │  │ • OpenSubtitlesClient     │  │   - network_servers      │
+│ • SmartVpnFailoverCoord. │  │ • SecondarySubtitleEngine │  │ • DataStore Prefs        │
+│ • DecoderEngine          │  │ • LocalNetworkClient      │  │   (SubtitlePrefsRepo)    │
+│ • FrameDropAnalyzer      │  │ • OfflineDownloadManager  │  │ • CredentialVault        │
+│ • DelayAudioProcessor    │  │ • LocalWebRemoteServer    │  │   (Keystore AES-256-GCM) │
+│ • AudioVolumeBooster     │  │ • QrCodeMatrixGenerator   │  │ • DeviceSyncCodec        │
+│ • CdnMirrorResolver      │  │ • MediaFormatDetector     │  └──────────────────────────┘
+│ • MediaEdgeCache         │  │ • SubtitleHelper          │
+│ • MediaPlaybackService   │  └───────────────────────────┘
 └──────────────────────────┘
 ```
 
 ---
 
-## 2. End-to-End Streaming Request & Startup Pipeline (v1.16)
-
-Every remote stream (HLS, DASH, MKV, MP4, WebM, TS) flows through this layered data pipeline from catalog browsing to frame rendering:
+## 2. End-to-End Request, Prefetch & Playback Pipeline
 
 ```text
-Catalog Loaded / Series Opened
+Catalog Loaded / Series Opened / Next Episode Queued
   └─► StreamingNetworkEngine.prewarmOrigin(url)
-        • Debounced 60s per origin root (HEAD https://<host>/)
-        • Warms FastDnsResolver (IPv4-first) + TLS/HTTP2/QUIC socket pool before Play
+        • Debounced 60 s per origin root (HEAD https://<host>/)
+        • Warms FastDnsResolver (IPv4-first / DoH) + TLS/QUIC socket pool before Play
 
 User Taps Play -> CinePlayerManager.loadMedia()
   │
   ├─► AdaptiveHttpDataSourceFactory
-  │     ├── Primary: CronetDataSource (Play Services Chromium: HTTP/3 QUIC + TLS 1.3 + BBR)
-  │     └── Fallback: OkHttpDataSource (HTTP/2 multiplexed + 5-min IPv4-first FastDnsResolver)
-  │           (Strictly rejects Java HTTP/1.1 Cronet fallback; custom headers synced to both)
+  │     ├── Primary: CronetDataSource (Play Services HTTP/3 QUIC + TLS 1.3 + BBR)
+  │     │     (Auto-bypassed when Private DoH / SOCKS5 is active or QuicThroughputWatchdog demotes)
+  │     └── Fallback: OkHttpDataSource (HTTP/2 multiplexed + FastDnsResolver + DoH)
   │
-  ├─► DefaultDataSource.Factory (seamlessly merges remote HTTP(S) + local content:// subtitles)
+  ├─► ParallelPrefetchDataSource (ParallelPrefetchEngine)
+  │     ├── Tees .m3u8 playlists (0 ms overhead) -> 2× TV (<=14 MB) / 3× Mobile (<=28 MB)
+  │     ├── StreamingPrefetchEntry: 0 ms mid-download live handoff in 32 KB chunks
+  │     ├── Dedicated non-blocking audio lane + foreground-first anti-starvation
+  │     └── 2–3× parallel 206 Content-Range slices for progressive MP4/MKV/WebM
   │
   ├─► MediaEdgeCache.createSmartDataSourceFactory()
   │     ├── Android TV / Low-RAM (<=400 MB heap): RAM-Direct (0 eMMC writes, 0 SQLite fsyncs)
-  │     └── Phones / Tablets: 128 MB SimpleCache w/ 128 KB CacheDataSink (bypasses manifests/subs)
+  │     └── Phones / Tablets: 128 MB SimpleCache w/ 128 KB CacheDataSink (skips manifests/subs)
   │
   ├─► HlsMediaSource.Factory / DefaultMediaSourceFactory
   │     ├── Tolerant TS flags (FLAG_ALLOW_NON_IDR_KEYFRAMES | FLAG_DETECT_ACCESS_UNITS)
-  │     └── FastStreamingLoadErrorHandlingPolicy (500ms transient retry; instant 4xx fail-fast)
+  │     └── FastStreamingLoadErrorHandlingPolicy (500 ms transient retry; instant 4xx fail-fast)
   │
-  ├─► DefaultBandwidthMeter (Smart initial Wi-Fi/Eth/5G bitrate estimates: 6 Mbps TV / 10 Mbps Phone)
-  │     + DefaultTrackSelector (TV: Stereo 2ch DSP priority, 1080p/9.5 Mbps cap, fast 10s ABR decrease)
-  │     + DefaultLoadControl (20–45s window strictly capped at 12–40 MB Java heap, 0–5s back-buffer)
+  ├─► Media3 ExoPlayer (1.11.1)
+  │     ├── DefaultBandwidthMeter (Smart cold-start: 6 Mbps TV / 10 Mbps Phone / 12 Mbps Eth/5G)
+  │     ├── DefaultTrackSelector (TV Stereo 2ch DSP, preferred languages, 1080p/9.5 Mbps TV cap)
+  │     ├── DefaultLoadControl (20–45 s window strictly capped at 12–40 MB Java heap)
+  │     └── FrameDropAnalyzer + seamless display refresh-rate matching
   │
-  └─► NextRenderersFactory (EXTENSION_RENDERER_MODE_ON, Sync MediaCodec Queueing)
-        ├── Video: MediaCodec (HW, .low_latency excluded) ──fallback──► NextLib FFmpeg 10-bit / AV1
-        └── Audio: MediaCodec (HW Stereo DSP) ────────────fallback──► NextLib FFmpeg (DTS/AC-3/TrueHD)
+  └─► NextRenderersFactory (EXTENSION_RENDERER_MODE_ON, Selective Async/Sync Queueing)
+        ├── Video: MediaCodec (HW, .low_latency blocked) ──fallback──► NextLib FFmpeg 10-bit / AV1
+        └── Audio: DelayAudioProcessor (PCM lip-sync) -> MediaCodec / NextLib FFmpeg -> AudioVolumeBooster
 ```
 
 ---
 
-## 3. Package & Module Inventory
+## 3. Complete Package & Module Inventory
 
 ### Application & Entry (`com.example`)
 | File | Responsibility |
 | :--- | :--- |
-| `CineStreamApplication.kt` | Asynchronously initializes Google Play Services Cronet HTTP/3 in `onCreate()`, configures a singleton HTTP/2 `OkHttpClient` backed by `FastDnsResolver` and `ConnectionPool(6, 5m)`, configures Coil's memory-bounded RGB_565 `ImageLoader`, and hooks `onTrimMemory` / `onLowMemory` to reclaim bitmap memory, close idle sockets, and flush DNS cache. |
-| `MainActivity.kt` | Single-activity Compose host with `Navigation Compose` (`ROUTE_HOME`, `ROUTE_PLAYER`), Android TV Leanback intent handling, external `ACTION_VIEW` video/M3U8 deep linking, and clean `stopAndTrimBuffers()` calls on back navigation. |
+| `CineStreamApplication.kt` | Initializes Play Services Cronet HTTP/3 off the main thread, builds shared HTTP/2 `OkHttpClient` (`Dispatcher(32, 12)`, `ConnectionPool(12, 5m)`, `FastDnsResolver`, `DynamicSocksProxyManager`), configures Coil RGB_565 `ImageLoader`, and hooks `onTrimMemory` / `onLowMemory` to evict bitmaps, prefetch RAM, idle sockets, and DNS entries. |
+| `MainActivity.kt` | Edge-to-edge Compose host managing Navigation Compose (`ROUTE_HOME`, `ROUTE_PLAYER`), Android 8+ Picture-in-Picture (`onUserLeaveHint`, `PictureInPictureParams` with `-10s`/`Play-Pause`/`+10s` `RemoteAction`s), WireGuard `VpnService.prepare()` consent, SAF JSON sync export/import, external `ACTION_VIEW` video/M3U8 routing, and modal sheets. |
 
-### ViewModel (`com.example.viewmodel`)
+### ViewModel Layer (`com.example.viewmodel`)
 | File | Responsibility |
 | :--- | :--- |
-| `CineStreamViewModel.kt` | Central coordinator owning `CinePlayerManager`, Room history persistence, DataStore preferences, JSON/M3U playlist loading, series episode navigation (including next-episode auto-advance), IMDb metadata hydration, debounced origin pre-warming (`prewarmFirstItemOrigin`, Series sheet open, next-episode lookahead), subtitle importing, and toast/event messaging. |
+| `CineStreamViewModel.kt` | Central coordinator wiring `CinePlayerManager`, Room v3 repositories, DataStore preferences, multi-JSON & M3U playlists, XMLTV EPG, OpenSubtitles search & `/api/v1/login` JWT session restore, dual subtitles, offline downloads, WebDAV/Jellyfin browser, LAN Web Remote server, local Wi-Fi/SAF sync, Sleep Timer, Up-Next countdown, A-B loop, and Smart Auto-VPN failover. |
+| `MultiJsonPlaylistState.kt` | Pure `MultiJsonPlaylistReducer` handling multi-feed JSON aggregation, collision-free item ID namespacing, `"All"` vs single-playlist selection, refresh, and removal. |
+| `NetworkPrivacyState.kt` | `NetworkPrivacyUiState` modeling Private DNS mode, NordVPN login/key status, 118+ searchable locations, NordLynx WireGuard tunnel state, Smart Auto-VPN Failover, and live Cloudflare route probe results. |
+| `V24UiStates.kt` | Immutable UI states for `OnlineSubtitleUiState` (search query, language, results, `loggedInUsername`, `isLoggingIn`, `remainingDownloads`), `SecondarySubtitleUiState`, `WebRemoteUiState`, `LocalNetworkUiState`, `DownloadsUiState`, `ChannelZapBannerState`, and `SyncBackupUiState`. |
 
-### Playback & Streaming Engine (`com.example.player`)
+### Playback, Network, VPN & Ecosystem Engines (`com.example.player` — 26 files)
 | File | Responsibility |
 | :--- | :--- |
-| `CinePlayerManager.kt` | Wraps Media3 `ExoPlayer` (`1.11.1`) with `NextRenderersFactory`, `AdaptiveHttpDataSourceFactory`, smart-estimate `DefaultBandwidthMeter`, `FastStreamingLoadErrorHandlingPolicy`, heap-capped `DefaultLoadControl`, `DefaultAllocator`, TV-aware `DefaultTrackSelector` (Stereo DSP + fast ABR), `SmartMediaCodecSelector`, tolerant HLS/TS extractors, `MediaEdgeCache`, multi-tier decoder recovery, multi-CDN failover, and `AnalyticsListener` telemetry. |
-| `StreamingNetworkEngine.kt` | Encapsulates v1.16 network speed primitives: asynchronous Play Services Cronet HTTP/3 (QUIC) engine builder (rejecting `PROVIDER_NAME_FALLBACK`), `AdaptiveHttpDataSourceFactory` (dynamic Cronet ↔ OkHttp routing + unified header propagation), `FastDnsResolver` (5-min IPv4-first DNS cache), `FastStreamingLoadErrorHandlingPolicy` (`500 ms` transient retry / instant 4xx fail-fast), and debounced background `HEAD` origin pre-warming. |
-| `DecoderEngine.kt` | Pure codec classification (`DecoderFallbackHelper`), `VideoDecoderMode` (`AUTO`, `HARDWARE`, `SOFTWARE`), `.low_latency` exclusion, Dolby Vision → HEVC fallback, H.264/lower-res track candidate picker, and `SmartMediaCodecSelector` FFmpeg delegation. |
-| `CdnMirrorResolver.kt` | Pure URL candidate builder (explicit mirrors + path-preserving host swaps), disk cache eligibility filter (caches VOD chunks, skips `.m3u8`/`.mpd`/subtitles/local files), and TV vs Mobile storage caps. |
-| `MediaEdgeCache.kt` | Device-aware caching router: runs **RAM-Direct** (zero eMMC flash writes / zero SQLite overhead) on Android TV & low-RAM devices (`FEATURE_LEANBACK || isLowRamDevice || maxMemory <= 400 MB`), and manages a `128 KB`-buffered `SimpleCache` (`cacheDir/media_edge_cache`, 128 MB LRU cap) on modern phones/tablets with dynamic per-session bypass on decoder failures. |
-| `AudioVolumeBooster.kt` | Pure gain math (`AudioBoostMath`, 0%–200% / +20 dB) and session-bound `LoudnessEnhancer` + API 28+ `DynamicsProcessing` soft-limiter. |
-| `JsonPlaylistParser.kt` | Resilient streaming JSON parser (capped at 4 MB read) supporting Movies, nested `seasons`/`episodes` Series, flat `episodes` Series, categories, custom HTTP headers, mirrors, subtitles, and IMDb fields. |
-| `M3uPlaylistParser.kt` | Streaming `#EXTM3U` / `#EXTINF` parser supporting `tvg-logo`, `group-title`, and live channel extraction. |
-| `ImdbMetadataClient.kt` | Extracts `tt\d+` IMDb IDs from URLs/strings and fetches poster artwork, ratings, and release years asynchronously using the shared `OkHttpClient`. |
-| `MediaFormatDetector.kt` | Detects stream formats (`HLS`, `M3U8`, `DASH`, `MKV`, `MP4`, `WEBM`, `M3U`, `LOCAL`, `AUTO`), validates links, infers human-readable titles, and maps formats to Media3 MIME types. |
-| `PlayerNetworkStats.kt` | Immutable telemetry snapshot (`PlayerNetworkStats`, including `networkTransportLabel` and `isRamDirectCacheMode`) and human-readable formatters (`PlayerStatsFormatter`) for Stats for Nerds. |
-| `SeekBarScrubEngine.kt` | Pure scrubbing & D-pad acceleration math for smooth timeline seeking across long movies without jerky jumps. |
-| `SubtitleHelper.kt` | Resolves local and remote `.srt`/`.vtt`/`.ass`/`.ssa`/`.ttml` subtitles into playable URIs and Media3 MIME types. |
+| `CinePlayerManager.kt` | Media3 `ExoPlayer` (`1.11.1`) wrapper owning `NextRenderersFactory`, `AdaptiveHttpDataSourceFactory`, `ParallelPrefetchDataSource`, `MediaEdgeCache`, `DelayAudioProcessor`, `AudioVolumeBooster`, `FrameDropAnalyzer`, `QuicThroughputWatchdog`, multi-tier HW↔FFmpeg recovery, Multi-CDN failover, and `AnalyticsListener` telemetry. |
+| `StreamingNetworkEngine.kt` | Asynchronous Play Services Cronet HTTP/3 builder (rejecting `PROVIDER_NAME_FALLBACK`), `AdaptiveHttpDataSourceFactory`, `QuicThroughputWatchdog`, `FastDnsResolver` (IPv4-first 5-min cache + DoH), `FastStreamingLoadErrorHandlingPolicy`, and debounced `HEAD` origin pre-warming. |
+| `ParallelPrefetchEngine.kt` | `HlsSegmentIndex`, `StreamingPrefetchEntry`, `ParallelHlsPrefetchManager`, and `ParallelPrefetchDataSource` for live-streaming parallel HLS segment prefetching, dedicated audio lane, and progressive `206 Content-Range` lookahead. |
+| `DecoderEngine.kt` | `VideoDecoderMode` (`AUTO`, `HARDWARE`, `SOFTWARE`), `DecoderFallbackHelper`, `.low_latency` WebRTC exclusion, Dolby Vision → HEVC fallback, H.264/lower-res track fallback picker, and `SmartMediaCodecSelector`. |
+| `FrameDropAnalyzer.kt` | Rolling 3s `drops/sec` analyzer classifying frame drops into `HEALTHY`, `SEEK_BURST`, `STREAM_PTS_OR_RESYNC`, or `SW_CPU_LOAD`, plus `MediaCodecQueueingPolicy` (selective Android 12+ async vs sync queueing). |
+| `NordLynxEngine.kt` | Embedded WireGuard (`com.wireguard.android:tunnel`, `GoBackend`) NordLynx VPN engine with per-app scoping (`includeApplication`), Cloudflare `1.1.1.1`/`1.0.0.1` tunnel DNS, and live Curve25519 peer negotiation. |
+| `PrivateDnsAndVpnEngine.kt` | `PrivateDnsMode` (`SYSTEM`, `CLOUDFLARE_1111`, `GOOGLE_8888`), `DohDnsClient` (RFC 8484 wire/JSON over bootstrap IPs), `DynamicSocksProxyManager`, `CredentialVault` (Android Keystore AES-256-GCM encryption), and Cloudflare `/cdn-cgi/trace` probe. |
+| `NordVpnApiClient.kt` | Real `api.nordvpn.com` client exchanging Access Tokens for NordLynx private keys + SOCKS5 service credentials, syncing 118+ countries/cities, and selecting lowest-load WireGuard/SOCKS5 endpoints. |
+| `SmartVpnFailoverCoordinator.kt` | Pure state coordinator triggering opt-in NordLynx auto-connect only when direct ISP streams hit repeated stalls or fatal network blocks. |
+| `CdnMirrorResolver.kt` | Candidate URL builder (explicit mirrors + path-preserving host swaps), disk cache eligibility filter, and device-tier storage caps. |
+| `MediaEdgeCache.kt` | Routes Android TV / low-RAM devices to **RAM-Direct** (zero eMMC writes) and phones/tablets to a 128 MB LRU `SimpleCache` with 128 KB buffered `CacheDataSink`. |
+| `AudioVolumeBooster.kt` | `AudioBoostMath` (`0%–200%`, `+20 dB`), `LoudnessEnhancer`, and API 28+ `DynamicsProcessing` soft-limiter + Night Mode 4-band dialogue boost Pre-EQ/MBC. |
+| `DelayAudioProcessor.kt` | Custom Media3 `BaseAudioProcessor` implementing a zero-reload PCM circular delay buffer for Bluetooth/soundbar lip-sync (`-500 ms` to `+500 ms`). |
+| `MediaPlaybackService.kt` | Play-compliant `mediaPlayback` foreground service keeping audio alive with lock-screen media controls when Background Audio is toggled on mobile. |
+| `OpenSubtitlesClient.kt` | OpenSubtitles REST API v1 client using `BuildConfig.OPENSUBTITLES_API_KEY` (from AI Studio Secrets) + optional `/api/v1/login` JWT Bearer auth, dynamic VIP/standard `base_url`, search, download to cache, and live remaining daily quota parsing. |
+| `SecondarySubtitleEngine.kt` | Parses `.srt` and `.vtt` caption files into timestamped cue lists and renders synchronized dual subtitles at the top of the player. |
+| `SubtitleHelper.kt` | Resolves local/remote `.srt`, `.vtt`, `.ass`, `.ssa`, `.ttml` URIs and Media3 MIME types. |
+| `JsonPlaylistParser.kt` | Streaming 4 MB-capped JSON catalog parser supporting Movies, nested/flat Series, categories, mirrors, inherited HTTP headers, subtitles, and IMDb IDs. |
+| `M3uPlaylistParser.kt` | `#EXTM3U` / `#EXTINF` parser supporting `tvg-logo`, `tvg-id`, `group-title`, and `#EXTM3U url-tvg` EPG auto-discovery. |
+| `XmltvEpgParser.kt` | Streaming `.xml` / `.xml.gz` XMLTV parser matching channel IDs/names to compute live Now/Next programs and progress fractions. |
+| `ImdbMetadataClient.kt` | Extracts `tt\d+` IMDb IDs and hydrates poster artwork, ratings, and release years asynchronously. |
+| `LocalNetworkClient.kt` | LAN media browser implementing WebDAV `PROPFIND` XML parsing and Jellyfin REST API authentication/item browsing. |
+| `OfflineDownloadManager.kt` | Zero-permission app-private downloader (`filesDir/offline_downloads/`) for progressive MP4/MKV and HLS `.m3u8` (segment download + local playlist rewrite). |
+| `MediaFormatDetector.kt` | Format detection, URL validation, title inference, and Media3 MIME mapping. |
+| `PlayerNetworkStats.kt` | Immutable telemetry snapshot (`PlayerNetworkStats`) and human-readable formatters (`PlayerStatsFormatter`). |
+| `SeekBarScrubEngine.kt` | Touch drag and progressive D-pad hold scrubbing math (`±1m → ±2m → ±5m → ±10m`). |
 
-### Data Persistence (`com.example.data`)
+### Phone-to-TV Web Remote (`com.example.remote`)
 | File | Responsibility |
 | :--- | :--- |
-| `AppDatabase.kt` | Room SQLite database storing watch history, resume timestamps, format metadata, and IMDb artwork. |
-| `MediaHistoryEntity.kt` / `MediaHistoryDao.kt` / `MediaHistoryRepository.kt` | Stores recently played streams & local videos so users can resume at their exact last position. |
-| `SubtitlePrefsRepository.kt` | Jetpack DataStore (`Preferences`) storing subtitle appearance (size, text color, background opacity), saved JSON playlist URL, volume boost level, aspect ratio, Stats for Nerds toggle, and preferred `VideoDecoderMode` (`AUTO`, `HARDWARE`, `SOFTWARE`). |
+| `LocalWebRemoteServer.kt` | Embedded LAN HTTP server (`ServerSocket`) with constant-time 6-digit session PIN authentication, mobile web UI, push endpoints (stream URL, JSON/M3U playlist, subtitle, EPG URL, NordVPN key), and local Wi-Fi Sync (`/api/sync/export`, `/api/sync/import`). |
+| `QrCodeMatrixGenerator.kt` | Pure-Kotlin QR code generator rendering scannable `http://<lan-ip>:<port>` pairing matrices on Canvas with zero external barcode dependencies. |
 
-### Domain Models (`com.example.model`)
+### Data Persistence (`com.example.data` — 9 files)
 | File | Responsibility |
 | :--- | :--- |
-| `MediaModels.kt` | Immutable data models: `StreamFormat`, `MediaContentType` (`MOVIE`, `SERIES`), `SeriesEpisode`, `SeriesSeason`, `JsonPlaylistItem`, `M3uEntry`, `ExternalSubtitle`, `TrackOption`, `SubtitleAppearance`, `AspectRatioMode`. |
+| `AppDatabase.kt` | **Room v3** SQLite database with automatic migrations (`MIGRATION_1_2`, `MIGRATION_2_3`) containing `media_history`, `favorites`, `offline_downloads`, and `network_servers`. |
+| `MediaHistoryEntity.kt` / `MediaHistoryDao.kt` / `MediaHistoryRepository.kt` | Stores watch history, exact resume timestamps, series/season/episode keys, audio/subtitle delay offsets per video, and pinned streams. |
+| `ContinueWatchingHelper.kt` | Deduplicates in-progress items per series, filters finished/unstarted entries, formats `S1 E3` codes, remaining minutes, and `Watched` status. |
+| `FavoriteAndSearch.kt` | `FavoriteRepository` and `GlobalSearchEngine` unifying instant search across Watchlist, JSON Catalogs, M3U Live TV, Offline Downloads, and History. |
+| `V24EntitiesAndDaos.kt` | Room entities & DAOs for `FavoriteItemEntity`, `OfflineDownloadEntity`, and `NetworkServerEntity` (NAS credentials encrypted via `CredentialVault`). |
+| `DeviceSyncSnapshot.kt` | `DeviceSyncCodec` serializing/deserializing credential-free JSON snapshots for Phone ↔ TV Wi-Fi sync and SAF backup/restore (explicitly excluding VPN keys and NAS passwords). |
+| `SubtitlePrefsRepository.kt` | Jetpack DataStore (`Preferences`) storing subtitle appearance, multi-JSON URLs, volume boost, aspect ratio, Stats toggle, decoder/transport modes, DNS/VPN settings, preferred languages, skip interval, Night Mode, and Keystore-encrypted OpenSubtitles credentials. |
 
-### UI Layer (`com.example.ui`)
-- **Home (`ui/home/`):** `HomeScreen.kt` (hero banner, stream launcher, Continue Watching, Movies & Series catalog shelves, M3U channels) and `JsonPlaylistUi.kt` (playlist loader dialogs & cards).
-- **Player (`ui/player/`):**
-  - `PlayerScreen.kt` — Fullscreen video surface (`key(surfaceResetToken)`), touch gesture detector (tap, double-tap seek, right-side vertical volume swipe), TV remote key handler, and modal sheet orchestration.
-  - `PlayerControlsOverlay.kt` — Top bar, playback transport controls, isolated `PlayerTimestampBadge` & `PlayerIsolatedSeekBar`, speed selector, aspect ratio toggle, and `PlayerErrorCard` (with `Try Software/Hardware Decoder`, `Skip Bad Segment (+5s)`, `Retry`, `Try as HLS`, and `Back`).
-  - `PlayerStatsOverlay.kt` — Compact YouTube-style Stats for Nerds card with header `HTTP/3` / `HTTP/2` transport pill, `RAM Direct (Zero eMMC)` / Edge cache row, active video decoder row, and custom Canvas sparklines (`Network Activity` & `Buffer Health`).
-  - `TracksSheet.kt` — Video Quality tracks, Audio tracks, **Video Decoder Engine** (`Auto / HW / FFmpeg SW`), **Volume Boost** presets, and **Stats for Nerds** toggle.
-  - `SubtitleSheet.kt` — Subtitle track switcher, local file picker, remote URL loader, and live style customizer.
-  - `SeriesDetailSheet.kt` — Season tabs + episode list modal for browsing and playing TV series on both phone and Android TV.
-  - `JsonPlaylistSheet.kt` & `M3uPlaylistSheet.kt` — In-player catalog & channel switchers.
-  - `CinemaSeekBar.kt` & `VolumeBoostUi.kt` — Custom buffered seekbar and 0%–200% boost HUD/slider.
-- **Shared Components & Theme (`ui/components/`, `ui/theme/`):** `PosterMediaCard.kt`, `FormatBadge.kt`, `LocalFilePicker.kt`, `TvUtils.kt` (`tvFocusHighlight`, `isTelevisionDevice()`), and Obsidian/CinemaAmber M3 theme (`Color.kt`, `Theme.kt`, `Type.kt`).
+### UI & Editorial Design System (`com.example.ui`)
+- **Theme (`ui/theme/`):**
+  - `Color.kt`: Warm carbon surfaces (`#09090B`, `#121215`, `#1A1A1F`, `#24242A`), hairline outlines (`#2C2C34`, `#1F1F26`), warm ivory ink (`#F4F1EA`), stone secondary (`#A09D96`), projector tungsten gold (`#E8A435`), steel cyan (`#7CB7E8`), sage emerald (`#47B881`), and vermilion (`#E05252`).
+  - `Type.kt`: Local bundled **Fraunces** (`R.font.fraunces`) for display/headlines, **DM Sans** (`R.font.dm_sans`) for titles/body/actions, and **JetBrains Mono** (`R.font.jetbrains_mono`) for telemetry/tags/timestamps.
+  - `Theme.kt`: Material 3 `CineStreamDarkColorScheme` + crisp editorial `CineStreamShapes` (`4dp` / `8dp` / `12dp` / `16dp` / `22dp`).
+- **Home (`ui/home/`):** `HomeScreen.kt` (editorial hero, unified hairline-divided Stream Dock, adaptive 2-column TV vs single-column phone layout), `ContinueWatchingRow.kt` (16:9 cinema stills), `HomeV24Sections.kt` (Quick Tools, Global Search, poster-backed Watchlist), `JsonPlaylistUi.kt`.
+- **Player (`ui/player/` — 15 files):** `PlayerScreen.kt`, `PlayerControlsOverlay.kt`, `PlayerOverlaysV24.kt` (Up-Next, Skip Intro, Hold-2×, Dual Subtitles, Channel Zap EPG banner), `PlayerStatsOverlay.kt`, `CinemaSeekBar.kt` (with chapter ticks & A-B loop range), `PlayerGestures.kt`, `VolumeBoostUi.kt`, `TracksSheet.kt`, `SubtitleSheet.kt` (with OpenSubtitles Search, Account Sign-In & Dual Subtitles), `SeriesDetailSheet.kt`, `JsonPlaylistSheet.kt`, `M3uPlaylistSheet.kt`, `NetworkPrivacySheet.kt`, `DownloadsSheet.kt`, `LocalNetworkSheet.kt`.
+- **Remote & Shared (`ui/remote/`, `ui/components/`, `ui/icons/`):** `WebRemoteSheet.kt`, `PosterMediaCard.kt`, `FormatBadge.kt`, `LocalFilePicker.kt`, `TvUtils.kt`, and compact local vector icons (`ExtendedRoundedIcons.kt` replacing the ~15 MB `material-icons-extended` DEX).
 
 ---
 
-## 4. State-Frequency Isolation Pattern (Critical Performance Design)
+## 4. State-Frequency Isolation Pattern
 
-A major cause of Compose jank and OOMs on low-RAM Android TVs is attaching high-frequency playback timestamps (updating every 500ms) to a monolithic screen state object, causing the entire `PlayerScreen` tree to recompose twice per second.
-
-CineStream eliminates this by splitting player state into **three isolated `StateFlow`s**:
-
-1. **`CinePlayerManager.state: StateFlow<PlayerPlaybackState>`**
-   - Emits **only** on discrete state transitions (play/pause, buffering start/end, track list change, decoder change, error state, surface reset token).
-   - Almost zero emissions during steady playback.
-2. **`CinePlayerManager.progressState: StateFlow<PlaybackProgressState>`**
-   - Updated every 500ms while playing (`currentPositionMs`, `bufferedPositionMs`, `durationMs`, `isLiveStream`).
-   - Collected **exclusively** inside two leaf composables (`PlayerTimestampBadge` and `PlayerIsolatedSeekBar`) so 98% of `PlayerScreen` never recomposes during playback ticks.
-3. **`CinePlayerManager.networkStats: StateFlow<PlayerNetworkStats>`**
-   - Polled **only** when the user enables **Stats for Nerds** (`statsOverlayVisible == true`).
-   - Overhead is strictly **zero** while hidden.
+To keep Compose frame times under 4 ms on low-RAM Android TVs:
+1. **`CinePlayerManager.state: StateFlow<PlayerPlaybackState>`** — Emits only on discrete transitions (play/pause, buffering, tracks, decoder, error, `surfaceResetToken`).
+2. **`CinePlayerManager.progressState: StateFlow<PlaybackProgressState>`** — Emits every 500 ms and is collected **only** inside leaf timeline composables (`PlayerTimestampBadge`, `PlayerIsolatedSeekBar`, `DualSubtitleOverlay`).
+3. **`CinePlayerManager.networkStats: StateFlow<PlayerNetworkStats>`** — Polled **only** when Stats for Nerds is enabled (strictly 0% overhead when hidden).
 
 ---
 
-## 5. Navigation & Resource Lifecycle
+## 5. Deterministic Resource Lifecycle
 
-```text
-HomeScreen ──(Select Movie / Episode / URL / Local File)──► CineStreamViewModel.startPlayback()
-                                                                 │
-                                                                 ▼
-                                                         Navigate -> ROUTE_PLAYER
-                                                                 │
-                                           (Active playback, progress ticks, optional stats)
-                                                                 │
-                                           ◄──(User presses Back)┘
-                                           │
-                                           ▼
-                       1. Save resume position to Room DB
-                       2. CinePlayerManager.stopAndTrimBuffers():
-                            • player.playWhenReady = false
-                            • player.clearVideoSurface()   (frees 4K GPU/CPU ION buffers)
-                            • player.stop()
-                            • player.clearMediaItems()
-                            • allocator.trim()             (returns 64 KB heap segments)
-                            • volumeBooster.release()      (releases native AudioFX)
-                       3. Pop backstack -> HomeScreen (clean heap, zero leaked buffers)
-```
-
-This guarantees that returning to `HomeScreen` never leaves 30–40 MB of video buffers or 4K hardware surfaces alive during Compose transitions.
+When exiting `PlayerScreen` (or switching decoders):
+1. Persist exact playback position + per-video audio/subtitle delay to Room v3.
+2. Execute `CinePlayerManager.stopAndTrimBuffers()`:
+   - `player.playWhenReady = false`
+   - `player.clearVideoSurface()` (releases 24–40 MB 4K GPU/ION surfaces)
+   - `player.stop()` and `player.clearMediaItems()`
+   - `allocator.trim()` (returns 64 KB Java heap segments)
+   - `parallelPrefetchManager.clearAll()` (releases in-flight segment RAM)
+   - `volumeBooster.release()` (releases native AudioFX)
+3. Pop back to `HomeScreen` with a clean heap and zero leaked surfaces.

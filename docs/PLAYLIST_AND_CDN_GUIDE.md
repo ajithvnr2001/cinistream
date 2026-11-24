@@ -1,21 +1,23 @@
-# JSON Playlists, Series & Hybrid In-App CDN Guide
+# Playlists, Live TV EPG, NAS & Hybrid In-App CDN Guide (v1.25)
 
-CineStream v1.16 supports unified **Movie + Multi-Season Series JSON catalogs**, **M3U / M3U8 IPTV playlists**, automatic **IMDb metadata enrichment**, and a **4-Layer Hybrid In-App CDN & Transport Acceleration Engine** built directly into the player.
+CineStream v1.25 supports **Multi-JSON Movie & Multi-Season Series catalogs**, **M3U / M3U8 Live TV + XMLTV EPG guides**, **WebDAV & Jellyfin LAN streaming**, **Phone-to-TV Web Remote & Local Wi-Fi Sync**, automatic **IMDb metadata enrichment**, and a **5-Layer Hybrid In-App CDN & Transport Acceleration Engine**.
 
 ---
 
-## 1. Unified JSON Playlist Schema Reference
+## 1. Multi-JSON Playlist Catalogs (`JsonPlaylistParser` & `MultiJsonPlaylistReducer`)
 
-CineStream's `JsonPlaylistParser` accepts remote HTTP/HTTPS URLs or local `.json` files (capped at **4 MB** per file to protect low-RAM Android TVs). It flexibly supports **all** of these top-level shapes:
+### Multiple Simultaneous Feeds
+- Load and persist **multiple** remote JSON playlist URLs (plus local `.json` files) simultaneously; all saved URLs reload concurrently on startup (with per-URL failure tolerance so one offline feed never blocks others).
+- `MultiJsonPlaylistReducer` namespaces item IDs across feeds to eliminate collisions, powers **`All (N)` + per-playlist switcher chips** in both Home and Player, supports inline `+` adding, per-list or Refresh-All syncing, individual playlist removal, and cross-playlist Series/Next-Episode continuity.
 
+### Supported Top-Level JSON Shapes (4 MB Safety Cap)
 1. **Wrapped catalog object:** `{ "title": "...", "cdnMirrors": [...], "headers": {...}, "items": [...] }`
-2. **Split arrays in one file:** `{ "movies": [...], "series": [...] }` (both arrays are merged automatically!)
+2. **Split arrays:** `{ "movies": [...], "series": [...] }` (merged automatically)
 3. **Top-level array:** `[ { "type": "movie", ... }, { "type": "series", "seasons": [...] } ]`
 4. **Categorized catalog:** `{ "categories": [ { "name": "Sci-Fi", "videos": [...] } ] }`
-5. **Single item JSON:** A standalone movie or series JSON object.
+5. **Single item JSON:** A standalone movie or series object.
 
-### Full Unified Example (Movies + Multi-Season Series + Multi-CDN + Headers + Subtitles)
-
+### Unified Movie + Multi-Season Series Example
 ```json
 {
   "title": "My Cinema & TV Catalog",
@@ -41,7 +43,7 @@ CineStream's `JsonPlaylistParser` accepts remote HTTP/HTTPS URLs or local `.json
       "imdbId": "tt1772240",
       "year": "2011",
       "poster": "https://images.example.com/posters/hidden-face.jpg",
-      "description": "A Spanish orchestra conductor investigates his girlfriend's disappearance.",
+      "description": "A conductor investigates his girlfriend's disappearance.",
       "subtitle": "https://primary-edge.example.com/subs/hidden-face-en.vtt",
       "subtitleLabel": "English"
     },
@@ -52,7 +54,6 @@ CineStream's `JsonPlaylistParser` accepts remote HTTP/HTTPS URLs or local `.json
       "group": "Sci-Fi · Animation",
       "imdbId": "tt2285752",
       "year": "2012",
-      "description": "Multi-season anthology with automatic next-episode playback.",
       "seasons": [
         {
           "season": 1,
@@ -68,21 +69,12 @@ CineStream's `JsonPlaylistParser` accepts remote HTTP/HTTPS URLs or local `.json
               ],
               "format": "HLS",
               "duration": "12m",
-              "description": "Warriors and scientists stage a crucial event from the past.",
               "subtitles": [
                 {
                   "url": "https://primary-edge.example.com/series/s1/e1-en.srt",
                   "label": "English"
                 }
               ]
-            },
-            {
-              "id": "anthology-s1-e2",
-              "episode": 2,
-              "title": "Sintel",
-              "url": "https://primary-edge.example.com/series/s1/e2/playlist.m3u8",
-              "format": "M3U8",
-              "duration": "15m"
             }
           ]
         }
@@ -91,95 +83,74 @@ CineStream's `JsonPlaylistParser` accepts remote HTTP/HTTPS URLs or local `.json
   ]
 }
 ```
-
-### Supported Flat-Episodes Series Shape
-You can also omit the `"seasons"` wrapper and pass a flat `"episodes"` array; `JsonPlaylistParser` groups episodes automatically by `"season"` / `"seasonNumber"` (defaulting to Season 1):
-
-```json
-{
-  "id": "mini-series-1",
-  "type": "series",
-  "title": "Six-Part Mini-Series",
-  "episodes": [
-    { "season": 1, "episode": 1, "title": "Pilot", "url": "https://cdn.example.com/ep1.m3u8" },
-    { "season": 1, "episode": 2, "title": "Chapter 2", "url": "https://cdn.example.com/ep2.m3u8" }
-  ]
-}
-```
+Flat `"episodes"` arrays (with `"season"` / `"seasonNumber"`) are also grouped into seasons automatically.
 
 ### Field Alias Reference
-
 | Concept | Accepted JSON Field Names |
 | :--- | :--- |
 | **Playlist Title** | `title`, `name`, `playlistName`, `playlist_title` |
 | **Catalog Arrays** | `items`, `movies`, `series`, `shows`, `tvShows`, `tv_shows`, `videos`, `playlist`, `channels`, `streams`, `media`, `entries`, `results`, `data`, `catalog`, `tracks`, `categories[].*` |
-| **Item Type** | `type`, `contentType`, `content_type`, `mediaType`, `media_type`, `kind` (`"series"`, `"show"`, `"tv"`, `"tvshow"`, or auto-detected if `seasons`/`episodes` exist) |
+| **Item Type** | `type`, `contentType`, `content_type`, `mediaType`, `media_type`, `kind` (`"series"`, `"show"`, `"tv"`, `"tvshow"`, or auto-detected via `seasons`/`episodes`) |
 | **Stream URL** | `url`, `streamUrl`, `stream_url`, `videoUrl`, `video_url`, `src`, `source`, `link`, `hls`, `stream`, `file`, `playUrl`, `play_url`, `sources[0]`, `streams[0]` |
-| **Item Mirrors** | `mirrors`, `cdnUrls`, `cdn_urls`, `backupUrls`, `fallbackUrls`, plus secondary entries in `sources` / `streams` |
+| **Item Mirrors** | `mirrors`, `cdnUrls`, `cdn_urls`, `backupUrls`, `fallbackUrls`, plus extra entries in `sources` / `streams` |
 | **Playlist CDN Mirrors** | `cdnMirrors`, `cdn_mirrors`, `mirrorHosts`, `fallbackHosts`, `cdnBases` |
-| **Custom HTTP Headers** | `headers`, `httpHeaders`, `http_headers` (inherited Playlist → Series → Season → Episode; child keys override parent keys) |
+| **Custom HTTP Headers** | `headers`, `httpHeaders`, `http_headers` (inherited Playlist → Series → Season → Episode; child overrides parent) |
 | **Poster / Artwork** | `poster`, `posterUrl`, `poster_url`, `image`, `imageUrl`, `image_url`, `thumbnail`, `thumb`, `cover`, `artwork`, `banner`, `logo`, `tvgLogo`, `tvg-logo`, `backdrop` |
 | **IMDb Identifier** | `imdbId`, `imdb_id`, `imdb`, `imdbUrl`, `imdb_url`, `imdbLink`, `imdb_link`, `tconst`, `tt` |
 | **Rating & Year** | `imdbRating`, `imdb_rating`, `rating`, `score`; `year`, `releaseYear`, `release_year`, `datePublished` |
 | **Subtitles** | `subtitle`, `subtitleUrl`, `subtitle_url`, `captions`, `captionUrl`, `srt`, `vtt`, `subtitles[]`, `captions[]`, `tracks[]` |
 | **Group / Genre** | `group`, `groupTitle`, `group_title`, `group-title`, `category`, `genre`, `genres[]` |
 
-### Series Playback Experience
-- **Series Detail Modal (`SeriesDetailSheet`):** Tapping a Series card opens season tabs and a full episode list (D-pad navigable on Android TV) and immediately pre-warms the first episode's origin host in the background.
-- **In-Player `Next Ep` Pill & Auto-Advance:** When watching a series episode, a **Next Ep** action appears in the player bar, the next episode's origin host is pre-warmed silently, and playback automatically advances to the next episode (including across season boundaries) when the current episode finishes.
+### Series Continuity Features
+- **Per-Episode Resume & `Watched` Badges:** `SeriesDetailSheet` displays per-episode progress bars and emerald `Watched` pills backed by Room v3.
+- **Up-Next 10s Countdown & Skip Intro (`+85s`):** Floating smoked-glass Up-Next card with *Play Now* / *Cancel* near episode end (auto-advancing across season boundaries) plus a *Skip Intro (+85s)* pill during intros.
 
 ---
 
-## 2. 4-Layer Hybrid In-App CDN & Transport Engine
+## 2. 5-Layer Hybrid In-App CDN & Transport Engine
 
-CineStream ships an in-app CDN and transport engine engineered for instant startup, maximum throughput over Cloudflare Workers / S3 / R2 / Backblaze origins, and automatic resilience against origin downtime — with **zero server lock-in**.
-
-### Layer 1: Multi-CDN Mirror Resolver (`CdnMirrorResolver`) + Fast Failover
-For every movie or episode, `CdnMirrorResolver.buildCandidateUrls()` builds a deduplicated, ordered list of playable origins:
-1. **Primary URL** (`item.url`)
-2. **Explicit per-item / per-episode mirrors** (`item.mirrors` + extra entries in `sources` / `streams`)
-3. **Path-preserving origin swaps** generated from playlist-level `cdnMirrors`
-
-*Path-preserving host swap example:*
-- Primary URL: `https://worker-a.workers.dev/pub/movie-1/master.m3u8?token=abc`
-- Playlist `cdnMirrors`: `["https://cdn-b.example.com"]`
-- Auto-generated backup URL: `https://cdn-b.example.com/pub/movie-1/master.m3u8?token=abc`
-
-**Automatic Mid-Stream Failover:**
-- `FastStreamingLoadErrorHandlingPolicy` retries brief transient Wi-Fi drops rapidly (`500 ms`), but **fails fast immediately** (`C.TIME_UNSET`) on permanent HTTP 4xx (`403`, `404`, `410`) or manifest parsing errors.
-- `CinePlayerManager` then automatically hops to the next mirror **at the exact current playback millisecond** and displays a subtle failover toast. Users can also hop manually between CDN nodes.
-
-### Layer 2: Device-Aware Caching (`MediaEdgeCache`: TV RAM-Direct vs. Mobile Edge Disk Cache)
-- **On Android TV / Constrained-RAM Devices (`FEATURE_LEANBACK || isLowRamDevice || maxMemory <= 400 MB`):**
-  - Runs in **RAM-Direct Mode** (zero synchronous eMMC disk writes, zero SQLite index updates on ExoPlayer's loader thread). Slow TV eMMC flash contention can never throttle high-bitrate HLS/DASH downloads; ExoPlayer's 20–45s heap-capped RAM buffer + 5s back-buffer handles smooth playback and instant micro-rewinds directly from memory.
-- **On Modern Phones & Tablets (Fast UFS Flash):**
-  - Wraps Media3's `SimpleCache` in `cacheDir/media_edge_cache` with a **128 MB** LRU cap (`4 MB` cache fragment size) and an enlarged **`128 KB` `CacheDataSink` write buffer** (6× larger than Media3's 20 KB default).
-  - **CACHED:** Progressive streams & HLS/DASH media segments (`.ts`, `.m4s`, `.mp4`, `.mkv`, `.webm`, `.aac`) → instant seek-back and replay.
-  - **BYPASSED:** `.m3u8`, `.m3u`, `.mpd`, `.ism/manifest` (so live streams & expiring signed tokens never go stale), subtitles (`.srt`, `.vtt`, `.ass`, `.ssa`, `.ttml`), and local `content://` / `file://` files.
-  - **Fault Tolerance:** Uses `FLAG_IGNORE_CACHE_ON_ERROR` and automatically sets `bypassEdgeCacheForSession = true` on any video decoder error so a truncated cached chunk can never crash decoders twice.
-
-### Layer 3: Custom HTTP Origin Headers (Synced Across HTTP/3 & HTTP/2)
-Many S3/Cloudflare Workers/private CDN endpoints require `Authorization`, `Referer`, `Origin`, or custom `User-Agent` headers.
-- Headers defined at the **Playlist**, **Series**, **Season**, or **Episode** level merge automatically (`child` overrides `parent`) and are applied through `AdaptiveHttpDataSourceFactory.setDefaultRequestProperties(...)` so they apply consistently across **both** Play Services Cronet (HTTP/3 QUIC) and OkHttp (HTTP/2).
-
-### Layer 4: Adaptive HTTP/3 QUIC Transport + Origin Pre-Warming (`StreamingNetworkEngine`)
-- **HTTP/3 (QUIC) + TLS 1.3 + BBR:** Automatically upgrades Cloudflare Workers / modern CDN origins to HTTP/3 QUIC via Google Play Services Cronet even on Android 9 TVs, falling back seamlessly to HTTP/2 OkHttp + 5-minute IPv4-first `FastDnsResolver`.
-- **Safe Origin Pre-Warming:** When a playlist loads, when opening a Series drawer, or when starting an episode with a next episode on another host, CineStream sends a debounced (60s cooldown) background `HEAD scheme://host[:port]/` request to warm DNS + TLS/QUIC sockets without ever consuming single-use tokenized media URLs or downloading media bytes.
+1. **Multi-CDN Mirror Failover (`CdnMirrorResolver`):** Builds a deduplicated candidate chain (Primary URL → per-item `mirrors` → path-preserving `cdnMirrors` origin swaps). Permanent HTTP 4xx or parse failures fail fast (`C.TIME_UNSET`) and hop to the next mirror at the exact playback millisecond.
+2. **Live-Streaming Parallel Prefetch (`ParallelPrefetchEngine`):** Streams `2×` (TV) / `3×` (Mobile) parallel HLS segments + `2–3×` progressive `206 Content-Range` lookahead with 0 ms live mid-download handoff.
+3. **Device-Aware Edge Cache (`MediaEdgeCache`):** **RAM-Direct** (zero eMMC writes) on Android TV/low-RAM devices; **128 MB** LRU `SimpleCache` with `128 KB` buffered `CacheDataSink` on phones/tablets (automatically bypassed on decode errors and for manifests/subtitles/local files).
+4. **Unified Custom HTTP Headers:** Inherited `Authorization`, `Referer`, `Origin`, and `User-Agent` headers sync across both Cronet (HTTP/3) and OkHttp (HTTP/2).
+5. **HTTP/3 QUIC + Self-Healing HTTP/2 + Origin Pre-Warming:** Automatic Cronet HTTP/3 upgrade, `QuicThroughputWatchdog` demotion if UDP-443 is throttled, IPv4-first DoH DNS caching, and debounced `HEAD` origin preconnects.
 
 ---
 
-## 3. M3U / M3U8 IPTV Playlists (`M3uPlaylistParser`)
+## 3. M3U / M3U8 Live TV & XMLTV EPG Guide (`M3uPlaylistParser` & `XmltvEpgParser`)
 
-CineStream also supports standard IPTV `#EXTM3U` playlists (from remote URL or local file):
 ```m3u
-#EXTM3U
-#EXTINF:-1 tvg-logo="https://example.com/logo.png" group-title="News",Example News HD
+#EXTM3U url-tvg="https://epg.example.com/guide.xml.gz"
+#EXTINF:-1 tvg-id="news.hd" tvg-logo="https://example.com/logo.png" group-title="News",Example News HD
 https://stream.example.com/news/master.m3u8
 ```
-- Groups channels by `group-title`, displays channel logos via RGB_565 Coil, supports instant search/filtering, and detects live streams (`● LIVE HLS` badge).
+- Automatically detects `url-tvg` / `x-tvg-url` attributes from `#EXTM3U` headers (or load any `.xml` / `.xml.gz` XMLTV URL manually inside `M3uPlaylistSheet`).
+- Displays live **Now** & **Next** program titles with progress bars inside `M3uPlaylistSheet` and the floating **Channel Zap EPG Banner**.
+- Switch channels instantly via `CH-`/`CH+` buttons or Android TV remote `CHANNEL_UP`/`CHANNEL_DOWN` keys.
 
 ---
 
-## 4. Automatic IMDb Metadata Enrichment (`ImdbMetadataClient`)
+## 4. Local Network Streaming (WebDAV & Jellyfin) (`LocalNetworkClient`)
 
-Whenever a JSON playlist item provides an `imdbId` or `imdbUrl` (e.g., `tt1772240` or `https://www.imdb.com/title/tt1772240/`) without an explicit poster URL or rating, `ImdbMetadataClient` fetches poster artwork, rating, and year asynchronously over the shared `OkHttpClient` (with `FastDnsResolver` caching) and hydrates the catalog cards seamlessly.
+- Add home NAS (**WebDAV** via `PROPFIND`) or **Jellyfin** servers from Home → **NAS · Jellyfin** (`LocalNetworkSheet`).
+- Credentials (passwords / Jellyfin API tokens) are encrypted via **Android Keystore AES-256-GCM** (`CredentialVault`) before persistence in Room v3 `network_servers`.
+- Supports directory drill-down, back navigation, and direct playback with inherited Basic Auth / Jellyfin token headers.
+
+---
+
+## 5. Phone-to-TV Web Remote & Local Wi-Fi Sync (`LocalWebRemoteServer` & `DeviceSyncCodec`)
+
+- Open **Web Remote** on your Android TV (or phone) to start the embedded LAN HTTP server displaying a scannable **QR code** (`http://<lan-ip>:<port>`) and a **6-digit session PIN** (validated in constant time).
+- From any phone browser on the same Wi-Fi network, push:
+  - Direct video/stream URLs
+  - JSON catalog or M3U playlist URLs
+  - External subtitle URLs
+  - XMLTV EPG URLs
+  - NordVPN Access Keys
+- **Local Sync (Phone ↔ TV):** Transfer Watchlist, Continue Watching, history, saved playlists, and playback preferences directly over LAN (`/api/sync/export` & `/api/sync/import`) or export/import a `.json` backup via Android's Storage Access Framework (SAF). Sensitive secrets (NordVPN keys, OpenSubtitles passwords, NAS passwords) are **never** included in sync snapshots.
+
+---
+
+## 6. Automatic IMDb Enrichment (`ImdbMetadataClient`)
+
+Any JSON item with an `imdbId` or `imdbUrl` (`tt1772240`) lacking an explicit poster or rating is enriched asynchronously over the shared `OkHttpClient` and displayed with crisp IMDb pills on Home and Catalog cards.

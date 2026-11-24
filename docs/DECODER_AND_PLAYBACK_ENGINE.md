@@ -1,200 +1,111 @@
-# Decoder, Transport & Playback Engine Deep Dive
+# Decoder, Transport, VPN & Playback Engine Deep Dive (v1.25)
 
-CineStream v1.16 pairs an adaptive **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp** network stack with a hybrid **Hardware MediaCodec + Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`)**, and **NextLib (`io.github.anilbeesetti:nextlib-media3ext:1.11.1-0.16.0`)**.
-
-This document explains how network transport, error recovery, video/audio decoders, and surface handoffs work end-to-end across both Android phones and low-RAM Android 9 TVs.
+CineStream v1.25 combines a self-healing **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp + Live-Streaming Parallel Prefetch + Embedded WireGuard NordLynx** networking stack with a hybrid **Hardware MediaCodec + NextLib Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Play Services Cronet (`18.1.1`)**, **NextLib (`1.11.1-0.16.0`)**, and **`com.wireguard.android:tunnel` (`GoBackend`)**.
 
 ---
 
-## 1. Adaptive Network Transport Engine (`StreamingNetworkEngine.kt`)
+## 1. Adaptive Network Transport & Self-Healing QUIC (`StreamingNetworkEngine.kt`)
 
-### A. Asynchronous Google Play Services Cronet (HTTP/3 QUIC + TLS 1.3 + BBR)
-On Android 9 TVs, the platform networking stack only provides **OpenSSL TLS 1.2** (2-RTT handshake) and **TCP CUBIC** (which stalls an entire HTTP/2 connection whenever a single Wi-Fi packet drops — *TCP Head-of-Line blocking*).
+### A. Asynchronous Play Services Cronet (HTTP/3 QUIC + TLS 1.3 + BBR)
+On Android 9 TVs, stock `HttpURLConnection` drops to OpenSSL TLS 1.2 + TCP CUBIC (suffering TCP Head-of-Line stalls over Wi-Fi). `CineStreamApplication.onCreate()` asynchronously initializes Chromium's Cronet engine via Google Play Services (`play-services-cronet:18.1.1`):
+- **Strict `PROVIDER_NAME_FALLBACK` Exclusion:** Explicitly skips Cronet's Java `HttpURLConnection` wrapper so non-GMS devices stay on our faster **HTTP/2 `OkHttpDataSource`**.
+- **Zero-Delay Dynamic Switching (`AdaptiveHttpDataSourceFactory`):** Launches immediately on HTTP/2 OkHttp and seamlessly routes new requests to Cronet HTTP/3 once ready, synchronizing all custom headers (`Referer`, `Authorization`, `Origin`, `User-Agent`) across both factories.
+- **Bounded Resources:** 4-thread daemon pool (`CineStream-Net`) and `HTTP_CACHE_DISABLED` to avoid duplicate RAM/disk caching.
 
-At startup (`CineStreamApplication.onCreate()`), CineStream asynchronously initializes Chromium's **Cronet** engine via Google Play Services (`com.google.android.gms:play-services-cronet:18.1.1`, ~150 KB APK overhead):
+### B. RAM-Hit-Immune `QuicThroughputWatchdog`
+Some ISPs throttle UDP port 443 (QUIC) while leaving TCP 443 (HTTP/2) fast. `QuicThroughputWatchdog`:
+- Monitors pure `BandwidthMeter` socket samples (ignoring `1 ms` RAM prefetch hits) and mid-playback rebuffer stalls.
+- Demotes Cronet HTTP/3 → IPv4-first **HTTP/2 TCP** after 3 slow windows (`< 2.5 Mbps`) or `>= 2` stalls at `< 2.5 Mbps` (or QUIC I/O errors), immediately reconnecting at the exact millisecond.
+- Users can also override transport persistently in **Tracks → Network Transport (`Auto` / `HTTP/2` / `HTTP/3`)**.
 
-```kotlin
-nativeProvider.createBuilder()
-    .setUserAgent(userAgent)
-    .enableHttp2(true)
-    .enableQuic(true)   // HTTP/3 over UDP QUIC + TLS 1.3 + 0-RTT + BBR congestion control
-    .enableBrotli(true)
-    .enableHttpCache(CronetEngine.Builder.HTTP_CACHE_DISABLED, 0L)
-    .build()
-```
+### C. Fast IPv4-First DNS Cache + Encrypted DoH (`FastDnsResolver` + `DohDnsClient`)
+- 5-minute TTL bounded DNS cache (128 hosts, cleared on `onTrimMemory`), sorting `Inet4Address` before `Inet6Address` while preserving IPv6-only networks.
+- 1-tap encrypted DNS-over-HTTPS via direct bootstrap IPs (**Cloudflare `1.1.1.1` / `1.0.0.1`** or **Google `8.8.8.8` / `8.8.4.4`**) to bypass ISP DNS blocking without root.
 
-**Critical Safeguards Built Into `StreamingNetworkEngine`:**
-1. **Strict Exclusion of `PROVIDER_NAME_FALLBACK`:** Cronet's Java fallback wraps `HttpURLConnection` (serial HTTP/1.1). CineStream explicitly filters out `CronetProvider.PROVIDER_NAME_FALLBACK` so non-GMS devices **never** degrade to HTTP/1.1 — they stay on our faster **HTTP/2 `OkHttpDataSource`**.
-2. **Zero-Crash Dynamic Switching (`AdaptiveHttpDataSourceFactory`):** Starts immediately with HTTP/2 OkHttp (0 ms launch delay). The moment Play Services Cronet completes initialization off the main thread, new stream requests automatically route through `CronetDataSource` (with `.setFallbackFactory(okHttpFactory)` as a secondary safety net) while keeping all custom CDN headers (`Referer`, `Authorization`, `Origin`) synchronized across both engines.
-3. **Bounded Threading & Zero Duplicate Caching:** Cronet callbacks run on a bounded 4-thread daemon pool (`CineStream-Net`) and `HTTP_CACHE_DISABLED` ensures Cronet never allocates redundant RAM/disk caches on 1 GB TVs.
+### D. Embedded WireGuard NordLynx (`NordLynxEngine.kt`) & Smart Auto-VPN Failover
+- Exchanges your NordVPN Access Key via `NordVpnApiClient` (`api.nordvpn.com`) for a Curve25519 `nordlynx_private_key`, stored encrypted in **Android Keystore AES-256-GCM** (`CredentialVault`).
+- Syncs **118+ live NordVPN countries & cities**, selects the lowest-load `wireguard_udp` server + public key, and opens a per-app WireGuard tunnel (`GoBackend`, `includeApplication`) with Cloudflare `1.1.1.1` DNS inside CineStream—zero external VPN apps required.
+- **`SmartVpnFailoverCoordinator`:** When enabled, plays over direct ISP first and auto-connects NordLynx only if a stream hits repeated low-bandwidth stalls or fatal network blocks.
 
-### B. 5-Minute IPv4-First In-Memory DNS Cache (`FastDnsResolver`)
-Attached to `CineStreamApplication.sharedOkHttpClient`:
-- Caches DNS resolutions in memory for **5 minutes** (bounded to 128 host entries; flushed on `onTrimMemory`/`onLowMemory`).
-- Sorts resolved `InetAddress` lists with **IPv4 (`Inet4Address`) first, IPv6 (`Inet6Address`) second** — eliminating dual-stack IPv6 route stalls on ISPs like JioFiber while keeping full IPv6 fallback on IPv6-only networks.
-- Never caches empty responses or failed lookups.
-
-### C. Smart Cold-Start Bitrate Estimates & Origin Pre-Warming
-- **Initial Bitrate Estimates (`DefaultBandwidthMeter`):** Instead of ExoPlayer's ~1 Mbps cold-start assumption (which starts HLS frame 1 in blurry 480p), CineStream seeds realistic starting estimates:
-  - **TV / Constrained Wi-Fi:** `6 Mbps` (starts crisp in 720p/1080p immediately)
-  - **Mobile / Tablet Wi-Fi:** `10 Mbps`
-  - **Ethernet / 5G:** `12 Mbps`, **4G:** `5 Mbps`
-- **Debounced Origin Pre-Warming (`StreamingNetworkEngine.prewarmOrigin`):**
-  - Extracts only the safe `scheme://host[:port]/` root (never touches single-use tokenized media URLs or downloads video bytes).
-  - Sends a background `HEAD` (3s timeout, debounced 60s per origin) when a JSON playlist loads, when opening a Series drawer, or ahead of the next episode — shaving 300–500 ms of DNS + TLS/QUIC handshake time before the user hits Play.
-
-### D. Fast Transient Wi-Fi Retry Policy (`FastStreamingLoadErrorHandlingPolicy`)
-Applied to **both** `HlsMediaSource.Factory` and `DefaultMediaSourceFactory` (covering HLS, DASH, MKV, MP4, WebM, and TS):
-- **Transient Network / Timeout / HTTP 5xx / 408 / 429 Errors:** Retries up to 4 times with **`500 ms` → `1200 ms` → `2500 ms` → `4000 ms`** backoff (cutting first-retry wait in half compared to ExoPlayer's `1000 ms` default).
-- **Permanent Client / Parse Errors (HTTP 400–499 except 408/429, `ParserException`, `FileNotFoundException`, `POSITION_OUT_OF_RANGE`):** Returns `C.TIME_UNSET` immediately so **Multi-CDN Mirror Failover** activates without wasting seconds retrying a dead origin.
+### E. Origin Pre-Warming & Fast Transient Recovery
+- **Cold-Start Bitrate Seeding:** `6 Mbps` (TV Wi-Fi), `10 Mbps` (Phone Wi-Fi), `12 Mbps` (Ethernet/5G), `5 Mbps` (4G).
+- **Debounced `HEAD` Preconnects:** Warms `scheme://host[:port]/` (60s cooldown) when loading catalogs, opening Series drawers, or queueing the next episode.
+- **`FastStreamingLoadErrorHandlingPolicy`:** Retries transient Wi-Fi/5xx errors in `500 ms → 1200 ms → 2500 ms → 4000 ms`; fails fast (`C.TIME_UNSET`) on permanent 4xx / parser errors so Multi-CDN mirror failover triggers immediately.
 
 ---
 
-## 2. Renderer Architecture (`NextRenderersFactory`)
+## 2. Live-Streaming Parallel Prefetch Engine (`ParallelPrefetchEngine.kt`)
 
-Inside `CinePlayerManager`, ExoPlayer is built with `NextRenderersFactory` rather than stock `DefaultRenderersFactory`:
+- **HLS Playlist Teeing (`HlsSegmentIndex`):** Intercepts `.m3u8` responses inline with 0 ms delay to map upcoming media segments.
+- **Focused Bounded Concurrency:**
+  - **Android TV:** `2×` parallel lookahead, `<= 14 MB` total RAM cap, `12 MB` single-segment ceiling.
+  - **Mobile / Tablet:** `3×` parallel lookahead, `<= 28 MB` total RAM cap, `16 MB` single-segment ceiling.
+- **Zero-Wait Live Streaming Handoff (`StreamingPrefetchEntry`):** If ExoPlayer requests a segment already mid-download, it attaches immediately and consumes live 32 KB chunks as they stream in—no waiting for download completion and no mid-transfer aborts.
+- **Dedicated Audio Lane & Anti-Starvation:** Demuxed audio segments prefetch on an isolated lane; during seeks or low buffer (`< 8s`) lookahead drops to `1×` foreground-first; during software FFmpeg decoding, prefetch concurrency throttles automatically to preserve CPU headroom.
+- **Progressive Byte-Range Lookahead:** Accelerates direct `.mp4` / `.mkv` / `.webm` streams via `2–3×` parallel `206 Content-Range` slices (1.5–2 MB each) with automatic single-stream fallback for servers without range support.
+
+---
+
+## 3. Hybrid Hardware + Native FFmpeg Decoding (`NextRenderersFactory` & `DecoderEngine.kt`)
 
 ```kotlin
 private val renderersFactory = NextRenderersFactory(context)
     .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
     .setEnableDecoderFallback(true)
-    .forceDisableMediaCodecAsynchronousQueueing()
     .setMediaCodecSelector(smartMediaCodecSelector)
     .setAllowedVideoJoiningTimeMs(5_000L)
 ```
 
-### What This Registers
-With `EXTENSION_RENDERER_MODE_ON`, Media3 registers renderers in priority order:
+### Renderer Chain
+1. **`MediaCodecVideoRenderer` (GPU Hardware):** Primary path for battery-efficient 1080p/4K60 playback.
+2. **`FfmpegVideoRenderer` (NextLib Native FFmpeg):** Native ARM64 / ARMv7a NEON software decoder supporting **10-bit HEVC (`Main 10`, HDR10)**, 8-bit HEVC, H.264, VP8/VP9, and **AV1 (`dav1d`)**.
+3. **`MediaCodecAudioRenderer` + `FfmpegAudioRenderer`:** Decodes platform AAC/Opus/MP3 plus native FFmpeg **DTS (`dca`), AC-3, E-AC-3, TrueHD, FLAC, ALAC, Vorbis, and Opus**—all routed through `DelayAudioProcessor` before output.
 
-1. **Primary Video Renderer:** `MediaCodecVideoRenderer` (using `SmartMediaCodecSelector`)
-   - Handles GPU/DSP hardware decoding (`c2.qti.hevc.decoder`, `c2.mtk.*`, `OMX.*`) for minimum battery, heat, and smooth 4K60 playback.
-2. **Fallback / Software Video Renderer:** **`FfmpegVideoRenderer`** (from NextLib)
-   - Native ARM64 / ARMv7a NEON FFmpeg software decoder supporting **10-bit HEVC (`Main 10`)**, 8-bit HEVC, H.264, VP8, VP9, and **AV1 (`dav1d`)**.
-3. **Primary Audio Renderer:** `MediaCodecAudioRenderer` (hardware/platform Stereo DSP AAC, MP3, Opus, etc.)
-4. **Fallback Audio Renderer:** **`FfmpegAudioRenderer`** (from NextLib)
-   - Automatically decodes **DTS (`dca`), AC-3, E-AC-3, TrueHD, FLAC, ALAC, Vorbis, Opus, and AAC** whenever the Android device lacks a platform decoder (very common on Android TVs and phones playing MKV rips).
-
-### Why `forceDisableMediaCodecAsynchronousQueueing()` Is Mandatory
-On Android 12–15 Qualcomm Snapdragon devices (particularly Xiaomi MIUI / HyperOS), Media3's asynchronous `MediaCodec` input buffer queueing can trigger native Codec 2.0 race conditions inside `c2.qti.hevc.decoder`, causing sudden mid-stream `ERROR_CODE_DECODING_FAILED` crashes on high-bitrate HEVC bitstreams. Forcing synchronous queueing eliminates this class of driver crashes while acting as a safe no-op on Android 9 TVs.
+### Zero-Recreation FFmpeg Handoff (`SmartMediaCodecSelector`)
+- **Explicit Software Mode (`VideoDecoderMode.SOFTWARE`):** Returns an empty platform list when `FfmpegLibrary.isAvailable()` is true so `MediaCodecVideoRenderer` yields directly to `FfmpegVideoRenderer` at the exact timestamp without recreating `ExoPlayer`.
+- **`.low_latency` WebRTC Codec Exclusion:** Strips `c2.qti.hevc.decoder.low_latency` and similar low-latency call codecs that lack B-frame support and crash on VOD HDR10 streams.
+- **Dolby Vision Fallback:** Appends `video/hevc` decoders for `video/dolby-vision` tracks so Profile 7/8 rips play on non-DV displays via their HEVC base layer.
+- **Clean Surface Handoff (`surfaceResetToken`):** Clears the video surface (`player.clearVideoSurface()`), trims allocator, and increments `surfaceResetToken` (`key(surfaceResetToken)` in `PlayerScreen`) whenever switching between `MediaCodec` (`NATIVE_WINDOW_API_MEDIA`) and `FfmpegVideoRenderer` (`NATIVE_WINDOW_API_CPU`), preventing `Surface already connected` driver crashes.
 
 ---
 
-## 3. `SmartMediaCodecSelector` & Zero-Recreation FFmpeg Handoff
+## 4. Frame-Drop Diagnostics & Selective Async Queueing (`FrameDropAnalyzer.kt`)
 
-Standard ExoPlayer creates renderers **once** at `ExoPlayer.Builder.build()`. Recreating `ExoPlayer` every time the user switches between HW and SW would allocate duplicate buffers, risk leaking `MediaCodec` hardware slots, and stall playback.
-
-CineStream avoids recreating `ExoPlayer` by controlling renderer selection dynamically through `SmartMediaCodecSelector`:
-
-### Step-by-Step Decision Flow for Video MIME Types (`video/*`)
-
-1. **Explicit Software / FFmpeg Mode (`effectiveDecoderMode == VideoDecoderMode.SOFTWARE`):**
-   - If native FFmpeg is loaded (`FfmpegLibrary.isAvailable() == true`) and secure DRM isn't required:
-   - `SmartMediaCodecSelector.getDecoderInfos()` returns an **empty list (`mutableListOf()`)**.
-   - Media3's `MediaCodecVideoRenderer` sees 0 matching platform codecs → immediately yields the track to the next video renderer in the chain: **`FfmpegVideoRenderer`**!
-   - Result: Instant handoff to native **10-bit FFmpeg** at the exact playback millisecond with **zero** `ExoPlayer` recreation.
-   - If FFmpeg is unavailable (e.g., JVM unit tests), `SmartMediaCodecSelector` falls back to ordering Android's built-in software codecs (`c2.android.*`, `OMX.google.*`) first.
-
-2. **Hardware / Auto Mode (`AUTO` or `HARDWARE`):**
-   - Queries `MediaCodecSelector.DEFAULT.getDecoderInfos(...)`.
-   - **Dolby Vision Compatibility:** If `mimeType == "video/dolby-vision"` and non-DRM, appends `video/hevc` decoders so Dolby Vision Profile 7/8 MKV/MP4 rips play cleanly on non-DV screens via their base HEVC layer.
-   - **`.low_latency` WebRTC Codec Exclusion:** Strips any codec matching `.low_latency`, `_low_latency`, or `.lowlatency` (such as **`c2.qti.hevc.decoder.low_latency`**).
-     - *Why this matters:* On Snapdragon phones, when `c2.qti.hevc.decoder` fails on a 4K 10-bit HDR10 (`hvc1.2.4.H150.B0`) movie, Android's built-in `c2.android.hevc.decoder` rejects 10-bit (8-bit only), causing stock Media3 to fall into `c2.qti.hevc.decoder.low_latency` — a WebRTC video-call codec with no B-frame support that immediately throws `Decoder init failed`. Filtering `.low_latency` ensures Media3 skips straight to `FfmpegVideoRenderer`!
-   - **Session Failed-Codec Blocklist:** Strips any codec that previously threw a decode error in this session (`sessionBlockedCodecs`). When all platform codecs are filtered out and FFmpeg is available (`allowEmptyAfterFiltering = true`), returns empty list so `FfmpegVideoRenderer` takes over automatically.
-
----
-
-## 4. Clean HW ↔ FFmpeg Surface Handoff (`surfaceResetToken`)
-
-Native `FfmpegVideoRenderer` renders decoded frames to the Android `Surface` using `ANativeWindow_lock` (`NATIVE_WINDOW_API_CPU`), whereas `MediaCodecVideoRenderer` attaches the hardware BufferQueue producer (`NATIVE_WINDOW_API_MEDIA`). On many Android drivers, handing the exact same `Surface` back and forth between CPU lock and `MediaCodec.configure()` can fail with `Surface already connected`.
-
-CineStream prevents this deterministically:
-1. Before reloading with a new decoder (`forceResetRenderer = true`), `CinePlayerManager` calls:
-   ```kotlin
-   player.clearVideoSurface()
-   player.stop()
-   player.clearMediaItems()
-   allocator.trim()
-   ```
-2. It increments `PlayerPlaybackState.surfaceResetToken`.
-3. `PlayerScreen` wraps `AndroidView(PlayerView)` inside `key(playbackState.surfaceResetToken)`.
-4. Compose releases the old `PlayerView` (`playerView.player = null`) and mounts a fresh `PlayerView` with a brand-new untouched `SurfaceView`.
+- **Root-Cause Classification (`FrameDropAnalyzer`):** Tracks rolling 3-second `drops/sec` alongside seek/start grace windows and active decoder type:
+  - **`HEALTHY`:** Steady playback with zero or negligible drops.
+  - **`SEEK_BURST`:** Harmless burst during initial stream join or seeks.
+  - **`STREAM_PTS_OR_RESYNC`:** Drops under hardware decoding indicating malformed origin timestamps (PTS gaps), VFR jitter, or segment discontinuities on the URL/origin side.
+  - **`SW_CPU_LOAD`:** Sustained drops under software FFmpeg decoding indicating CPU saturation (resolved by switching to HW or a lower resolution/H.264 track).
+- **Selective MediaCodec Queueing (`MediaCodecQueueingPolicy`):** Keeps synchronous queueing on Qualcomm Snapdragon Codec 2.0 devices prone to async race crashes, while allowing Android 12+ asynchronous queueing where safe (`Async`/`Sync` shown in Stats for Nerds).
+- **Display Refresh-Rate Matching:** Uses `C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS` to reduce 24fps→60Hz pulldown judder without black-screen HDMI mode switches.
 
 ---
 
 ## 5. Multi-Tier Automatic Decoder Recovery Chain
 
-When `onPlayerError(error: PlaybackException)` detects a decoder error (`ERROR_CODE_DECODER_INIT_FAILED`, `ERROR_CODE_DECODING_FAILED`, `ERROR_CODE_DECODING_FORMAT_UNSUPPORTED`, `MediaCodecDecoderException`, `FfmpegDecoderException`, etc.), CineStream executes this ordered recovery chain:
-
-```text
-Decoder Error Caught (e.g., c2.qti.hevc.decoder failed at 14:22)
-   │
-   ├──► Step 0 (Always):
-   │      • bypassEdgeCacheForSession = true (stop reading potentially corrupt disk cache)
-   │      • Add failed codec name to sessionBlockedCodecs
-   │
-   ├──► Tier 1A (HW failed in AUTO mode):
-   │      • Switch effectiveDecoderMode = VideoDecoderMode.SOFTWARE
-   │      • Reset surface (surfaceResetToken++), trim allocator
-   │      • Resume at exact timestamp (14:22) using native FFmpeg 10-bit SW
-   │      • Show toast: "Decoder failed (c2.qti.hevc.decoder) -> Switched to Software (SW)"
-   │
-   ├──► Tier 1B (Android SW failed first in AUTO mode):
-   │      • Switch effectiveDecoderMode = VideoDecoderMode.HARDWARE
-   │      • Resume at exact timestamp with sync queueing + cache bypassed
-   │
-   ├──► Tier 2 (Both HW & SW failed on current adaptive track):
-   │      • DecoderFallbackHelper.pickCompatibleFallbackTrack():
-   │          1. Prefer untried H.264 (video/avc) or non-HEVC track (highest res first)
-   │          2. Otherwise pick next lower-resolution track below failing height
-   │      • Apply TrackSelectionOverride, clear codec blocklist, resume at exact timestamp
-   │
-   └──► Tier 3 (Unrecoverable single-track error -> PlayerErrorCard):
-          • Displays readable diagnostic hint + active codec name
-          • Offers 1-tap actions:
-              [Try Software / Hardware Decoder]
-              [Skip Bad Segment (+5s)]   (jumps past corrupt GOP/segment with cache bypassed)
-              [Retry]  [Back]  [Try as HLS / M3U8 Stream]
-```
+1. **Step 0:** Set `bypassEdgeCacheForSession = true` and add the failed codec name to `sessionBlockedCodecs`.
+2. **Tier 1A (HW failed in `AUTO`):** Switch to `VideoDecoderMode.SOFTWARE` (native FFmpeg 10-bit), reset `surfaceResetToken`, and resume at the exact millisecond.
+3. **Tier 1B (SW failed first in `AUTO`):** Switch to `VideoDecoderMode.HARDWARE` with cache bypassed.
+4. **Tier 2 (Both HW & SW failed on current adaptive track):** `DecoderFallbackHelper.pickCompatibleFallbackTrack()` prefers an untried H.264 (`video/avc`) track or the next lower resolution below the failing height.
+5. **Tier 3 (`PlayerErrorCard`):** Displays the exact failing codec and offers 1-tap **Switch to Software/Hardware**, **Skip Segment (+5s)**, **Retry**, **Try as HLS**, and **Back**.
 
 ---
 
-## 6. Tolerant HLS HEVC Extraction
+## 6. Audio DSP, Lip-Sync Delay, Subtitles & Playback Comfort
 
-Many self-hosted or FFmpeg-transcoded HLS HEVC streams begin `.ts` segments with **CRA / BLA** non-IDR random-access pictures rather than strict IDR frames. Stock Media3 TS extractors drop or mis-frame these access units, crashing both HW and SW decoders.
+### A. Volume Boost (`0%–200%`) & Night Mode (`AudioVolumeBooster.kt`)
+- **0%–100%:** Native `player.volume` scaling (`0.0f..1.0f`).
+- **101%–200%:** `LoudnessEnhancer` (`+0` to `+2000 mB` / `+20 dB`) paired with an API 28+ `DynamicsProcessing` soft-limiter (`-1.0 dB` ceiling, `6:1` ratio) to prevent clipping.
+- **Night Mode (Dialogue Boost):** API 28+ 4-band `DynamicsProcessing` Pre-EQ + multi-band compressor lifting `1–4 kHz` speech frequencies while compressing loud bass/explosions.
 
-CineStream configures both `DefaultExtractorsFactory` and an explicit `HlsMediaSource.Factory` with:
-```kotlin
-private val tolerantTsFlags: Int =
-    DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
-        DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
+### B. Real-Time PCM Audio Delay (`DelayAudioProcessor.kt`)
+- Circular PCM ring buffer inserted directly into `NextRenderersFactory.buildAudioSink()` for instant zero-reload Bluetooth/soundbar lip-sync (`-500 ms` to `+500 ms` in `±25 ms` / `±50 ms` steps), persisted per video in Room.
 
-private val hlsMediaSourceFactory = HlsMediaSource.Factory(smartEdgeDataSourceFactory)
-    .setExtractorFactory(DefaultHlsExtractorFactory(tolerantTsFlags, true))
-    .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
-    .setAllowChunklessPreparation(true)
+### C. OpenSubtitles REST API v1 & Dual Subtitles (`OpenSubtitlesClient.kt`, `SecondarySubtitleEngine.kt`)
+- **Search (`GET /api/v1/subtitles`):** Uses `BuildConfig.OPENSUBTITLES_API_KEY` (injected via AI Studio Secrets) with sorted lowercase query parameters and exact JSON headers.
+- **Authenticated Downloads (`POST /api/v1/login` → `POST /api/v1/download`):** Optional OpenSubtitles account sign-in caches the session JWT (`Authorization: Bearer <token>`), routes to the returned VIP/standard `base_url`, unlocks full daily download quotas (**20/day free**, **1,000/day VIP**), tracks remaining downloads live, and persists credentials encrypted via `CredentialVault`.
+- **Dual Subtitles:** `SecondarySubtitleEngine` parses `.srt`/`.vtt` files into binary-searchable cue windows and renders a secondary caption line at the top of the screen while Media3 renders primary captions at the bottom.
 
-private val mediaSourceFactory = DefaultMediaSourceFactory(smartEdgeDataSourceFactory, extractorsFactory)
-    .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
-```
-When external subtitles are attached to an HLS stream, they are cleanly merged via `MergingMediaSource(hlsSource, SingleSampleMediaSource...)` using the direct (uncached) data source so subtitle tracks stay in sync without polluting the video edge cache.
-
----
-
-## 7. 0%–200% Audio Volume Boost Engine (`AudioVolumeBooster.kt`)
-
-| Volume Slider | ExoPlayer `player.volume` | `LoudnessEnhancer` Gain | `DynamicsProcessing` Soft Limiter (API 28+) |
-| :--- | :--- | :--- | :--- |
-| `0%` | `0.0f` (Muted) | Disabled (`0 mB`) | Disabled |
-| `1%–100%` | `0.01f–1.0f` | Disabled (`0 mB`) | Disabled |
-| `150%` | `1.0f` | `+1000 mB` (`+10.0 dB`) | Enabled (`-1.0 dB` ceiling, `6:1` ratio) |
-| `200%` | `1.0f` | `+2000 mB` (`+20.0 dB`) | Enabled (`-1.0 dB` ceiling, `6:1` ratio) |
-
-- Attaches directly to ExoPlayer's active `audioSessionId` (works across phone speakers, Bluetooth headphones, and Android TV HDMI/optical output with **zero extra permissions**).
-- Effects are lazily instantiated only when volume exceeds `100%` and deterministically released on `stopAndTrimBuffers()` and `release()`.
-
----
-
-## 8. Precision Scrubbing (`SeekBarScrubEngine` & `CLOSEST_SYNC`)
-
-- `player.setSeekParameters(SeekParameters.CLOSEST_SYNC)` snaps seeks to the nearest sync keyframe for instant multi-minute scrubbing on remote MKV/MP4/HLS streams without decoding hundreds of intermediate frames.
-- `SeekBarScrubEngine` calculates smooth touch drag deltas and progressive D-pad hold acceleration for Android TV remotes.
+### D. Playback Comfort & Background Audio
+- **PiP & Background Audio (`MediaPlaybackService.kt`):** Android 8+ PiP with custom `-10s` / `Play-Pause` / `+10s` remote actions + opt-in mobile `mediaPlayback` foreground service with lock-screen controls (automatically hidden on Android TV).
+- **Sleep Timer, A-B Loop & Chapters:** `15m`/`30m`/`45m`/`60m`/`End of Episode` timer with 5-second gradual audio fade-out; visual chapter ticks and cyan A-B loop range directly on `CinemaSeekBar`.

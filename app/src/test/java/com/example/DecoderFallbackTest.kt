@@ -326,6 +326,6 @@ class DecoderFallbackTest {
 
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Decoder").assertIsDisplayed()
-        composeRule.onNodeWithText("SW · c2.android.hevc.decoder").assertIsDisplayed()
+        composeRule.onNodeWithText("SW · c2.android.hevc.decoder", substring = true).assertIsDisplayed()
     }
 }

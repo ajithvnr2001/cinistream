@@ -57,6 +57,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -95,7 +96,9 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
+import com.example.data.FavoriteItemEntity
 import com.example.data.MediaHistoryEntity
+import com.example.model.GlobalSearchResult
 import com.example.model.JsonPlaylistItem
 import com.example.model.SampleStream
 import com.example.model.StreamFormat
@@ -111,6 +114,7 @@ import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.ObsidianCanvas
 import com.example.ui.theme.ObsidianOutline
+import com.example.ui.theme.ObsidianOutlineSubtle
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.SubtitleEmerald
@@ -150,7 +154,21 @@ fun HomeScreen(
     onResumeActiveSession: () -> Unit,
     onToastShown: () -> Unit,
     networkPrivacyState: NetworkPrivacyUiState = NetworkPrivacyUiState(),
-    onOpenNetworkPrivacy: () -> Unit = {}
+    onOpenNetworkPrivacy: () -> Unit = {},
+    continueWatching: List<MediaHistoryEntity> = emptyList(),
+    onDismissContinueWatching: (MediaHistoryEntity) -> Unit = {},
+    favorites: List<FavoriteItemEntity> = emptyList(),
+    onPlayFavorite: (FavoriteItemEntity) -> Unit = {},
+    onRemoveFavorite: (FavoriteItemEntity) -> Unit = {},
+    globalSearchQuery: String = "",
+    globalSearchResults: List<GlobalSearchResult> = emptyList(),
+    onGlobalSearchQueryChange: (String) -> Unit = {},
+    onGlobalSearchResultClick: (GlobalSearchResult) -> Unit = {},
+    downloadsCount: Int = 0,
+    networkServersCount: Int = 0,
+    onOpenWebRemote: () -> Unit = {},
+    onOpenLocalNetwork: () -> Unit = {},
+    onOpenDownloads: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -299,6 +317,45 @@ fun HomeScreen(
                         contentPadding = PaddingValues(bottom = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        item(key = "tv_quick_tools") {
+                            HomeQuickToolsBar(
+                                isTvDevice = isTv,
+                                downloadsCount = downloadsCount,
+                                serversCount = networkServersCount,
+                                onOpenWebRemote = onOpenWebRemote,
+                                onOpenLocalNetwork = onOpenLocalNetwork,
+                                onOpenDownloads = onOpenDownloads
+                            )
+                        }
+                        item(key = "tv_global_search") {
+                            GlobalSearchBarAndResults(
+                                query = globalSearchQuery,
+                                results = globalSearchResults,
+                                onQueryChange = onGlobalSearchQueryChange,
+                                onResultClick = onGlobalSearchResultClick
+                            )
+                        }
+                        if (favorites.isNotEmpty()) {
+                            item(key = "tv_watchlist") {
+                                MyWatchlistSection(
+                                    favorites = favorites,
+                                    onPlayFavorite = onPlayFavorite,
+                                    onRemoveFavorite = onRemoveFavorite,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
+                        }
+                        if (continueWatching.isNotEmpty()) {
+                            item(key = "tv_continue_watching") {
+                                ContinueWatchingSection(
+                                    items = continueWatching,
+                                    onResumeItem = onPlayHistoryItem,
+                                    onDismissItem = onDismissContinueWatching,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
+                        }
+
                         if (jsonPlaylistState.allItems.isNotEmpty()) {
                             item(key = "tv_json_header") {
                                 JsonCatalogSectionHeader(
@@ -438,12 +495,56 @@ fun HomeScreen(
                             )
                         }
 
+                        item(key = "mobile_quick_tools") {
+                            HomeQuickToolsBar(
+                                isTvDevice = isTv,
+                                downloadsCount = downloadsCount,
+                                serversCount = networkServersCount,
+                                onOpenWebRemote = onOpenWebRemote,
+                                onOpenLocalNetwork = onOpenLocalNetwork,
+                                onOpenDownloads = onOpenDownloads,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                            )
+                        }
+
+                        item(key = "mobile_global_search") {
+                            GlobalSearchBarAndResults(
+                                query = globalSearchQuery,
+                                results = globalSearchResults,
+                                onQueryChange = onGlobalSearchQueryChange,
+                                onResultClick = onGlobalSearchResultClick,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        if (favorites.isNotEmpty()) {
+                            item(key = "mobile_watchlist") {
+                                MyWatchlistSection(
+                                    favorites = favorites,
+                                    onPlayFavorite = onPlayFavorite,
+                                    onRemoveFavorite = onRemoveFavorite,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                                )
+                            }
+                        }
+
                         if (uiState.m3uEntries.isNotEmpty()) {
                             item(key = "m3u_banner") {
                                 M3uLoadedBanner(
                                     entryCount = uiState.m3uEntries.size,
                                     onClick = onOpenM3uSheet,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                            }
+                        }
+
+                        if (continueWatching.isNotEmpty()) {
+                            item(key = "continue_watching") {
+                                ContinueWatchingSection(
+                                    items = continueWatching,
+                                    onResumeItem = onPlayHistoryItem,
+                                    onDismissItem = onDismissContinueWatching,
+                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp)
                                 )
                             }
                         }
@@ -590,14 +691,14 @@ private fun TvCompactHeroHeader(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
+        shape = RoundedCornerShape(14.dp),
         color = ObsidianSurface,
-        border = BorderStroke(1.dp, ObsidianOutline)
+        border = BorderStroke(0.75.dp, ObsidianOutline.copy(alpha = 0.85f))
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 152.dp)
+                .heightIn(min = 128.dp)
         ) {
             val heroContext = LocalContext.current
             AsyncImage(
@@ -617,9 +718,9 @@ private fun TvCompactHeroHeader(
                     .background(
                         Brush.horizontalGradient(
                             colors = listOf(
-                                ObsidianCanvas.copy(alpha = 0.92f),
-                                ObsidianCanvas.copy(alpha = 0.65f),
-                                ObsidianCanvas.copy(alpha = 0.35f)
+                                ObsidianCanvas.copy(alpha = 0.94f),
+                                ObsidianCanvas.copy(alpha = 0.72f),
+                                ObsidianCanvas.copy(alpha = 0.40f)
                             )
                         )
                     )
@@ -628,7 +729,7 @@ private fun TvCompactHeroHeader(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -637,27 +738,21 @@ private fun TvCompactHeroHeader(
                 ) {
                     Row(
                         modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = CinemaAmber.copy(alpha = 0.16f),
-                            border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.45f))
-                        ) {
-                            Icon(
-                                imageVector = if (isTv) Icons.Rounded.Tv else Icons.Rounded.Movie,
-                                contentDescription = null,
-                                tint = CinemaAmber,
-                                modifier = Modifier.padding(7.dp).size(20.dp)
-                            )
-                        }
                         Text(
                             text = stringResource(R.string.app_name),
                             style = MaterialTheme.typography.headlineMedium,
                             color = MaterialTheme.colorScheme.onBackground,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (isTv) "TV · v1.25" else "v1.25",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CinemaAmber,
+                            modifier = Modifier.padding(bottom = 4.dp)
                         )
                     }
 
@@ -674,17 +769,26 @@ private fun TvCompactHeroHeader(
                     )
                 }
 
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
                         text = stringResource(R.string.app_tagline),
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelSmall,
                         color = CinemaAmber
+                    )
+                    Text(
+                        text = "·",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
                         text = stringResource(R.string.hero_subtitle),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -703,7 +807,7 @@ private fun CinemaHeroHeader(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 216.dp)
+            .heightIn(min = 148.dp)
     ) {
         val heroContext = LocalContext.current
         AsyncImage(
@@ -722,11 +826,9 @@ private fun CinemaHeroHeader(
                 .matchParentSize()
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(
-                            ObsidianCanvas.copy(alpha = 0.45f),
-                            ObsidianCanvas.copy(alpha = 0.72f),
-                            ObsidianCanvas
-                        )
+                        0.0f to ObsidianCanvas.copy(alpha = 0.56f),
+                        0.60f to ObsidianCanvas.copy(alpha = 0.84f),
+                        1.0f to ObsidianCanvas
                     )
                 )
         )
@@ -734,8 +836,8 @@ private fun CinemaHeroHeader(
             modifier = Modifier
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -744,27 +846,21 @@ private fun CinemaHeroHeader(
             ) {
                 Row(
                     modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = CinemaAmber.copy(alpha = 0.16f),
-                        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.45f))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Movie,
-                            contentDescription = null,
-                            tint = CinemaAmber,
-                            modifier = Modifier.padding(7.dp).size(20.dp)
-                        )
-                    }
                     Text(
                         text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onBackground,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "v1.25",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CinemaAmber,
+                        modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
 
@@ -779,21 +875,28 @@ private fun CinemaHeroHeader(
                     activeTitle = activeTitle,
                     onClick = onResumeActiveSession
                 )
-            } else {
-                Spacer(modifier = Modifier.height(16.dp))
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text(
                     text = stringResource(R.string.app_tagline),
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = CinemaAmber
                 )
                 Text(
+                    text = "·",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
                     text = stringResource(R.string.hero_subtitle),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -807,13 +910,13 @@ private fun NowPlayingBannerPill(
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = CinemaAmber.copy(alpha = 0.18f),
-        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.55f)),
+        shape = RoundedCornerShape(10.dp),
+        color = CinemaAmber.copy(alpha = 0.14f),
+        border = BorderStroke(0.75.dp, CinemaAmber.copy(alpha = 0.50f)),
         modifier = Modifier
             .fillMaxWidth()
             .minimumInteractiveComponentSize()
-            .tvFocusHighlight(shape = RoundedCornerShape(14.dp), focusedScale = 1.02f)
+            .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
             .testTag("resume_active_player_button")
     ) {
         Row(
@@ -827,10 +930,10 @@ private fun NowPlayingBannerPill(
                 imageVector = Icons.Rounded.PlayArrow,
                 contentDescription = null,
                 tint = CinemaAmber,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(17.dp)
             )
             Text(
-                text = "Now Playing",
+                text = "Resume",
                 style = MaterialTheme.typography.labelMedium,
                 color = CinemaAmber,
                 maxLines = 1
@@ -856,19 +959,19 @@ private fun HomePrivacyPillButton(
     val accent = if (active) SubtitleEmerald else MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
-        color = if (active) SubtitleEmerald.copy(alpha = 0.18f) else ObsidianSurfaceHigh.copy(alpha = 0.86f),
+        shape = RoundedCornerShape(10.dp),
+        color = if (active) SubtitleEmerald.copy(alpha = 0.14f) else ObsidianSurface.copy(alpha = 0.88f),
         border = BorderStroke(
-            width = 1.dp,
-            color = if (active) SubtitleEmerald.copy(alpha = 0.6f) else ObsidianOutline.copy(alpha = 0.8f)
+            width = 0.75.dp,
+            color = if (active) SubtitleEmerald.copy(alpha = 0.55f) else ObsidianOutline.copy(alpha = 0.85f)
         ),
         modifier = Modifier
             .minimumInteractiveComponentSize()
-            .tvFocusHighlight(shape = RoundedCornerShape(20.dp))
+            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
             .testTag("home_privacy_vpn_button")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
@@ -876,11 +979,11 @@ private fun HomePrivacyPillButton(
                 imageVector = Icons.Rounded.Shield,
                 contentDescription = stringResource(R.string.cd_open_privacy_vpn),
                 tint = accent,
-                modifier = Modifier.size(15.dp)
+                modifier = Modifier.size(14.dp)
             )
             Text(
                 text = state.compactStatusBadge,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 color = if (active) SubtitleEmerald else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -912,14 +1015,13 @@ private fun StreamLauncherCard(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
+        shape = RoundedCornerShape(14.dp),
         color = ObsidianSurface,
-        border = BorderStroke(1.dp, ObsidianOutline),
-        tonalElevation = 2.dp
+        border = BorderStroke(0.75.dp, ObsidianOutline.copy(alpha = 0.85f))
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             OutlinedTextField(
                 value = uiState.urlInput,
@@ -927,7 +1029,7 @@ private fun StreamLauncherCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .tvFocusHighlight(
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(10.dp),
                         focusedScale = 1.01f,
                         glowAlpha = 0.08f,
                         includeChildFocus = true
@@ -945,7 +1047,8 @@ private fun StreamLauncherCard(
                     Icon(
                         imageVector = Icons.Rounded.Link,
                         contentDescription = null,
-                        tint = CinemaAmber
+                        tint = CinemaAmber,
+                        modifier = Modifier.size(19.dp)
                     )
                 },
                 trailingIcon = {
@@ -959,7 +1062,8 @@ private fun StreamLauncherCard(
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Close,
-                                    contentDescription = stringResource(R.string.action_clear)
+                                    contentDescription = stringResource(R.string.action_clear),
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         } else {
@@ -971,7 +1075,8 @@ private fun StreamLauncherCard(
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.ContentPaste,
-                                    contentDescription = stringResource(R.string.action_paste)
+                                    contentDescription = stringResource(R.string.action_paste),
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
@@ -983,7 +1088,7 @@ private fun StreamLauncherCard(
                 } ?: if (uiState.urlInput.isNotBlank() && uiState.selectedFormat == StreamFormat.AUTO && uiState.detectedFormat != StreamFormat.AUTO) {
                     {
                         Text(
-                            text = "Detected: ${uiState.detectedFormat.label}",
+                            text = "Detected ${uiState.detectedFormat.label}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.secondary
                         )
@@ -995,16 +1100,16 @@ private fun StreamLauncherCard(
                     imeAction = ImeAction.Go
                 ),
                 keyboardActions = KeyboardActions(onGo = { onPlayUrl() }),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(10.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = CinemaAmber,
-                    unfocusedBorderColor = ObsidianOutline,
-                    focusedContainerColor = ObsidianCanvas.copy(alpha = 0.7f),
-                    unfocusedContainerColor = ObsidianCanvas.copy(alpha = 0.5f)
+                    unfocusedBorderColor = ObsidianOutline.copy(alpha = 0.75f),
+                    focusedContainerColor = ObsidianCanvas,
+                    unfocusedContainerColor = ObsidianCanvas.copy(alpha = 0.75f)
                 )
             )
 
-            // Format Selector Strip
+            // Format Selector Strip — crisp mono tabs
             val formatChoices = listOf(
                 StreamFormat.AUTO,
                 StreamFormat.HLS,
@@ -1016,7 +1121,7 @@ private fun StreamLauncherCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 formatChoices.forEach { format ->
                     val selected = uiState.selectedFormat == format
@@ -1036,130 +1141,125 @@ private fun StreamLauncherCard(
                                 style = MaterialTheme.typography.labelMedium
                             )
                         },
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .tvFocusHighlight(shape = RoundedCornerShape(8.dp), focusedScale = 1.04f)
                             .testTag("format_chip_${format.name.lowercase()}"),
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = CinemaAmber.copy(alpha = 0.18f),
-                            selectedLabelColor = CinemaAmber
+                            selectedContainerColor = CinemaAmber.copy(alpha = 0.16f),
+                            selectedLabelColor = CinemaAmber,
+                            containerColor = ObsidianCanvas.copy(alpha = 0.5f)
                         ),
                         border = FilterChipDefaults.filterChipBorder(
                             enabled = true,
                             selected = selected,
-                            borderColor = ObsidianOutline,
-                            selectedBorderColor = CinemaAmber.copy(alpha = 0.65f)
+                            borderColor = ObsidianOutlineSubtle,
+                            selectedBorderColor = CinemaAmber.copy(alpha = 0.6f)
                         )
                     )
                 }
             }
 
-            // Subtitle Pre-Load Attachment Row
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = ObsidianSurfaceHigh,
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (uiState.stagedSubtitle != null) {
-                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.55f)
-                    } else {
-                        ObsidianOutline.copy(alpha = 0.65f)
+            HorizontalDivider(color = ObsidianOutlineSubtle, thickness = 0.75.dp)
+
+            // Unboxed Subtitle Row
+            val staged = uiState.stagedSubtitle
+            if (staged != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Subtitles,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = staged.label,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${staged.formatBadge} subtitle attached",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
                     }
-                )
-            ) {
-                val staged = uiState.stagedSubtitle
-                if (staged != null) {
-                    Row(
+                    IconButton(
+                        onClick = onClearStagedSubtitle,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            .size(34.dp)
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("remove_staged_subtitle_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Subtitles,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(20.dp)
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = stringResource(R.string.action_clear),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(17.dp)
                         )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = staged.label,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "External ${staged.formatBadge} · Will load on any video format",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                        IconButton(
-                            onClick = onClearStagedSubtitle,
-                            modifier = Modifier
-                                .tvFocusHighlight(shape = CircleShape)
-                                .testTag("remove_staged_subtitle_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = stringResource(R.string.action_clear),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
-                } else {
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
+                        Icon(
+                            imageVector = Icons.Outlined.Subtitles,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Text(
+                            text = "Subtitle",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = onPickLocalSubtitle,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
+                                .testTag("attach_local_subtitle_button")
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Subtitles,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = "Optional Subtitle",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Text("File", color = MaterialTheme.colorScheme.tertiary)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            TextButton(
-                                onClick = onPickLocalSubtitle,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier
-                                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                                    .testTag("attach_local_subtitle_button")
-                            ) {
-                                Text("File", color = MaterialTheme.colorScheme.tertiary)
-                            }
-                            TextButton(
-                                onClick = onOpenSubtitleUrlDialog,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier
-                                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
-                                    .testTag("attach_url_subtitle_button")
-                            ) {
-                                Text("URL", color = MaterialTheme.colorScheme.secondary)
-                            }
+                        TextButton(
+                            onClick = onOpenSubtitleUrlDialog,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
+                                .testTag("attach_url_subtitle_button")
+                        ) {
+                            Text("URL", color = MaterialTheme.colorScheme.secondary)
                         }
                     }
                 }
             }
 
-            // JSON Playlist (IMDb Poster Catalog) URL / File Row
+            HorizontalDivider(color = ObsidianOutlineSubtle, thickness = 0.75.dp)
+
+            // Unboxed JSON Catalog Row
             JsonPlaylistLauncherRow(
                 state = jsonPlaylistState,
                 onPickJsonFile = onPickLocalJson,
@@ -1169,20 +1269,20 @@ private fun StreamLauncherCard(
                 onClearJsonPlaylist = onClearJsonPlaylist
             )
 
-            // Primary Play Stream Button
+            // Primary Tungsten Gold Play CTA
             Button(
                 onClick = onPlayUrl,
                 enabled = !uiState.isParsingPlaylist,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
+                    .height(48.dp)
                     .tvFocusHighlight(
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(10.dp),
                         borderColor = MaterialTheme.colorScheme.onBackground,
                         focusedScale = 1.02f
                     )
                     .testTag("play_stream_button"),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = CinemaAmber,
                     contentColor = MaterialTheme.colorScheme.onPrimary
@@ -1190,19 +1290,19 @@ private fun StreamLauncherCard(
             ) {
                 if (uiState.isParsingPlaylist) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
                         color = MaterialTheme.colorScheme.onPrimary
                     )
                     Spacer(Modifier.width(10.dp))
-                    Text("Inspecting Playlist…", style = MaterialTheme.typography.labelLarge)
+                    Text("Loading playlist…", style = MaterialTheme.typography.labelLarge)
                 } else {
                     Icon(
                         imageVector = Icons.Rounded.PlayArrow,
                         contentDescription = null,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(20.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = stringResource(R.string.action_play_stream),
                         style = MaterialTheme.typography.labelLarge
@@ -1213,27 +1313,29 @@ private fun StreamLauncherCard(
             // Secondary Local Video & M3U File Pickers
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
                     onClick = onPickLocalVideo,
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
-                        .tvFocusHighlight(shape = RoundedCornerShape(14.dp))
+                        .height(44.dp)
+                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
                         .testTag("open_local_video_button"),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, ObsidianOutline)
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(0.75.dp, ObsidianOutline)
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.VideoFile,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(17.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = stringResource(R.string.action_open_local_video),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1243,21 +1345,23 @@ private fun StreamLauncherCard(
                     onClick = onPickLocalM3u,
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
-                        .tvFocusHighlight(shape = RoundedCornerShape(14.dp))
+                        .height(44.dp)
+                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
                         .testTag("open_local_m3u_button"),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, ObsidianOutline)
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(0.75.dp, ObsidianOutline)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.FolderOpen,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(17.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = stringResource(R.string.action_open_m3u_file),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1277,32 +1381,32 @@ private fun M3uLoadedBanner(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .tvFocusHighlight(shape = RoundedCornerShape(14.dp))
+            .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
             .testTag("open_loaded_m3u_banner"),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.tertiaryContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f))
+        border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Icon(
                 imageVector = Icons.Rounded.PlaylistPlay,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.tertiary,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(20.dp)
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "M3U Playlist Loaded",
+                    text = "M3U Playlist",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer
                 )
                 Text(
-                    text = "$entryCount playable channels · Select to browse & switch",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "$entryCount channels",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.tertiary
                 )
             }
@@ -1330,7 +1434,7 @@ private fun SectionHeader(
         if (!badge.isNullOrBlank()) {
             Text(
                 text = badge,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -1366,7 +1470,7 @@ private fun JsonCatalogSectionHeader(
             ImdbBadgePill(rating = null, imdbId = "tt0000001")
             if (isEnrichingImdb) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
+                    modifier = Modifier.size(13.dp),
                     strokeWidth = 2.dp,
                     color = CinemaAmber
                 )
@@ -1376,7 +1480,7 @@ private fun JsonCatalogSectionHeader(
             onClick = onBrowseAll,
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             modifier = Modifier
-                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
                 .testTag("browse_json_catalog_button")
         ) {
             Text(
@@ -1423,101 +1527,105 @@ private fun HistoryStreamCard(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .tvFocusHighlight(shape = RoundedCornerShape(16.dp), focusedScale = 1.02f)
+            .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.02f)
             .testTag("history_item_${item.id}"),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(10.dp),
         color = ObsidianSurface,
         border = BorderStroke(
-            width = 1.dp,
-            color = if (item.isPinned) CinemaAmber.copy(alpha = 0.4f) else ObsidianOutline
+            width = 0.75.dp,
+            color = if (item.isPinned) CinemaAmber.copy(alpha = 0.45f) else ObsidianOutline.copy(alpha = 0.75f)
         )
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = ObsidianSurfaceHigh,
-                    modifier = Modifier.size(44.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = ObsidianSurfaceHigh,
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayArrow,
+                                contentDescription = null,
+                                tint = CinemaAmber,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = item.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (item.isLocalFile) "Local file" else item.sourceUri,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onTogglePin,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("pin_history_${item.id}")
+                    ) {
                         Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = null,
-                            tint = CinemaAmber,
-                            modifier = Modifier.size(24.dp)
+                            imageVector = if (item.isPinned) Icons.Rounded.PushPin else Icons.Outlined.PushPin,
+                            contentDescription = stringResource(R.string.cd_pin_item),
+                            tint = if (item.isPinned) CinemaAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("delete_history_${item.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.DeleteOutline,
+                            contentDescription = stringResource(R.string.cd_delete_item),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
 
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
-                        text = item.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = if (item.isLocalFile) "Local Device File" else item.sourceUri,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                IconButton(
-                    onClick = onTogglePin,
-                    modifier = Modifier
-                        .tvFocusHighlight(shape = CircleShape)
-                        .testTag("pin_history_${item.id}")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(
-                        imageVector = if (item.isPinned) Icons.Rounded.PushPin else Icons.Outlined.PushPin,
-                        contentDescription = stringResource(R.string.cd_pin_item),
-                        tint = if (item.isPinned) CinemaAmber else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier
-                        .tvFocusHighlight(shape = CircleShape)
-                        .testTag("delete_history_${item.id}")
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.DeleteOutline,
-                        contentDescription = stringResource(R.string.cd_delete_item),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FormatBadge(format = format)
-                if (!item.subtitleName.isNullOrBlank()) {
-                    SubtitlePillBadge(text = "CC · ${item.subtitleName.take(18)}")
-                }
-                Spacer(Modifier.weight(1f))
-                if (item.durationMs > 0L) {
-                    Text(
-                        text = "${formatDuration(item.lastPositionMs)} / ${formatDuration(item.durationMs)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    FormatBadge(format = format)
+                    if (!item.subtitleName.isNullOrBlank()) {
+                        SubtitlePillBadge(text = "CC · ${item.subtitleName.take(18)}")
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (item.durationMs > 0L) {
+                        Text(
+                            text = "${formatDuration(item.lastPositionMs)} / ${formatDuration(item.durationMs)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -1526,8 +1634,7 @@ private fun HistoryStreamCard(
                     progress = { progress },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp)),
+                        .height(2.5.dp),
                     color = CinemaAmber,
                     trackColor = ObsidianSurfaceHigh
                 )
@@ -1540,41 +1647,25 @@ private fun HistoryStreamCard(
 private fun EmptyHistoryCard(modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(12.dp),
         color = ObsidianSurface,
-        border = BorderStroke(1.dp, ObsidianOutline.copy(alpha = 0.7f))
+        border = BorderStroke(0.75.dp, ObsidianOutlineSubtle)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 28.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 20.dp, vertical = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Surface(
-                shape = CircleShape,
-                color = CinemaAmber.copy(alpha = 0.12f),
-                modifier = Modifier.size(56.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Rounded.Movie,
-                        contentDescription = null,
-                        tint = CinemaAmber,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
-            }
             Text(
                 text = stringResource(R.string.empty_recent_title),
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = stringResource(R.string.empty_recent_body),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -1592,13 +1683,13 @@ private fun SubtitleUrlInputDialog(
         title = {
             Text(
                 text = stringResource(R.string.load_subtitle_url),
-                style = MaterialTheme.typography.titleLarge
+                style = MaterialTheme.typography.headlineSmall
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Supports .srt, .vtt, .ass, .ssa, and .ttml subtitle links on MKV, MP4, M3U8, and HLS streams.",
+                    text = "Paste a direct .srt, .vtt, .ass, or .ttml link.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1618,7 +1709,7 @@ private fun SubtitleUrlInputDialog(
                 onClick = { onConfirm(text) },
                 enabled = text.isNotBlank(),
                 modifier = Modifier
-                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
                     .testTag("dialog_subtitle_url_confirm")
             ) {
                 Text("Attach")
@@ -1627,7 +1718,7 @@ private fun SubtitleUrlInputDialog(
         dismissButton = {
             TextButton(
                 onClick = onDismiss,
-                modifier = Modifier.tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                modifier = Modifier.tvFocusHighlight(shape = RoundedCornerShape(10.dp))
             ) {
                 Text("Cancel")
             }

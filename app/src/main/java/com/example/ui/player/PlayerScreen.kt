@@ -17,6 +17,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
@@ -41,6 +44,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,12 +57,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -78,16 +84,23 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import com.example.model.AbLoopState
 import com.example.model.AspectRatioMode
+import com.example.model.ChapterMarker
+import com.example.model.ChannelEpgNowNext
 import com.example.model.JsonPlaylistItem
 import com.example.model.M3uEntry
+import com.example.model.OnlineSubtitleCandidate
 import com.example.model.SeriesEpisode
+import com.example.model.SleepTimerMode
+import com.example.model.SleepTimerUiState
 import com.example.model.StreamFormat
 import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
 import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
 import com.example.model.TrackOption
+import com.example.model.UpNextCountdownState
 import com.example.player.AudioBoostMath
 import com.example.player.MediaEdgeCache
 import com.example.player.NetworkTransportMode
@@ -99,7 +112,11 @@ import com.example.ui.components.rememberIsAndroidTv
 import com.example.ui.components.rememberLocalFilePicker
 import com.example.ui.theme.CinemaAmber
 import com.example.viewmodel.ActiveMediaSession
+import com.example.viewmodel.ChannelZapBannerState
+import com.example.viewmodel.EpgUiState
 import com.example.viewmodel.LoadedJsonPlaylist
+import com.example.viewmodel.OnlineSubtitleUiState
+import com.example.viewmodel.SecondarySubtitleUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -176,6 +193,56 @@ fun PlayerScreen(
     onRetryWithDecoderMode: (VideoDecoderMode) -> Unit = {},
     onSkipBadSegment: () -> Unit = {},
     onRefreshJsonPlaylist: () -> Unit = {},
+    isInPipMode: Boolean = false,
+    backgroundAudioEnabled: Boolean = false,
+    episodeProgressMap: Map<String, Float> = emptyMap(),
+    onEnterPip: (() -> Unit)? = null,
+    onToggleBackgroundAudio: (Boolean) -> Unit = {},
+    onAdjustAudioDelay: (Long) -> Unit = {},
+    onResetAudioDelay: () -> Unit = {},
+    onPersistProgressOnly: () -> Unit = {},
+    seekIntervalSeconds: Int = 10,
+    onSelectSeekInterval: (Int) -> Unit = {},
+    nightModeAudioEnabled: Boolean = false,
+    onToggleNightModeAudio: (Boolean) -> Unit = {},
+    sleepTimerState: SleepTimerUiState = SleepTimerUiState(),
+    onSelectSleepTimer: (SleepTimerMode) -> Unit = {},
+    preferredAudioLanguage: String = "",
+    onSelectPreferredAudioLanguage: (String) -> Unit = {},
+    preferredSubtitleLanguage: String = "",
+    onSelectPreferredSubtitleLanguage: (String) -> Unit = {},
+    abLoopState: AbLoopState = AbLoopState(),
+    onSetAbLoopPointA: () -> Unit = {},
+    onSetAbLoopPointB: () -> Unit = {},
+    onClearAbLoop: () -> Unit = {},
+    chapters: List<ChapterMarker> = emptyList(),
+    onJumpToChapter: (ChapterMarker) -> Unit = {},
+    upNextCountdown: UpNextCountdownState? = null,
+    onPlayUpNextNow: () -> Unit = {},
+    onDismissUpNext: () -> Unit = {},
+    onSetTemporaryFastForward: (Boolean) -> Unit = {},
+    onSkipIntro: () -> Unit = {},
+    isFavorited: Boolean = false,
+    onToggleFavorite: (() -> Unit)? = null,
+    onDownloadStream: (() -> Unit)? = null,
+    onlineSubtitleState: OnlineSubtitleUiState = OnlineSubtitleUiState(),
+    onUpdateOnlineSubQuery: (String) -> Unit = {},
+    onUpdateOnlineSubLanguage: (String) -> Unit = {},
+    onSearchOnlineSubtitles: () -> Unit = {},
+    onApplyOnlineSubtitle: (OnlineSubtitleCandidate, Boolean) -> Unit = { _, _ -> },
+    onLoginOpenSubtitles: (String, String) -> Unit = { _, _ -> },
+    onLogoutOpenSubtitles: () -> Unit = {},
+    secondarySubtitleState: SecondarySubtitleUiState = SecondarySubtitleUiState(),
+    onLoadSecondarySubtitleFile: (Uri) -> Unit = {},
+    onLoadSecondarySubtitleUrl: (String) -> Unit = {},
+    onClearSecondarySubtitle: () -> Unit = {},
+    epgState: EpgUiState = EpgUiState(),
+    onLoadEpgUrl: (String) -> Unit = {},
+    resolveChannelEpg: (M3uEntry) -> ChannelEpgNowNext? = { null },
+    favoriteMediaKeys: Set<String> = emptySet(),
+    onToggleFavoriteM3uEntry: (M3uEntry) -> Unit = {},
+    channelZapBanner: ChannelZapBannerState? = null,
+    onZapChannel: (Int) -> Unit = {},
     onToastShown: () -> Unit
 ) {
     val context = LocalContext.current
@@ -213,20 +280,43 @@ fun PlayerScreen(
     var showVolumeBoostDialog by remember { mutableStateOf(false) }
     var interactionNonce by remember { mutableIntStateOf(0) }
 
-    // Seek & Volume visual feedback HUD state
+    // Seek, Volume, Brightness & Pinch-Zoom visual feedback HUD state
     var seekBadgeText by remember { mutableStateOf<String?>(null) }
     var isVolumeHudVisible by remember { mutableStateOf(false) }
     var volumeHudNonce by remember { mutableIntStateOf(0) }
+    var brightnessPercent by remember {
+        mutableIntStateOf(PlayerGestureMath.readWindowBrightnessPercent(activity))
+    }
+    var isBrightnessHudVisible by remember { mutableStateOf(false) }
+    var brightnessHudNonce by remember { mutableIntStateOf(0) }
+    var zoomScale by remember { mutableFloatStateOf(PlayerGestureMath.MIN_ZOOM_SCALE) }
+    var isZoomHudVisible by remember { mutableStateOf(false) }
+    var zoomHudNonce by remember { mutableIntStateOf(0) }
+
     val currentVolumeState = rememberUpdatedState(playbackState.volumePercent)
     val latestOnSetVolumePercent = rememberUpdatedState(onSetVolumePercent)
+    val latestIsInPip = rememberUpdatedState(isInPipMode)
+    val latestBgAudio = rememberUpdatedState(backgroundAudioEnabled)
+    val latestOnPauseAndSave = rememberUpdatedState(onPauseAndSave)
+    val latestOnPersistProgressOnly = rememberUpdatedState(onPersistProgressOnly)
     var isScrubbing by remember { mutableStateOf(false) }
+    var pickingSecondarySub by remember { mutableStateOf(false) }
+    var skipIntroDismissedForUri by remember(session?.sourceUri) { mutableStateOf(false) }
+    val latestSeekIntervalSec = rememberUpdatedState(seekIntervalSeconds.coerceIn(5, 30))
+    val latestOnTempFf = rememberUpdatedState(onSetTemporaryFastForward)
 
     val subtitleFilePicker = rememberLocalFilePicker(
         onSubtitlePicked = { uri ->
             showSubtitleSheet = false
-            onLoadSubtitleFile(uri)
+            if (pickingSecondarySub) {
+                pickingSecondarySub = false
+                onLoadSecondarySubtitleFile(uri)
+            } else {
+                onLoadSubtitleFile(uri)
+            }
         },
         onPickerUnavailable = {
+            pickingSecondarySub = false
             coroutineScope.launch {
                 snackbarHostState.showSnackbar("No file picker app found on this device. Use Subtitle URL to load captions.")
             }
@@ -313,6 +403,36 @@ fun PlayerScreen(
         }
     }
 
+    LaunchedEffect(brightnessHudNonce) {
+        if (brightnessHudNonce > 0) {
+            isBrightnessHudVisible = true
+            delay(1150L)
+            isBrightnessHudVisible = false
+        }
+    }
+
+    LaunchedEffect(zoomHudNonce) {
+        if (zoomHudNonce > 0) {
+            isZoomHudVisible = true
+            delay(1150L)
+            isZoomHudVisible = false
+        }
+    }
+
+    LaunchedEffect(isInPipMode) {
+        if (isInPipMode) {
+            zoomScale = PlayerGestureMath.MIN_ZOOM_SCALE
+            controlsVisible = false
+            showSubtitleSheet = false
+            showTracksSheet = false
+            showM3uSheet = false
+            showJsonSheet = false
+            showSeriesSheet = false
+            showSpeedMenu = false
+            showVolumeBoostDialog = false
+        }
+    }
+
     LaunchedEffect(
         controlsVisible,
         playbackState.isPlaying,
@@ -335,12 +455,19 @@ fun PlayerScreen(
         }
     }
 
-    // Keep screen on and manage immersive system bars cleanly
+    // Keep screen on, manage immersive bars, and restore window brightness override on exit
     DisposableEffect(activity, view) {
         val window = activity?.window
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (window != null) {
+                val lp = window.attributes
+                if (lp.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
+                    lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = lp
+                }
+            }
             if (!isTv) {
                 activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
@@ -351,23 +478,27 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(controlsVisible, activity) {
+    LaunchedEffect(controlsVisible, activity, isInPipMode) {
         val window = activity?.window ?: return@LaunchedEffect
         val controller = WindowCompat.getInsetsController(window, view)
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (controlsVisible) {
+        if (controlsVisible && !isInPipMode) {
             controller.show(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 
-    // Pause playback when app moves to background
+    // Pause playback on ON_STOP unless Picture-in-Picture or Background Audio is active
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE) {
-                onPauseAndSave()
+            if (event == Lifecycle.Event.ON_STOP) {
+                if (!latestIsInPip.value && !latestBgAudio.value) {
+                    latestOnPauseAndSave.value()
+                } else {
+                    latestOnPersistProgressOnly.value()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -414,14 +545,28 @@ fun PlayerScreen(
                         true
                     }
                     Key.MediaRewind, Key.MediaSkipBackward -> {
-                        onSeekBy(-10_000L)
-                        seekBadgeText = "-10s"
+                        val sec = latestSeekIntervalSec.value
+                        onSeekBy(-sec * 1_000L)
+                        seekBadgeText = "-${sec}s"
                         true
                     }
                     Key.MediaFastForward, Key.MediaSkipForward -> {
-                        onSeekBy(10_000L)
-                        seekBadgeText = "+10s"
+                        val sec = latestSeekIntervalSec.value
+                        onSeekBy(sec * 1_000L)
+                        seekBadgeText = "+${sec}s"
                         true
+                    }
+                    Key.ChannelUp -> {
+                        if (m3uEntries.size >= 2) {
+                            onZapChannel(1)
+                            true
+                        } else false
+                    }
+                    Key.ChannelDown -> {
+                        if (m3uEntries.size >= 2) {
+                            onZapChannel(-1)
+                            true
+                        } else false
                     }
                     Key.Captions -> {
                         showSubtitleSheet = true
@@ -429,15 +574,17 @@ fun PlayerScreen(
                     }
                     Key.DirectionLeft -> {
                         if (!controlsVisible && !isLocked) {
-                            onSeekBy(-10_000L)
-                            seekBadgeText = "-10s"
+                            val sec = latestSeekIntervalSec.value
+                            onSeekBy(-sec * 1_000L)
+                            seekBadgeText = "-${sec}s"
                             true
                         } else false
                     }
                     Key.DirectionRight -> {
                         if (!controlsVisible && !isLocked) {
-                            onSeekBy(10_000L)
-                            seekBadgeText = "+10s"
+                            val sec = latestSeekIntervalSec.value
+                            onSeekBy(sec * 1_000L)
+                            seekBadgeText = "+${sec}s"
                             true
                         } else false
                     }
@@ -465,6 +612,11 @@ fun PlayerScreen(
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
+                    .graphicsLayer {
+                        val effectiveZoom = if (isInPipMode) PlayerGestureMath.MIN_ZOOM_SCALE else zoomScale
+                        scaleX = effectiveZoom
+                        scaleY = effectiveZoom
+                    }
                     .testTag("exoplayer_surface"),
                 factory = { ctx ->
                     PlayerView(ctx).apply {
@@ -513,67 +665,133 @@ fun PlayerScreen(
             )
         }
 
-        // Touch Tap, Double-Tap Seek, and Right-Side Vertical 0-200% Sound Swipe
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(isLocked) {
-                    detectTapGestures(
-                        onTap = {
-                            lastInputWasKey = false
-                            controlsVisible = !controlsVisible
-                            interactionNonce++
-                        },
-                        onDoubleTap = { offset ->
-                            if (isLocked) return@detectTapGestures
-                            val width = size.width.toFloat().coerceAtLeast(1f)
-                            when {
-                                offset.x < width * 0.35f -> {
-                                    onSeekBy(-10_000L)
-                                    seekBadgeText = "-10s"
-                                    interactionNonce++
+        // Touch Tap, Double-Tap Seek, Left Brightness Swipe, Right 0-200% Sound Swipe & 2-Finger Pinch Zoom
+        if (!isInPipMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(isLocked, isTv, isInPipMode) {
+                        if (isLocked || isTv || isInPipMode) return@pointerInput
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            do {
+                                val event = awaitPointerEvent()
+                                val pressedCount = event.changes.count { it.pressed }
+                                if (pressedCount >= 2) {
+                                    val zoomChange = event.calculateZoom()
+                                    if (zoomChange != 1f) {
+                                        zoomScale = PlayerGestureMath.clampZoomScale(zoomScale * zoomChange)
+                                        zoomHudNonce++
+                                        interactionNonce++
+                                        event.changes.forEach { change ->
+                                            if (change.positionChanged()) change.consume()
+                                        }
+                                    }
                                 }
-                                offset.x > width * 0.65f -> {
-                                    onSeekBy(10_000L)
-                                    seekBadgeText = "+10s"
-                                    interactionNonce++
+                            } while (event.changes.any { it.pressed })
+                        }
+                    }
+                    .pointerInput(isLocked, isTv) {
+                        detectTapGestures(
+                            onTap = {
+                                lastInputWasKey = false
+                                controlsVisible = !controlsVisible
+                                interactionNonce++
+                            },
+                            onDoubleTap = { offset ->
+                                if (isLocked) return@detectTapGestures
+                                val sec = latestSeekIntervalSec.value
+                                val width = size.width.toFloat().coerceAtLeast(1f)
+                                when {
+                                    offset.x < width * 0.35f -> {
+                                        onSeekBy(-sec * 1_000L)
+                                        seekBadgeText = "-${sec}s"
+                                        interactionNonce++
+                                    }
+                                    offset.x > width * 0.65f -> {
+                                        onSeekBy(sec * 1_000L)
+                                        seekBadgeText = "+${sec}s"
+                                        interactionNonce++
+                                    }
+                                    else -> {
+                                        onTogglePlayPause()
+                                        interactionNonce++
+                                    }
                                 }
-                                else -> {
-                                    onTogglePlayPause()
+                            },
+                            onPress = {
+                                if (isLocked || isTv) {
+                                    tryAwaitRelease()
+                                    return@detectTapGestures
+                                }
+                                var activated2x = false
+                                val holdJob = coroutineScope.launch {
+                                    delay(450L)
+                                    activated2x = true
+                                    latestOnTempFf.value(true)
+                                }
+                                try {
+                                    tryAwaitRelease()
+                                } finally {
+                                    holdJob.cancel()
+                                    if (activated2x) {
+                                        latestOnTempFf.value(false)
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(isLocked, isTv) {
+                        var dragZone = 0 // -1 = left brightness, +1 = right volume
+                        var dragVolumeFloat = 100f
+                        var dragBrightnessFloat = 50f
+                        detectVerticalDragGestures(
+                            onDragStart = { startOffset ->
+                                if (isLocked || isTv) {
+                                    dragZone = 0
+                                } else if (startOffset.x < size.width * 0.50f) {
+                                    dragZone = -1
+                                    dragBrightnessFloat = brightnessPercent.toFloat()
+                                } else {
+                                    dragZone = 1
+                                    dragVolumeFloat = currentVolumeState.value.toFloat()
+                                }
+                            },
+                            onVerticalDrag = { change, dragAmount ->
+                                if (dragZone == 0) return@detectVerticalDragGestures
+                                change.consume()
+                                val travelPx = (size.height * 0.55f).coerceAtLeast(180f)
+                                if (dragZone == -1) {
+                                    val delta = (-dragAmount / travelPx) *
+                                        (PlayerGestureMath.MAX_BRIGHTNESS_PERCENT - PlayerGestureMath.MIN_BRIGHTNESS_PERCENT).toFloat()
+                                    dragBrightnessFloat = (dragBrightnessFloat + delta).coerceIn(
+                                        PlayerGestureMath.MIN_BRIGHTNESS_PERCENT.toFloat(),
+                                        PlayerGestureMath.MAX_BRIGHTNESS_PERCENT.toFloat()
+                                    )
+                                    val updatedPct = PlayerGestureMath.clampBrightnessPercent(dragBrightnessFloat.roundToInt())
+                                    brightnessPercent = updatedPct
+                                    PlayerGestureMath.applyWindowBrightnessPercent(activity, updatedPct)
+                                    brightnessHudNonce++
+                                    interactionNonce++
+                                } else if (dragZone == 1) {
+                                    val delta = (-dragAmount / travelPx) * AudioBoostMath.MAX_PERCENT.toFloat()
+                                    dragVolumeFloat = (dragVolumeFloat + delta)
+                                        .coerceIn(
+                                            AudioBoostMath.MIN_PERCENT.toFloat(),
+                                            AudioBoostMath.MAX_PERCENT.toFloat()
+                                        )
+                                    latestOnSetVolumePercent.value(dragVolumeFloat.roundToInt())
+                                    volumeHudNonce++
                                     interactionNonce++
                                 }
                             }
-                        }
-                    )
-                }
-                .pointerInput(isLocked) {
-                    var activeOnRightHalf = false
-                    var dragPercentFloat = 100f
-                    detectVerticalDragGestures(
-                        onDragStart = { startOffset ->
-                            activeOnRightHalf = !isLocked && startOffset.x >= size.width * 0.50f
-                            dragPercentFloat = currentVolumeState.value.toFloat()
-                        },
-                        onVerticalDrag = { change, dragAmount ->
-                            if (!activeOnRightHalf) return@detectVerticalDragGestures
-                            change.consume()
-                            val travelPx = (size.height * 0.55f).coerceAtLeast(180f)
-                            val delta = (-dragAmount / travelPx) * AudioBoostMath.MAX_PERCENT.toFloat()
-                            dragPercentFloat = (dragPercentFloat + delta)
-                                .coerceIn(
-                                    AudioBoostMath.MIN_PERCENT.toFloat(),
-                                    AudioBoostMath.MAX_PERCENT.toFloat()
-                                )
-                            latestOnSetVolumePercent.value(dragPercentFloat.roundToInt())
-                            volumeHudNonce++
-                            interactionNonce++
-                        }
-                    )
-                }
-        )
+                        )
+                    }
+            )
+        }
 
         // YouTube-style "Stats for Nerds" Floating Network & Buffer Overlay
-        if (statsForNerdsEnabled && playbackState.errorMessage == null) {
+        if (statsForNerdsEnabled && !isInPipMode && playbackState.errorMessage == null) {
             PlayerStatsOverlay(
                 statsFlow = networkStatsFlow,
                 isTv = isTv,
@@ -599,7 +817,7 @@ fun PlayerScreen(
             CircularProgressIndicator(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .size(52.dp),
+                    .size(if (isInPipMode) 32.dp else 52.dp),
                 color = CinemaAmber,
                 strokeWidth = 3.5.dp
             )
@@ -607,7 +825,7 @@ fun PlayerScreen(
 
         // Seek Feedback Badge
         AnimatedVisibility(
-            visible = seekBadgeText != null,
+            visible = seekBadgeText != null && !isInPipMode,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.Center)
@@ -626,9 +844,19 @@ fun PlayerScreen(
             }
         }
 
-        // Vertical 0–200% Sound Booster HUD
+        // Pinch-to-Zoom Feedback Badge
         AnimatedVisibility(
-            visible = isVolumeHudVisible,
+            visible = isZoomHudVisible && !isInPipMode,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            ZoomHudBadge(zoomScale = zoomScale)
+        }
+
+        // Vertical 0–200% Sound Booster HUD (left side so right thumb doesn't occlude it)
+        AnimatedVisibility(
+            visible = isVolumeHudVisible && !isInPipMode,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -637,6 +865,100 @@ fun PlayerScreen(
                 .padding(start = tvOverscanHorizontal)
         ) {
             VerticalVolumeBoostHud(volumePercent = playbackState.volumePercent)
+        }
+
+        // Brightness Swipe HUD (right side so left thumb doesn't occlude it)
+        AnimatedVisibility(
+            visible = isBrightnessHudVisible && !isInPipMode,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .windowInsetsPadding(safeInsets)
+                .padding(end = tvOverscanHorizontal)
+        ) {
+            BrightnessHudOverlay(brightnessPercent = brightnessPercent)
+        }
+
+        // Hold-to-2x Fast Forward Pill
+        AnimatedVisibility(
+            visible = playbackState.temporarySpeedActive && !isInPipMode,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
+                .padding(top = 18.dp)
+        ) {
+            Hold2xSpeedPill()
+        }
+
+        // Dual Subtitles Synchronized Secondary Top Overlay
+        val secondaryCue = secondarySubtitleState.currentText
+        if (!secondaryCue.isNullOrBlank() && !isInPipMode) {
+            DualSubtitleOverlay(
+                text = secondaryCue,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
+                    .padding(top = if (controlsVisible && !isLocked) 66.dp else 18.dp)
+            )
+        }
+
+        // EPG Channel Zap Banner
+        if (channelZapBanner != null && !isInPipMode) {
+            ChannelZapEpgBanner(
+                banner = channelZapBanner,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
+                    .padding(end = tvOverscanHorizontal, top = 66.dp)
+            )
+        }
+
+        // Skip Intro (+85s) Floating Pill during intro window (5s..300s on non-live videos)
+        if (!isInPipMode && !skipIntroDismissedForUri && upNextCountdown == null && playbackState.errorMessage == null) {
+            val liveProgress by progressStateFlow.collectAsStateWithLifecycle()
+            val showSkipIntro = !liveProgress.isLiveStream &&
+                liveProgress.durationMs > 300_000L &&
+                liveProgress.currentPositionMs in 5_000L..300_000L
+            AnimatedVisibility(
+                visible = showSkipIntro,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .windowInsetsPadding(safeInsets)
+                    .padding(
+                        end = tvOverscanHorizontal,
+                        bottom = if (controlsVisible && !isLocked) 118.dp else 28.dp
+                    )
+            ) {
+                SkipIntroButton(
+                    onClick = {
+                        skipIntroDismissedForUri = true
+                        onSkipIntro()
+                        seekBadgeText = "+85s"
+                        interactionNonce++
+                    }
+                )
+            }
+        }
+
+        // Up-Next Episode 10s Countdown Card
+        if (upNextCountdown != null && !isInPipMode && playbackState.errorMessage == null) {
+            UpNextCountdownCard(
+                state = upNextCountdown,
+                onPlayNow = onPlayUpNextNow,
+                onCancel = onDismissUpNext,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .windowInsetsPadding(safeInsets)
+                    .padding(
+                        end = tvOverscanHorizontal,
+                        bottom = if (controlsVisible && !isLocked) 118.dp else 28.dp
+                    )
+            )
         }
 
         // Error Recovery Overlay
@@ -665,7 +987,7 @@ fun PlayerScreen(
 
         // Controls Overlay (lightweight modular sub-composables; timeline ticks are isolated)
         AnimatedVisibility(
-            visible = controlsVisible && playbackState.errorMessage == null,
+            visible = controlsVisible && !isInPipMode && playbackState.errorMessage == null,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -693,6 +1015,7 @@ fun PlayerScreen(
                         hasJsonPlaylist = jsonPlaylistItems.isNotEmpty() || jsonPlaylists.isNotEmpty(),
                         hasM3uPlaylist = m3uEntries.isNotEmpty(),
                         isTv = isTv,
+                        backgroundAudioEnabled = backgroundAudioEnabled,
                         tvOverscanHorizontal = tvOverscanHorizontal,
                         tvOverscanVertical = tvOverscanVertical,
                         subButtonFocusRequester = subButtonFocusRequester,
@@ -731,10 +1054,27 @@ fun PlayerScreen(
                             showTracksSheet = true
                             interactionNonce++
                         },
+                        onToggleBackgroundAudio = if (!isTv) {
+                            {
+                                onToggleBackgroundAudio(!backgroundAudioEnabled)
+                                interactionNonce++
+                            }
+                        } else {
+                            null
+                        },
+                        onEnterPip = if (!isTv) onEnterPip else null,
                         onLockControls = {
                             isLocked = true
                             interactionNonce++
                         },
+                        isFavorited = isFavorited,
+                        onToggleFavorite = onToggleFavorite,
+                        canDownload = !isTv && session != null && !session.isLocalFile,
+                        onDownloadStream = onDownloadStream,
+                        sleepTimerBadge = sleepTimerState.compactBadge(),
+                        hasM3uZapping = m3uEntries.size >= 2,
+                        onChannelPrev = if (m3uEntries.size >= 2) { { onZapChannel(-1) } } else null,
+                        onChannelNext = if (m3uEntries.size >= 2) { { onZapChannel(1) } } else null,
                         modifier = Modifier.align(Alignment.TopCenter)
                     )
 
@@ -743,8 +1083,9 @@ fun PlayerScreen(
                             isPlaying = playbackState.isPlaying,
                             playPauseFocusRequester = playPauseFocusRequester,
                             onRewind10s = {
-                                onSeekBy(-10_000L)
-                                seekBadgeText = "-10s"
+                                val sec = latestSeekIntervalSec.value
+                                onSeekBy(-sec * 1_000L)
+                                seekBadgeText = "-${sec}s"
                                 interactionNonce++
                             },
                             onTogglePlayPause = {
@@ -752,8 +1093,9 @@ fun PlayerScreen(
                                 interactionNonce++
                             },
                             onForward10s = {
-                                onSeekBy(10_000L)
-                                seekBadgeText = "+10s"
+                                val sec = latestSeekIntervalSec.value
+                                onSeekBy(sec * 1_000L)
+                                seekBadgeText = "+${sec}s"
                                 interactionNonce++
                             },
                             modifier = Modifier.align(Alignment.Center)
@@ -807,6 +1149,8 @@ fun PlayerScreen(
                         onSeekCommit = onSeekTo,
                         onScrubbingStateChanged = { scrubbing -> isScrubbing = scrubbing },
                         onInteraction = { interactionNonce++ },
+                        chapters = chapters,
+                        abLoop = abLoopState,
                         modifier = Modifier.align(Alignment.BottomCenter)
                     )
                 }
@@ -814,13 +1158,15 @@ fun PlayerScreen(
         }
 
         // Player Snackbar Host
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(bottom = 72.dp)
-        )
+        if (!isInPipMode) {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(bottom = 72.dp)
+            )
+        }
     }
 
     if (showSubtitleSheet) {
@@ -831,7 +1177,10 @@ fun PlayerScreen(
             subtitleOffsetMs = session?.subtitleOffsetMs ?: 0L,
             appearance = subtitleAppearance,
             onDismiss = { showSubtitleSheet = false },
-            onPickSubtitleFile = { subtitleFilePicker.pickSubtitle() },
+            onPickSubtitleFile = {
+                pickingSecondarySub = false
+                subtitleFilePicker.pickSubtitle()
+            },
             onLoadSubtitleUrl = onLoadSubtitleUrl,
             onSelectTrack = onSelectSubtitleTrack,
             onDisableSubtitles = onDisableSubtitles,
@@ -839,7 +1188,21 @@ fun PlayerScreen(
             onResetOffset = onResetSubtitleOffset,
             onUpdateTextSize = onUpdateSubtitleSize,
             onUpdateColor = onUpdateSubtitleColor,
-            onUpdateBg = onUpdateSubtitleBg
+            onUpdateBg = onUpdateSubtitleBg,
+            onlineSubtitleState = onlineSubtitleState,
+            onUpdateOnlineQuery = onUpdateOnlineSubQuery,
+            onUpdateOnlineLanguage = onUpdateOnlineSubLanguage,
+            onSearchOnlineSubtitles = onSearchOnlineSubtitles,
+            onApplyOnlineSubtitle = onApplyOnlineSubtitle,
+            onLoginOpenSubtitles = onLoginOpenSubtitles,
+            onLogoutOpenSubtitles = onLogoutOpenSubtitles,
+            secondarySubtitleState = secondarySubtitleState,
+            onPickSecondarySubtitleFile = {
+                pickingSecondarySub = true
+                subtitleFilePicker.pickSubtitle()
+            },
+            onLoadSecondarySubtitleUrl = onLoadSecondarySubtitleUrl,
+            onClearSecondarySubtitle = onClearSecondarySubtitle
         )
     }
 
@@ -859,6 +1222,21 @@ fun PlayerScreen(
             onSetVolumePercent = { pct ->
                 onSetVolumePercent(pct)
                 volumeHudNonce++
+            },
+            audioDelayMs = playbackState.audioDelayMs,
+            onAdjustAudioDelay = { delta ->
+                onAdjustAudioDelay(delta)
+                interactionNonce++
+            },
+            onResetAudioDelay = {
+                onResetAudioDelay()
+                interactionNonce++
+            },
+            isTv = isTv,
+            backgroundAudioEnabled = backgroundAudioEnabled,
+            onToggleBackgroundAudio = { enabled ->
+                onToggleBackgroundAudio(enabled)
+                interactionNonce++
             },
             statsForNerdsEnabled = statsForNerdsEnabled,
             onToggleStatsForNerds = {
@@ -899,6 +1277,25 @@ fun PlayerScreen(
                     openPrivacy()
                 }
             },
+            nightModeAudioEnabled = nightModeAudioEnabled,
+            onToggleNightModeAudio = onToggleNightModeAudio,
+            sleepTimerState = sleepTimerState,
+            onSelectSleepTimer = onSelectSleepTimer,
+            seekIntervalSeconds = seekIntervalSeconds,
+            onSelectSeekInterval = onSelectSeekInterval,
+            preferredAudioLanguage = preferredAudioLanguage,
+            onSelectPreferredAudioLanguage = onSelectPreferredAudioLanguage,
+            preferredSubtitleLanguage = preferredSubtitleLanguage,
+            onSelectPreferredSubtitleLanguage = onSelectPreferredSubtitleLanguage,
+            abLoopState = abLoopState,
+            onSetAbLoopPointA = onSetAbLoopPointA,
+            onSetAbLoopPointB = onSetAbLoopPointB,
+            onClearAbLoop = onClearAbLoop,
+            chapters = chapters,
+            onJumpToChapter = { ch ->
+                showTracksSheet = false
+                onJumpToChapter(ch)
+            },
             onDismiss = { showTracksSheet = false },
             onSelectVideoTrack = onSelectVideoTrack,
             onSelectAudioTrack = onSelectAudioTrack
@@ -921,7 +1318,12 @@ fun PlayerScreen(
             entries = m3uEntries,
             activeEntryId = activeM3uEntryId,
             onDismiss = { showM3uSheet = false },
-            onSelectEntry = onSelectM3uEntry
+            onSelectEntry = onSelectM3uEntry,
+            epgState = epgState,
+            onLoadEpgUrl = onLoadEpgUrl,
+            resolveChannelEpg = resolveChannelEpg,
+            favoriteMediaKeys = favoriteMediaKeys,
+            onToggleFavoriteEntry = onToggleFavoriteM3uEntry
         )
     }
 
@@ -947,6 +1349,7 @@ fun PlayerScreen(
         SeriesDetailSheet(
             series = activeSeries,
             activeEpisodeId = activeEpisodeId,
+            episodeProgressMap = episodeProgressMap,
             onDismiss = { showSeriesSheet = false },
             onSelectEpisode = onSelectSeriesEpisode
         )

@@ -20,5 +20,14 @@ data class MediaHistoryEntity(
     val lastPositionMs: Long = 0L,
     val durationMs: Long = 0L,
     val isPinned: Boolean = false,
-    val lastPlayedAt: Long = System.currentTimeMillis()
+    val lastPlayedAt: Long = System.currentTimeMillis(),
+    val seriesId: String? = null,
+    val seriesTitle: String? = null,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val episodeId: String? = null,
+    val posterUrl: String? = null,
+    val playlistId: String? = null,
+    val audioDelayMs: Long = 0L,
+    val subtitleOffsetMs: Long = 0L
 )

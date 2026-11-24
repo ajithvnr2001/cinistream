@@ -59,11 +59,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.example.model.AbLoopState
+import com.example.model.ChapterMarker
 import com.example.player.SeekBarScrubEngine
 import com.example.ui.components.formatDuration
 import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.CinemaAmberBright
+import com.example.ui.theme.StreamCyan
 import kotlinx.coroutines.delay
 
 /**
@@ -85,6 +88,8 @@ fun SelectableCinemaSeekBar(
     onSeekCommit: (Long) -> Unit,
     onScrubbingStateChanged: (Boolean) -> Unit,
     onInteraction: () -> Unit,
+    chapters: List<ChapterMarker> = emptyList(),
+    abLoop: AbLoopState = AbLoopState(),
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
@@ -131,12 +136,12 @@ fun SelectableCinemaSeekBar(
     val bufferedFraction = SeekBarScrubEngine.positionToFraction(bufferedPositionMs, durationMs)
 
     val trackHeight by animateDpAsState(
-        targetValue = if (isFocused || isScrubbing) 10.dp else 6.dp,
+        targetValue = if (isFocused || isScrubbing) 8.dp else 4.dp,
         animationSpec = tween(140),
         label = "seekbar_track_height"
     )
     val thumbRadius by animateDpAsState(
-        targetValue = if (isFocused || isScrubbing) 11.dp else 7.dp,
+        targetValue = if (isFocused || isScrubbing) 10.dp else 6.dp,
         animationSpec = tween(140),
         label = "seekbar_thumb_radius"
     )
@@ -194,9 +199,9 @@ fun SelectableCinemaSeekBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Color.Black.copy(alpha = 0.82f),
-                    border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xD90E0E11),
+                    border = BorderStroke(0.75.dp, CinemaAmber.copy(alpha = 0.65f)),
                     modifier = Modifier.testTag("seekbar_preview_pill")
                 ) {
                     Row(
@@ -221,9 +226,9 @@ fun SelectableCinemaSeekBar(
 
                 if (isFocused) {
                     Text(
-                        text = if (isTv) "◀ ▶ Fast jump (±1m–±10m) · OK to seek" else "Fast seek active (±1m)",
+                        text = if (isTv) "◀ ▶ Jump ±1m–±10m · OK to seek" else "Scrubbing",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.8f)
+                        color = Color.White.copy(alpha = 0.78f)
                     )
                 }
             }
@@ -238,12 +243,12 @@ fun SelectableCinemaSeekBar(
             // Fast -1m Minute Backward Pill
             Surface(
                 onClick = { jumpByOneMinute(-1) },
-                shape = RoundedCornerShape(10.dp),
-                color = Color.White.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xB8121215),
+                border = BorderStroke(0.75.dp, Color.White.copy(alpha = 0.16f)),
                 modifier = Modifier
                     .minimumInteractiveComponentSize()
-                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.06f)
+                    .tvFocusHighlight(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
                     .testTag("player_rewind_1m_button")
             ) {
                 Row(
@@ -401,6 +406,48 @@ fun SelectableCinemaSeekBar(
                         )
                     }
 
+                    // A-B Loop cyan range highlight & pins
+                    if (durationMs > 0L && abLoop.startMs != null) {
+                        val startFrac = SeekBarScrubEngine.positionToFraction(abLoop.startMs, durationMs)
+                        val startX = (size.width * startFrac).coerceIn(0f, size.width)
+                        if (abLoop.endMs != null && abLoop.endMs > abLoop.startMs) {
+                            val endFrac = SeekBarScrubEngine.positionToFraction(abLoop.endMs, durationMs)
+                            val endX = (size.width * endFrac).coerceIn(startX, size.width)
+                            drawRoundRect(
+                                color = StreamCyan.copy(alpha = 0.78f),
+                                topLeft = Offset(startX, trackTop),
+                                size = Size((endX - startX).coerceAtLeast(3f), trackPx),
+                                cornerRadius = corner
+                            )
+                            drawCircle(
+                                color = StreamCyan,
+                                radius = 4.5.dp.toPx(),
+                                center = Offset(endX, centerY)
+                            )
+                        }
+                        drawCircle(
+                            color = StreamCyan,
+                            radius = 4.5.dp.toPx(),
+                            center = Offset(startX, centerY)
+                        )
+                    }
+
+                    // Chapter Marker ticks
+                    if (durationMs > 0L && chapters.size > 1) {
+                        chapters.drop(1).forEach { ch ->
+                            val frac = SeekBarScrubEngine.positionToFraction(ch.startMs, durationMs)
+                            if (frac in 0.02f..0.98f) {
+                                val cx = size.width * frac
+                                drawLine(
+                                    color = Color.Black.copy(alpha = 0.8f),
+                                    start = Offset(cx, trackTop - 1.dp.toPx()),
+                                    end = Offset(cx, trackTop + trackPx + 1.dp.toPx()),
+                                    strokeWidth = 2.dp.toPx()
+                                )
+                            }
+                        }
+                    }
+
                     // Outer glow halo when focused or scrubbing
                     if (isFocused || isScrubbing) {
                         drawCircle(
@@ -427,12 +474,12 @@ fun SelectableCinemaSeekBar(
             // Fast +1m Minute Forward Pill
             Surface(
                 onClick = { jumpByOneMinute(1) },
-                shape = RoundedCornerShape(10.dp),
-                color = Color.White.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xB8121215),
+                border = BorderStroke(0.75.dp, Color.White.copy(alpha = 0.16f)),
                 modifier = Modifier
                     .minimumInteractiveComponentSize()
-                    .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.06f)
+                    .tvFocusHighlight(shape = RoundedCornerShape(8.dp), focusedScale = 1.06f)
                     .testTag("player_forward_1m_button")
             ) {
                 Row(

@@ -14,7 +14,10 @@ import java.util.UUID
 
 sealed class M3uInspectionResult {
     data object DirectHlsStream : M3uInspectionResult()
-    data class ChannelPlaylist(val entries: List<M3uEntry>) : M3uInspectionResult()
+    data class ChannelPlaylist(
+        val entries: List<M3uEntry>,
+        val epgUrl: String? = null
+    ) : M3uInspectionResult()
     data object FallbackDirectPlay : M3uInspectionResult()
 }
 
@@ -22,7 +25,10 @@ class M3uPlaylistParser(
     private val context: Context,
     private val okHttpClient: OkHttpClient
 ) {
-    private val groupTitleRegex = Regex("""group-title="([^"]*)"""")
+    private val groupTitleRegex = Regex("""group-title="([^"]*)"""", RegexOption.IGNORE_CASE)
+    private val tvgIdRegex = Regex("""tvg-id="([^"]*)"""", RegexOption.IGNORE_CASE)
+    private val tvgLogoRegex = Regex("""tvg-logo="([^"]*)"""", RegexOption.IGNORE_CASE)
+    private val headerEpgRegex = Regex("""(?:url-tvg|x-tvg-url)="([^"]*)"""", RegexOption.IGNORE_CASE)
 
     suspend fun inspect(uriString: String, isLocalFile: Boolean): M3uInspectionResult =
         withContext(Dispatchers.IO) {
@@ -61,11 +67,20 @@ class M3uPlaylistParser(
         }
 
         val entries = mutableListOf<M3uEntry>()
+        var headerEpgUrl: String? = null
         var pendingTitle: String? = null
         var pendingGroup = "Playlist"
+        var pendingTvgId: String? = null
+        var pendingTvgLogo: String? = null
 
         for (line in lines) {
             when {
+                line.startsWith("#EXTM3U", ignoreCase = true) -> {
+                    val found = headerEpgRegex.find(line)?.groupValues?.getOrNull(1)?.trim()
+                    if (!found.isNullOrBlank() && (found.startsWith("http://", true) || found.startsWith("https://", true))) {
+                        headerEpgUrl = found
+                    }
+                }
                 line.startsWith("#EXTINF:", ignoreCase = true) -> {
                     val commaIdx = line.indexOf(',')
                     pendingTitle = if (commaIdx != -1 && commaIdx + 1 < line.length) {
@@ -76,6 +91,10 @@ class M3uPlaylistParser(
                     pendingGroup = groupTitleRegex.find(line)?.groupValues?.getOrNull(1)
                         ?.takeIf { it.isNotBlank() }
                         ?: "Playlist"
+                    pendingTvgId = tvgIdRegex.find(line)?.groupValues?.getOrNull(1)
+                        ?.takeIf { it.isNotBlank() }
+                    pendingTvgLogo = tvgLogoRegex.find(line)?.groupValues?.getOrNull(1)
+                        ?.takeIf { it.isNotBlank() }
                 }
                 line.startsWith("#") -> {
                     // Ignore other M3U directives/comments
@@ -91,17 +110,21 @@ class M3uPlaylistParser(
                             title = title,
                             url = line,
                             groupTitle = pendingGroup,
-                            format = if (detected == StreamFormat.AUTO) StreamFormat.HLS else detected
+                            format = if (detected == StreamFormat.AUTO) StreamFormat.HLS else detected,
+                            tvgId = pendingTvgId,
+                            tvgLogo = pendingTvgLogo
                         )
                     )
                     pendingTitle = null
                     pendingGroup = "Playlist"
+                    pendingTvgId = null
+                    pendingTvgLogo = null
                 }
             }
         }
 
         return if (entries.isNotEmpty()) {
-            M3uInspectionResult.ChannelPlaylist(entries)
+            M3uInspectionResult.ChannelPlaylist(entries = entries, epgUrl = headerEpgUrl)
         } else {
             M3uInspectionResult.FallbackDirectPlay
         }

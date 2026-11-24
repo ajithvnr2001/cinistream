@@ -589,6 +589,7 @@ class ParallelHlsPrefetchManager(
     // Foreground anti-starvation tracking
     private val activeForegroundVideoLoads = AtomicInteger(0)
     @Volatile private var lowBufferMode: Boolean = false
+    @Volatile private var cpuThrottleMode: Boolean = false
     @Volatile private var lastAccessWasMiss: Boolean = false
 
     // Non-range progressive hosts discovered during playback (never retried with range prefetch)
@@ -603,6 +604,10 @@ class ParallelHlsPrefetchManager(
 
     fun setLowBufferMode(isLowBuffer: Boolean) {
         lowBufferMode = isLowBuffer
+    }
+
+    fun setCpuThrottleMode(isThrottled: Boolean) {
+        cpuThrottleMode = isThrottled
     }
 
     fun onForegroundDirectLoadStarted(isAudio: Boolean) {
@@ -624,7 +629,7 @@ class ParallelHlsPrefetchManager(
 
     fun onPlaylistLoaded(playlistUrl: String, content: String) {
         if (!enabled) return
-        val initialCount = if (lowBufferMode) 1 else config.hlsPrefetchAheadCount
+        val initialCount = if (lowBufferMode || cpuThrottleMode) 1 else config.hlsPrefetchAheadCount
         val initialSegments = segmentIndex.indexPlaylist(
             playlistUrl = playlistUrl,
             content = content,
@@ -662,7 +667,7 @@ class ParallelHlsPrefetchManager(
         val depth = when {
             isAudio -> config.hlsPrefetchAheadCount
             !isFromCacheHit -> 0 // Let foreground direct load finish uncontested; onForegroundDirectLoadFinished will warm N+1..K
-            lowBufferMode || lastAccessWasMiss || activeForegroundVideoLoads.get() > 0 -> 1
+            lowBufferMode || cpuThrottleMode || lastAccessWasMiss || activeForegroundVideoLoads.get() > 0 -> 1
             else -> config.hlsPrefetchAheadCount
         }
         if (depth <= 0) return
@@ -956,6 +961,7 @@ class ParallelHlsPrefetchManager(
         nonRangeProgressiveUrls.clear()
         activeForegroundVideoLoads.set(0)
         lowBufferMode = false
+        cpuThrottleMode = false
         lastAccessWasMiss = false
         cacheHits.set(0L)
         cacheMisses.set(0L)

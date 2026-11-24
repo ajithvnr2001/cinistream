@@ -27,6 +27,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -49,6 +50,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.ContinueWatchingHelper
 import com.example.model.JsonPlaylistItem
 import com.example.model.SeriesEpisode
 import com.example.ui.components.FormatBadge
@@ -72,6 +74,7 @@ import kotlinx.coroutines.delay
 fun SeriesDetailSheet(
     series: JsonPlaylistItem,
     activeEpisodeId: String?,
+    episodeProgressMap: Map<String, Float> = emptyMap(),
     onDismiss: () -> Unit,
     onSelectEpisode: (JsonPlaylistItem, SeriesEpisode) -> Unit
 ) {
@@ -238,9 +241,11 @@ fun SeriesDetailSheet(
             ) {
                 itemsIndexed(episodes, key = { _, ep -> ep.id }) { idx, ep ->
                     val isActive = ep.id == activeEpisodeId
+                    val progressFraction = episodeProgressMap[ep.id] ?: episodeProgressMap[ep.url] ?: 0f
                     EpisodeSelectionCard(
                         episode = ep,
                         isActive = isActive,
+                        progressFraction = progressFraction,
                         onClick = {
                             onSelectEpisode(series, ep)
                             onDismiss()
@@ -261,9 +266,13 @@ fun SeriesDetailSheet(
 private fun EpisodeSelectionCard(
     episode: SeriesEpisode,
     isActive: Boolean,
+    progressFraction: Float = 0f,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val isWatched = progressFraction >= ContinueWatchingHelper.COMPLETED_FRACTION
+    val showProgressBar = progressFraction >= ContinueWatchingHelper.MIN_RESUME_FRACTION && !isWatched
+
     Surface(
         onClick = onClick,
         modifier = modifier
@@ -277,92 +286,112 @@ private fun EpisodeSelectionCard(
             color = if (isActive) CinemaAmber.copy(alpha = 0.65f) else ObsidianOutline.copy(alpha = 0.65f)
         )
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Episode code badge
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = if (isActive) CinemaAmber else Color.White.copy(alpha = 0.08f)
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Box(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                    contentAlignment = Alignment.Center
+                // Episode code badge
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isActive) CinemaAmber else Color.White.copy(alpha = 0.08f)
                 ) {
-                    Text(
-                        text = episode.codeLabel,
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = if (isActive) Color.Black else CinemaAmber
-                    )
-                }
-            }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = episode.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (isActive) CinemaAmber else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    FormatBadge(format = episode.format)
-                    if (!episode.durationLabel.isNullOrBlank()) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            text = episode.durationLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (!episode.subtitleUrl.isNullOrBlank()) {
-                        SubtitlePillBadge(text = "CC")
-                    }
-                    if (episode.mirrors.isNotEmpty()) {
-                        SubtitlePillBadge(
-                            text = "${episode.mirrors.size + 1} CDN",
-                            accent = SubtitleEmerald
+                            text = episode.codeLabel,
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = if (isActive) Color.Black else CinemaAmber
                         )
                     }
                 }
 
-                if (!episode.description.isNullOrBlank()) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     Text(
-                        text = episode.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
+                        text = episode.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (isActive) CinemaAmber else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FormatBadge(format = episode.format)
+                        if (isWatched) {
+                            SubtitlePillBadge(
+                                text = "Watched",
+                                accent = SubtitleEmerald
+                            )
+                        }
+                        if (!episode.durationLabel.isNullOrBlank()) {
+                            Text(
+                                text = episode.durationLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (!episode.subtitleUrl.isNullOrBlank()) {
+                            SubtitlePillBadge(text = "CC")
+                        }
+                        if (episode.mirrors.isNotEmpty()) {
+                            SubtitlePillBadge(
+                                text = "${episode.mirrors.size + 1} CDN",
+                                accent = SubtitleEmerald
+                            )
+                        }
+                    }
+
+                    if (!episode.description.isNullOrBlank()) {
+                        Text(
+                            text = episode.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(2.dp))
+                Surface(
+                    shape = CircleShape,
+                    color = if (isActive) CinemaAmber else CinemaAmber.copy(alpha = 0.16f)
+                ) {
+                    Box(
+                        modifier = Modifier.size(36.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Play ${episode.codeLabel} ${episode.title}",
+                            tint = if (isActive) MaterialTheme.colorScheme.onPrimary else CinemaAmber,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.width(2.dp))
-            Surface(
-                shape = CircleShape,
-                color = if (isActive) CinemaAmber else CinemaAmber.copy(alpha = 0.16f)
-            ) {
-                Box(
-                    modifier = Modifier.size(36.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
-                        contentDescription = "Play ${episode.codeLabel} ${episode.title}",
-                        tint = if (isActive) MaterialTheme.colorScheme.onPrimary else CinemaAmber,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+            if (showProgressBar) {
+                LinearProgressIndicator(
+                    progress = { progressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .testTag("series_episode_progress_${episode.id}"),
+                    color = CinemaAmber,
+                    trackColor = Color.White.copy(alpha = 0.12f)
+                )
             }
         }
     }

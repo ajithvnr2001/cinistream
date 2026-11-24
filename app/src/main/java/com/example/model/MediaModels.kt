@@ -25,7 +25,9 @@ data class M3uEntry(
     val title: String,
     val url: String,
     val groupTitle: String = "Playlist",
-    val format: StreamFormat = StreamFormat.AUTO
+    val format: StreamFormat = StreamFormat.AUTO,
+    val tvgId: String? = null,
+    val tvgLogo: String? = null
 )
 
 enum class MediaContentType {

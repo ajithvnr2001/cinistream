@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Movie
@@ -45,6 +44,7 @@ import com.example.ui.theme.ObsidianCanvas
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
+import com.example.ui.theme.OnCinemaAmber
 import com.example.ui.theme.OnImdbGold
 
 @Composable
@@ -60,25 +60,25 @@ fun ImdbBadgePill(
     }
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(4.dp),
         color = ImdbGold
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             if (!rating.isNullOrBlank()) {
                 Icon(
                     imageVector = Icons.Rounded.Star,
                     contentDescription = null,
                     tint = OnImdbGold,
-                    modifier = Modifier.size(11.dp)
+                    modifier = Modifier.size(10.dp)
                 )
             }
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                 color = OnImdbGold,
                 maxLines = 1
             )
@@ -139,16 +139,15 @@ private fun PosterFallbackArt(modifier: Modifier = Modifier) {
         Icon(
             imageVector = Icons.Rounded.Movie,
             contentDescription = null,
-            tint = CinemaAmber.copy(alpha = 0.45f),
-            modifier = Modifier.size(36.dp)
+            tint = CinemaAmber.copy(alpha = 0.24f),
+            modifier = Modifier.size(30.dp)
         )
     }
 }
 
 /**
- * Clickable movie / stream poster card displaying an IMDb or JSON-provided poster image,
- * IMDb badge, release year, format badge, and click-to-play affordance.
- * Supports Android TV D-Pad navigation via tvFocusHighlight.
+ * Editorial 2:3 cinema poster card with clean artwork framing, restrained metadata pills,
+ * and Android TV D-Pad focus highlight.
  */
 @Composable
 fun PosterStreamCard(
@@ -162,58 +161,59 @@ fun PosterStreamCard(
     seriesBadge: String? = null,
     hasSubtitle: Boolean = false,
     isActive: Boolean = false,
-    cardWidth: Dp = 172.dp,
-    posterHeight: Dp = 216.dp,
+    cardWidth: Dp = 158.dp,
+    posterHeight: Dp = 224.dp,
     testTag: String,
     onClick: () -> Unit
 ) {
-    Surface(
-        onClick = onClick,
+    Column(
         modifier = Modifier
             .width(cardWidth)
-            .tvFocusHighlight(shape = RoundedCornerShape(16.dp), focusedScale = 1.05f)
+            .tvFocusHighlight(shape = RoundedCornerShape(10.dp), focusedScale = 1.04f)
             .testTag(testTag),
-        shape = RoundedCornerShape(16.dp),
-        color = ObsidianSurface,
-        border = BorderStroke(
-            width = if (isActive) 1.5.dp else 1.dp,
-            color = if (isActive) CinemaAmber else ObsidianOutline
-        )
+        verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(posterHeight)
-                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-            ) {
+        Surface(
+            onClick = onClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(posterHeight),
+            shape = RoundedCornerShape(10.dp),
+            color = ObsidianSurface,
+            border = BorderStroke(
+                width = if (isActive) 1.5.dp else 0.75.dp,
+                color = if (isActive) CinemaAmber else ObsidianOutline.copy(alpha = 0.75f)
+            )
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
                 PosterImageThumbnail(
                     imageUrl = imageUrl,
                     contentDescription = "$title poster",
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(10.dp))
                 )
 
-                // Scrim for crisp badge & play button legibility over bright movie posters
+                // Subtle cinema vignette — keeps artwork clean while preserving badge contrast
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                colors = listOf(
-                                    ObsidianCanvas.copy(alpha = 0.55f),
-                                    Color.Transparent,
-                                    ObsidianCanvas.copy(alpha = 0.85f)
-                                )
+                                0.0f to ObsidianCanvas.copy(alpha = 0.50f),
+                                0.28f to Color.Transparent,
+                                0.72f to Color.Transparent,
+                                1.0f to ObsidianCanvas.copy(alpha = 0.78f)
                             )
                         )
                 )
 
-                // Top Row: IMDb Badge + Format Badge
+                // Top Row: IMDb Rating + Format/Series Tag
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopStart)
-                        .padding(8.dp),
+                        .padding(7.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -224,15 +224,15 @@ fun PosterStreamCard(
                     }
                     if (!seriesBadge.isNullOrBlank()) {
                         Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = CinemaAmber.copy(alpha = 0.92f)
+                            shape = RoundedCornerShape(4.dp),
+                            color = CinemaAmber
                         ) {
                             Text(
                                 text = seriesBadge,
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
-                                color = Color.Black,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = OnCinemaAmber,
                                 maxLines = 1,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                             )
                         }
                     } else {
@@ -240,12 +240,12 @@ fun PosterStreamCard(
                     }
                 }
 
-                // Bottom Overlay inside Poster: Year / CC + Play Pill
+                // Bottom Overlay: Year / CC + subtle active cue
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomStart)
-                        .padding(8.dp),
+                        .padding(7.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -255,14 +255,14 @@ fun PosterStreamCard(
                     ) {
                         if (!releaseYear.isNullOrBlank()) {
                             Surface(
-                                shape = RoundedCornerShape(5.dp),
-                                color = Color.Black.copy(alpha = 0.65f)
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xB809090B)
                             ) {
                                 Text(
                                     text = releaseYear,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
                                 )
                             }
                         }
@@ -271,35 +271,39 @@ fun PosterStreamCard(
                         }
                     }
 
-                    Surface(
-                        shape = CircleShape,
-                        color = CinemaAmber.copy(alpha = 0.92f)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = "Play $title",
-                            tint = Color.Black,
-                            modifier = Modifier
-                                .padding(5.dp)
-                                .size(18.dp)
-                        )
+                    if (isActive) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = CinemaAmber
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayArrow,
+                                contentDescription = "Playing $title",
+                                tint = OnCinemaAmber,
+                                modifier = Modifier
+                                    .padding(3.dp)
+                                    .size(14.dp)
+                            )
+                        }
                     }
                 }
             }
+        }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 9.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (isActive) CinemaAmber else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (isActive) CinemaAmber else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle.isNotBlank()) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,

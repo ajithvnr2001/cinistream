@@ -21,13 +21,15 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class NordVpnCredentials(
     val username: String,
-    val password: String
+    val password: String,
+    val nordLynxPrivateKey: String = ""
 )
 
 sealed class NordVpnLoginResult {
     data class Success(
         val credentials: NordVpnCredentials,
-        val servers: List<NordVpnServer>
+        val servers: List<NordVpnServer>,
+        val locations: List<NordVpnLocation> = NordVpnLocationCatalog.FALLBACK_COUNTRIES
     ) : NordVpnLoginResult()
 
     data class Error(val message: String) : NordVpnLoginResult()
@@ -46,7 +48,7 @@ data class NetworkProbeResult(
 
 /**
  * On-device AES-256-GCM credential protection backed by Android Keystore.
- * Encrypts NordVPN service credentials before saving them to DataStore; falls back safely on
+ * Encrypts NordVPN service & NordLynx keys before saving them to DataStore; falls back safely on
  * JVM unit test environments without AndroidKeyStore.
  */
 object CredentialVault {
@@ -121,12 +123,13 @@ object CredentialVault {
 }
 
 /**
- * Official NordVPN REST API client (HTTPS-only):
+ * Official NordVPN REST API client (HTTPS-only, resolved via Cloudflare 1.1.1.1 DoH):
  * 1. Exchanges a user's NordVPN Access Token (`Authorization: Basic base64("token:<token>")`)
- *    for official NordVPN SOCKS5 Service Credentials (`username` & `password`).
- * 2. Fetches live recommended NordVPN SOCKS5 proxy servers (`port 1080`) with curated regional fallbacks.
- * 3. Probes the active streaming route (`https://cloudflare.com/cdn-cgi/trace`) to verify real
- *    exit IP, location, and latency through Cloudflare 1.1.1.1 DoH + NordVPN SOCKS5.
+ *    for official NordVPN `nordlynx_private_key` (WireGuard) + service credentials.
+ * 2. Fetches all 118+ global NordVPN countries & cities (`/v1/servers/countries`).
+ * 3. Queries the fastest live NordLynx (`wireguard_udp`) endpoint + public key for any chosen country/city.
+ * 4. Probes the active streaming route (`https://cloudflare.com/cdn-cgi/trace`) to verify real
+ *    exit IP, location, and latency.
  */
 class NordVpnApiClient(
     private val directApiClient: OkHttpClient = OkHttpClient.Builder()
@@ -139,9 +142,15 @@ class NordVpnApiClient(
 ) {
     companion object {
         const val CREDENTIALS_ENDPOINT = "https://api.nordvpn.com/v1/users/services/credentials"
+        const val COUNTRIES_ENDPOINT = "https://api.nordvpn.com/v1/servers/countries"
         const val SOCKS_RECOMMENDATIONS_ENDPOINT =
             "https://api.nordvpn.com/v1/servers/recommendations?filters%5Bservers_technologies%5D%5Bidentifier%5D=socks&limit=8"
         const val CLOUDFLARE_TRACE_URL = "https://cloudflare.com/cdn-cgi/trace"
+
+        fun wireGuardRecommendationUrl(countryId: Int, limit: Int = 10): String =
+            "https://api.nordvpn.com/v1/servers/recommendations" +
+                "?filters%5Bservers_technologies%5D%5Bidentifier%5D=wireguard_udp" +
+                "&filters%5Bcountry_id%5D=$countryId&limit=$limit"
 
         fun isPlausibleAccessToken(token: String): Boolean {
             val trimmed = token.trim()
@@ -153,8 +162,119 @@ class NordVpnApiClient(
             val obj = runCatching { JSONObject(jsonBody) }.getOrNull() ?: return null
             val username = obj.optString("username", "").trim()
             val password = obj.optString("password", "").trim()
-            if (username.isBlank() || password.isBlank()) return null
-            return NordVpnCredentials(username = username, password = password)
+            val nordLynxKey = obj.optString("nordlynx_private_key", "").trim()
+            if (nordLynxKey.isBlank() && (username.isBlank() || password.isBlank())) return null
+            return NordVpnCredentials(
+                username = username,
+                password = password,
+                nordLynxPrivateKey = nordLynxKey
+            )
+        }
+
+        fun parseCountriesJson(jsonBody: String): List<NordVpnLocation> {
+            val arr = runCatching { JSONArray(jsonBody) }.getOrNull() ?: return emptyList()
+            val result = ArrayList<NordVpnLocation>(arr.length() * 2)
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val countryId = item.optInt("id", -1)
+                val countryName = item.optString("name", "").trim()
+                val countryCode = item.optString("code", "").trim().uppercase()
+                if (countryId <= 0 || countryName.isBlank()) continue
+                result.add(
+                    NordVpnLocation(
+                        id = "c_$countryId",
+                        countryId = countryId,
+                        countryName = countryName,
+                        countryCode = countryCode
+                    )
+                )
+                val cities = item.optJSONArray("cities") ?: continue
+                if (cities.length() > 1) {
+                    for (c in 0 until cities.length()) {
+                        val cityObj = cities.optJSONObject(c) ?: continue
+                        val cityId = cityObj.optInt("id", -1)
+                        val cityName = cityObj.optString("name", "").trim()
+                        if (cityId <= 0 || cityName.isBlank()) continue
+                        result.add(
+                            NordVpnLocation(
+                                id = "c_${countryId}_city_$cityId",
+                                countryId = countryId,
+                                countryName = countryName,
+                                countryCode = countryCode,
+                                cityId = cityId,
+                                cityName = cityName
+                            )
+                        )
+                    }
+                }
+            }
+            return result
+        }
+
+        fun parseNordLynxRecommendationsJson(
+            jsonBody: String,
+            preferredCityId: Int? = null,
+            preferredCityName: String? = null
+        ): NordLynxServerEndpoint? {
+            val arr = runCatching { JSONArray(jsonBody) }.getOrNull() ?: return null
+            val candidates = ArrayList<Triple<Boolean, Int, NordLynxServerEndpoint>>()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val stationIp = item.optString("station", "").trim()
+                val hostname = item.optString("hostname", "").trim()
+                val load = item.optInt("load", 50)
+                if (stationIp.isBlank() || hostname.isBlank()) continue
+
+                var pubKey = ""
+                val techs = item.optJSONArray("technologies")
+                if (techs != null) {
+                    for (t in 0 until techs.length()) {
+                        val tech = techs.optJSONObject(t) ?: continue
+                        if (!tech.optString("identifier", "").equals("wireguard_udp", ignoreCase = true)) continue
+                        val metadata = tech.optJSONArray("metadata") ?: continue
+                        for (m in 0 until metadata.length()) {
+                            val meta = metadata.optJSONObject(m) ?: continue
+                            if (meta.optString("name", "").equals("public_key", ignoreCase = true)) {
+                                pubKey = meta.optString("value", "").trim()
+                                break
+                            }
+                        }
+                        if (pubKey.isNotBlank()) break
+                    }
+                }
+                if (pubKey.isBlank()) continue
+
+                val firstLocation = item.optJSONArray("locations")?.optJSONObject(0)
+                val countryObj = firstLocation?.optJSONObject("country")
+                val countryName = countryObj?.optString("name", "")?.trim().orEmpty()
+                val cityObj = countryObj?.optJSONObject("city")
+                val cityId = cityObj?.optInt("id", -1)?.takeIf { it > 0 }
+                val cityName = cityObj?.optString("name", "")?.trim()?.takeIf { it.isNotBlank() }
+
+                val matchesCity = (preferredCityId != null && cityId == preferredCityId) ||
+                    (!preferredCityName.isNullOrBlank() && cityName.equals(preferredCityName, ignoreCase = true))
+
+                candidates.add(
+                    Triple(
+                        matchesCity,
+                        load,
+                        NordLynxServerEndpoint(
+                            hostname = hostname,
+                            stationIp = stationIp,
+                            port = NordLynxServerEndpoint.DEFAULT_WIREGUARD_PORT,
+                            publicKey = pubKey,
+                            countryName = countryName,
+                            cityName = cityName,
+                            loadPercent = load
+                        )
+                    )
+                )
+            }
+            return candidates
+                .sortedWith(compareByDescending<Triple<Boolean, Int, NordLynxServerEndpoint>> { it.first }
+                    .thenBy { it.second })
+                .firstOrNull()
+                ?.third
         }
 
         fun parseRecommendedServersJson(jsonBody: String): List<NordVpnServer> {
@@ -164,7 +284,6 @@ class NordVpnApiClient(
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue
                 val hostname = item.optString("hostname", "").trim()
-                // Only accept genuine NordVPN SOCKS5 endpoints (*.socks.nordhold.net)
                 if (!NordVpnCatalog.isOfficialSocks5Host(hostname)) continue
                 if (!seenHosts.add(hostname.lowercase())) continue
                 val name = item.optString("name", "").trim().ifBlank { hostname.substringBefore('.') }
@@ -249,9 +368,44 @@ class NordVpnApiClient(
             )
         }
 
+        val locations = fetchAllLocations()
         val servers = fetchRecommendedSocksServers()
-        NordVpnLoginResult.Success(credentials = credentials, servers = servers)
+        NordVpnLoginResult.Success(credentials = credentials, servers = servers, locations = locations)
     }
+
+    suspend fun fetchAllLocations(): List<NordVpnLocation> = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url(COUNTRIES_ENDPOINT)
+            .header("Accept", "application/json")
+            .header("User-Agent", CinePlayerManager.DEFAULT_USER_AGENT)
+            .build()
+        val live = runCatching {
+            directApiClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use emptyList()
+                parseCountriesJson(resp.body?.string().orEmpty())
+            }
+        }.getOrDefault(emptyList())
+        NordVpnLocationCatalog.mergeWithLive(live)
+    }
+
+    suspend fun fetchRecommendedNordLynxServer(location: NordVpnLocation): NordLynxServerEndpoint? =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url(wireGuardRecommendationUrl(countryId = location.countryId, limit = 12))
+                .header("Accept", "application/json")
+                .header("User-Agent", CinePlayerManager.DEFAULT_USER_AGENT)
+                .build()
+            runCatching {
+                directApiClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    parseNordLynxRecommendationsJson(
+                        jsonBody = resp.body?.string().orEmpty(),
+                        preferredCityId = location.cityId,
+                        preferredCityName = location.cityName
+                    )
+                }
+            }.getOrNull()
+        }
 
     suspend fun fetchRecommendedSocksServers(): List<NordVpnServer> = withContext(Dispatchers.IO) {
         val req = Request.Builder()
@@ -267,7 +421,6 @@ class NordVpnApiClient(
             }
         }.getOrDefault(emptyList())
 
-        // Always keep official regional SOCKS5 presets merged cleanly without duplicates
         val merged = LinkedHashMap<String, NordVpnServer>()
         NordVpnCatalog.DEFAULT_SERVERS.forEach { merged[it.hostname.lowercase()] = it }
         live.forEach { merged.putIfAbsent(it.hostname.lowercase(), it) }

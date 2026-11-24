@@ -1,53 +1,52 @@
 # CineStream — Universal Cinema Media Player for Android Mobile & Android TV
 
-**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.21 / versionCode 21**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, and **NextLib native FFmpeg (`1.11.1-0.16.0`)**.
+**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.25 / versionCode 25**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, **NextLib native FFmpeg (`1.11.1-0.16.0`)**, and **embedded WireGuard (`com.wireguard.android:tunnel`, `GoBackend`)**.
 
-It runs from a single universal APK (`cinistream-v21.apk`, **36 MB**) across modern 64-bit Android phones/tablets (`arm64-v8a`), legacy 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs), and `x86_64` emulators.
+It ships as a single 36 MB universal APK (**`cinistream-v25.apk`** and **`CineStream-universal.apk`**) covering modern 64-bit phones and tablets (`arm64-v8a`), 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs), and `x86_64` emulators.
 
 ---
 
 ## Key Features
 
+### Editorial Cinema UI (v1.25 — 35mm Screening Room)
+- **Intentional Dark-Room Palette:** Warm carbon matte surfaces (`#09090B` / `#121215` / `#1A1A1F`), warm archival ivory ink (`#F4F1EA`), and projector tungsten gold (`#E8A435`) with whisper-thin `0.75dp` hairlines—eliminating glare and nested boxed-card clutter on both OLED phones and living-room TVs.
+- **Bundled Editorial Typography (`res/font/`):** Pairs **Fraunces** (editorial display headlines), **DM Sans** (crisp UI and body copy), and **JetBrains Mono** (timestamps, codecs, bitrates, and technical telemetry).
+- **Direct, Zero-Slop Copy:** All UI labels, dialogs, and empty states follow `no-ai-slop` writing rules—active voice, concrete terminology, and zero marketing filler.
+- **Refined Home & Player Surfaces:** Compact atmospheric hero, unified hairline-divided Stream Dock, 2:3 editorial poster cards, 16:9 Continue Watching cinema stills with flush progress rails, poster-backed Watchlist cards, and smoked-glass player HUD overlays.
+
 ### High-Speed Adaptive Streaming Engine (HLS, DASH, MKV, MP4, WebM, TS)
 - **Live-Streaming Parallel HLS & Progressive Byte-Range Prefetching (`ParallelPrefetchEngine`):**
-  - Tees HLS media playlists (`.m3u8` / `mpegurl`) with 0 ms overhead and streams **2× focused parallel segments on Android TV** (`<= 14 MB` RAM cap, `12 MB` single-segment VBR ceiling) and **3× on Mobile/Tablet** (`<= 28 MB` RAM cap, `16 MB` ceiling), backed by a **dedicated non-blocking audio lane** so demuxed 5.1/7.1 audio never queues behind video.
-  - **Zero-Wait Live Streaming Handoff (`StreamingPrefetchEntry`):** If ExoPlayer requests a segment already mid-download, it attaches immediately and streams 32 KB chunks live as they arrive — zero blocking wait, zero mid-download discard, and foreground-first anti-starvation on seeks/low buffer (`< 8s`).
-  - Accelerates direct progressive `.mp4` / `.mkv` / `.webm` URLs via **2–3× parallel `206 Content-Range` lookahead** (1.5–2 MB slices) with automatic single-stream fallback for non-range servers.
+  - Tees HLS media playlists (`.m3u8`) at 0 ms overhead and streams **2× focused parallel segments on Android TV** (`<= 14 MB` RAM cap, `12 MB` single-segment VBR ceiling) and **3× on Mobile/Tablet** (`<= 28 MB` RAM cap, `16 MB` ceiling), backed by a **dedicated non-blocking audio lane**.
+  - **Zero-Wait Live Handoff (`StreamingPrefetchEntry`):** ExoPlayer attaches mid-download and reads 32 KB chunks live as bytes arrive, with foreground-first anti-starvation during seeks or low buffer (`< 8s`) and automatic CPU throttling during software decode.
+  - Accelerates progressive `.mp4` / `.mkv` / `.webm` links via **2–3× parallel `206 Content-Range` lookahead** (1.5–2 MB slices) with automatic single-stream fallback.
 - **Self-Healing HTTP/3 (QUIC) ↔ HTTP/2 (TCP) Engine (`StreamingNetworkEngine` + `QuicThroughputWatchdog`):**
-  - Asynchronously initializes **Google Play Services Chromium Cronet** (`HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR + 0-RTT`) off the main thread, backed by a high-concurrency OkHttp HTTP/2 pool (`Dispatcher(maxRequests = 32, maxRequestsPerHost = 12)`, `ConnectionPool(12, 5m)`).
-  - **`QuicThroughputWatchdog` (RAM-Hit Immune):** Monitors pure `BandwidthMeter` socket throughput (`< 2.5 Mbps` for 3 windows) and mid-playback rebuffer stalls (`>= 2` stalls at `< 2.5 Mbps`) — immune to `1 ms` RAM prefetch hits — and immediately tears down throttled `udp6` QUIC sockets to reconnect over IPv4-first **HTTP/2 TCP** at the exact millisecond. Includes a persistent 1-tap **Network Engine (`Auto` / `HTTP/2` / `HTTP/3`)** selector in Tracks.
-- **In-Memory DNS Cache + Built-In Cloudflare `1.1.1.1` / Google `8.8.8.8` Encrypted DNS (DoH) (`FastDnsResolver` + `DohDnsClient`):** 5-minute TTL bounded DNS cache (128 hosts) with IPv4-first ordering and 1-tap encrypted DNS-over-HTTPS via direct bootstrap IPs (`1.1.1.1` / `1.0.0.1` or `8.8.8.8` / `8.8.4.4`) to bypass ISP DNS filtering/throttling without requiring root or an OS VPN slot.
-- **Built-In NordVPN Access Token Login & Live SOCKS5 Proxy Routing (`NordVpnApiClient` + `DynamicSocksProxyManager`):** Exchange a NordVPN Access Token directly with `api.nordvpn.com` (via in-app login or `NORDVPN_ACCESS_TOKEN` in AI Studio Secrets), store service credentials encrypted via **Android Keystore AES-256-GCM** (`CredentialVault`), pick regional NordVPN SOCKS5 exit servers, verify real exit IP / edge colo / latency via live **Test Connection**, and launch installed **1.1.1.1 WARP** or **NordVPN** system apps in 1 tap (with live `TRANSPORT_VPN` detection).
-- **Zero-eMMC-Stall TV RAM-Direct Mode & Buffered Mobile Edge Cache (`MediaEdgeCache`):**
-  - On Android TV and constrained-RAM devices, streams directly into ExoPlayer's heap-capped RAM buffer with **zero synchronous eMMC disk/SQLite writes** on the loader thread.
-  - On modern phones and tablets, caches VOD chunks in an LRU-capped **128 MB** edge disk cache with a **128 KB** buffered `CacheDataSink` (6× fewer flash write syscalls), bypassing manifests, subtitles, and local files.
-- **Instant HD Cold Start & Background Origin Pre-Warming:** Smart per-network initial bitrate estimates (`6 Mbps` TV Wi-Fi, `10 Mbps` phone Wi-Fi, `12 Mbps` Ethernet/5G) prevent blurry 480p first chunks, while debounced background `HEAD scheme://host/` preconnects warm DNS + TLS/QUIC sockets when opening playlists, Series drawers, or watching episodes.
-- **Fast Transient Wi-Fi Recovery (`FastStreamingLoadErrorHandlingPolicy`):** Retries momentary Wi-Fi drops in **`500 ms`** (half of ExoPlayer's default) while failing fast (`C.TIME_UNSET`) on permanent HTTP 4xx or parser errors so Multi-CDN mirror failover triggers immediately.
+  - Asynchronously initializes **Play Services Chromium Cronet** (`HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR + 0-RTT`) off the main thread, backed by an HTTP/2 OkHttp pool (`Dispatcher(maxRequests = 32, maxRequestsPerHost = 12)`, `ConnectionPool(12, 5m)`).
+  - **`QuicThroughputWatchdog` (RAM-Hit Immune):** Monitors pure `BandwidthMeter` socket throughput and mid-playback rebuffer stalls, immediately demoting UDP-throttled QUIC connections to IPv4-first **HTTP/2 TCP** at the exact millisecond. Includes a 1-tap **Network Transport (`Auto` / `HTTP/2` / `HTTP/3`)** selector in Tracks.
+- **Built-In Encrypted DNS (DoH) + Native In-App NordVPN NordLynx (WireGuard):**
+  - 5-minute TTL IPv4-first DNS cache (`FastDnsResolver`) with 1-tap **Cloudflare `1.1.1.1`** and **Google `8.8.8.8`** DNS-over-HTTPS via direct bootstrap IPs.
+  - Embedded **`NordLynxEngine`** (`GoBackend` WireGuard) exchanges your NordVPN Access Key for a Curve25519 private key (encrypted in **Android Keystore AES-256-GCM**), searches **118+ live NordVPN countries & cities**, and scopes the WireGuard tunnel per-app with `1.1.1.1` DNS—no external VPN app required.
+  - **Smart Auto-VPN Failover (`SmartVpnFailoverCoordinator`):** Optional setting that starts on fast direct ISP and connects NordLynx automatically only when streams stall or fail.
+- **Zero-eMMC-Stall TV RAM-Direct Mode & Mobile Edge Cache (`MediaEdgeCache`):**
+  - Android TV and low-RAM devices stream directly into ExoPlayer's heap-capped RAM buffer with zero synchronous eMMC disk writes.
+  - Modern phones and tablets use an LRU-capped **128 MB** edge disk cache with a **128 KB** `CacheDataSink` (6× fewer flash write syscalls), bypassing manifests, subtitles, and local files.
+- **Instant HD Cold Start, Origin Pre-Warming & Fast Retry (`FastStreamingLoadErrorHandlingPolicy`):** Smart initial bitrate estimates (`6 Mbps` TV Wi-Fi, `10 Mbps` phone Wi-Fi, `12 Mbps` Ethernet/5G), debounced `HEAD` origin preconnects, `500 ms` initial transient retry, and instant `C.TIME_UNSET` 4xx fail-fast for Multi-CDN failover.
 
-### Hybrid Hardware + Native FFmpeg 10-Bit Decoding
-- **Universal Stream & Local Playback:** Direct HTTP/HTTPS URLs (`HLS`, `M3U8`, `DASH`, `MKV`, `MP4`, `WEBM`, `TS`) and zero-permission local storage files via Android's Storage Access Framework (`OPEN_DOCUMENT`).
+### Hybrid Hardware + Native FFmpeg 10-Bit Decoding & Frame-Drop Diagnostics
 - **Hybrid GPU + Native FFmpeg Pipeline (`NextRenderersFactory` & `SmartMediaCodecSelector`):**
-  - Hardware GPU/DSP decoding first (`MediaCodec` with synchronous queueing for Snapdragon Codec 2.0 stability).
-  - Automatic zero-recreation failover to **NextLib native FFmpeg (`FfmpegVideoRenderer`)** supporting **10-bit HEVC (`Main 10`, e.g., 4K HDR10 `hvc1.2.4.H150.B0`)**, 8-bit HEVC, H.264, VP8/VP9, and **AV1 (`dav1d`)**.
-  - Automatic exclusion of Qualcomm `.low_latency` WebRTC codecs (`c2.qti.hevc.decoder.low_latency`) on VOD streams.
-  - Native FFmpeg audio decoding (**DTS, AC-3, E-AC-3, TrueHD, FLAC, ALAC, Opus, Vorbis, AAC**).
-  - Automatic Dolby Vision (`video/dolby-vision`) → HEVC (`video/hevc`) compatibility fallback.
-- **Tolerant HLS HEVC Parsing:** Configured with `FLAG_ALLOW_NON_IDR_KEYFRAMES | FLAG_DETECT_ACCESS_UNITS` to handle FFmpeg-muxed HLS `.ts`/fMP4 segments containing CRA/BLA non-IDR keyframes.
-- **Multi-Tier Self-Healing Error Recovery:** Automatic edge-cache bypass → bidirectional HW ↔ FFmpeg SW failover (with clean `surfaceResetToken` surface handoff) → automatic H.264/lower-resolution variant fallback → one-tap **Skip Bad Segment (+5s)**.
+  - Hardware GPU decoding first with automatic zero-recreation failover to **NextLib native FFmpeg (`FfmpegVideoRenderer`)** supporting **10-bit HEVC (`Main 10`, 4K HDR10)**, 8-bit HEVC, H.264, VP8/VP9, and **AV1 (`dav1d`)**.
+  - Automatic exclusion of Qualcomm `.low_latency` WebRTC codecs (`c2.qti.hevc.decoder.low_latency`) on VOD streams, Dolby Vision → HEVC base-layer fallback, and native FFmpeg audio (**DTS, AC-3, E-AC-3, TrueHD, FLAC, ALAC, Opus, Vorbis, AAC**).
+  - Tolerant HLS TS extraction (`FLAG_ALLOW_NON_IDR_KEYFRAMES | FLAG_DETECT_ACCESS_UNITS`) and clean `surfaceResetToken` surface handoff between `MediaCodec` and `FfmpegVideoRenderer`.
+- **Frame-Drop Root-Cause Diagnostics (`FrameDropAnalyzer` + `MediaCodecQueueingPolicy`):**
+  - Live rolling 3s `drops/sec` telemetry in **Stats for Nerds** classifying drops as **Healthy**, **Seek/Start Burst** (harmless), **Stream PTS / Re-Sync** (URL/origin-side), or **SW CPU Load** (player-side).
+  - Selective Android 12+ Async MediaCodec queueing (`Async`/`Sync` badge) and seamless display refresh-rate matching (`VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS`).
 
-### Unified Multi-JSON Catalogs, Series & Multi-CDN Resilience
-- **Multi-JSON Playlist Support (`MultiJsonPlaylistReducer`):** Load and persist **multiple** remote JSON playlist URLs (and local JSON files) simultaneously with automatic v1.18 single-URL migration, bounded-concurrency auto-loading on startup, collision-free item ID namespacing, instant **"All" + per-playlist switcher chips** in both Home and Player, inline `+` Add URL dialogs, per-playlist or Refresh-All syncing, and individual playlist removal.
-- **Unified Movie + Series JSON Playlists:** Each JSON catalog supports movies, multi-season TV series, seasons, episodes, auto-advance to next episode across playlists, and in-player episode/catalog switching.
-- **M3U / M3U8 IPTV Playlists:** Full `#EXTINF` parsing with category groups, channel logos, search, and live stream detection.
-- **Automatic IMDb Enrichment:** Extracts `tt*` IMDb IDs from playlist items and fetches posters, ratings, and release years automatically.
-- **Multi-CDN Mirror Failover & Inheritable HTTP Headers:** Per-item `mirrors`/`sources` + playlist-level path-preserving `cdnMirrors` host swaps with mid-stream failover at the exact millisecond, plus inheritable `Authorization`, `Referer`, `Origin`, and `User-Agent` headers (Playlist → Series → Season → Episode) propagated across both HTTP/3 Cronet and HTTP/2 OkHttp.
-
-### Audio, Subtitles, Telemetry & Android TV Ergonomics
-- **0%–200% Audio Volume Boost (+20 dB):** Hardware DSP amplification via `LoudnessEnhancer` paired with an API 28+ `DynamicsProcessing` soft-limiter to prevent clipping.
-- **Rich External & Embedded Subtitles:** Load `.srt`, `.vtt`, `.ass`, `.ssa`, `.ttml` from local storage or remote URLs, with customizable font size, text color, and background presets persisted via DataStore (plus automatic 1.35× TV legibility boost).
-- **YouTube-Style "Stats for Nerds" Overlay:** Live `HTTP/3` / `HTTP/2` transport pill, connection speed, network activity & buffer health sparklines, allocator buffer usage vs cap, JVM heap telemetry, rebuffer count/duration, dropped frames, active CDN node & `RAM Direct` / Edge cache status, and active video decoder tag (`HW` vs `SW · FFmpeg`).
-- **Zero-OOM Engineering for 32-bit Android 9 TVs:** Heap-bounded `LoadControl` (20–45s buffer window strictly capped at 12–40 MB, 2.5s start / 6s post-rebuffer cushion, 0–5s back-buffer), Stereo 2-ch audio priority on TV (eliminates 7.1 SW AAC underruns), faster TV ABR downshifts (`10s` decrease, `0.70f`, `1080p / 9.5 Mbps` cap), immediate `allocator.trim()` + `clearVideoSurface()`, RGB_565 Coil caching, and `onTrimMemory` socket/DNS/bitmap eviction.
-- **Full D-Pad & Remote Control Support:** Leanback launcher icon & banner, animated `tvFocusHighlight` borders, D-pad scrubbing, remote shortcuts, and zero-touch dead-end navigation across every dialog and sheet.
+### Multi-JSON Catalogs, Live TV EPG, Subtitles & Local Ecosystem
+- **Unified Multi-JSON Movie & Series Catalogs (`MultiJsonPlaylistReducer`):** Persist multiple JSON playlist URLs + local files simultaneously, switch via `"All"` or per-playlist chips, auto-fetch IMDb posters/ratings/years, and fail over across per-item `mirrors` and path-preserving `cdnMirrors` with inherited HTTP headers.
+- **Continue Watching, Watchlist & Global Search (Room v3):** Deduplicated per-series Continue Watching rail, per-episode resume + `Watched` badges, poster-backed Watchlist, and instant search across Watchlist, Catalogs, Live TV, Downloads, and History.
+- **OpenSubtitles REST API v1 (with `/api/v1/login` JWT Auth) & Dual Subtitles:** Search and download OpenSubtitles captions directly (using `OPENSUBTITLES_API_KEY` from AI Studio Secrets + optional encrypted account sign-in unlocking 20/day free or 1,000/day VIP quotas with live remaining-quota tracking), plus simultaneous top-screen secondary `.srt`/`.vtt` rendering (`SecondarySubtitleEngine`).
+- **Audio Precision & Playback Comfort:** `0%–200%` (+20 dB) Volume Boost, Night Mode dialogue boost DSP, zero-reload PCM Audio Delay (`-500 ms..+500 ms` via `DelayAudioProcessor`), `±100ms`/`±500ms` Subtitle Sync, Sleep Timer (`15m/30m/45m/60m/End of Ep` with 5s fade-out), Up-Next 10s countdown, Skip Intro (`+85s`), Hold-to-2× speed, Configurable Skip Interval (`5s/10s/15s/30s`), Chapter Markers & A-B Loop, Mobile PiP & Background Audio (`MediaPlaybackService`), and touch brightness/volume/pinch-to-zoom (`1.0×–2.5×`) gestures.
+- **Live TV XMLTV EPG & Channel Zapping:** Streams `.xml`/`.xml.gz` XMLTV guides (auto-detected from `#EXTM3U url-tvg`), renders Now/Next progress bars, and supports `CH-`/`CH+` and TV remote `ChannelUp`/`ChannelDown` zapping.
+- **Phone-to-TV Web Remote, Local Wi-Fi Sync, Offline Downloads & NAS/Jellyfin:** Built-in LAN HTTP server with pure-Kotlin QR code + 6-digit PIN (`LocalWebRemoteServer`), credential-free Wi-Fi & SAF JSON sync (`DeviceSyncCodec`), mobile offline MP4/MKV/HLS downloads (`OfflineDownloadManager`), and LAN **WebDAV / Jellyfin** streaming (`LocalNetworkClient`) with Keystore-encrypted credentials.
 
 ---
 
@@ -55,11 +54,11 @@ It runs from a single universal APK (`cinistream-v21.apk`, **36 MB**) across mod
 
 | Document | Description |
 | :--- | :--- |
-| [**Architecture & Codebase Guide**](docs/ARCHITECTURE.md) | End-to-end MVVM architecture, `StreamingNetworkEngine` request pipeline, state-frequency isolation, package/file inventory, Room/DataStore persistence, and resource lifecycle. |
-| [**Decoder & Playback Engine**](docs/DECODER_AND_PLAYBACK_ENGINE.md) | Media3 `1.11.1` + Play Services Cronet HTTP/3 + NextLib FFmpeg `1.11.1-0.16.0` internals, `FastDnsResolver`, `FastStreamingLoadErrorHandlingPolicy`, `SmartMediaCodecSelector`, `.low_latency` filtering, HW↔FFmpeg surface handoff, 5-layer error recovery, HLS TS flags, and 200% audio boost DSP. |
-| [**JSON Playlists, Series & In-App CDN Guide**](docs/PLAYLIST_AND_CDN_GUIDE.md) | Complete JSON playlist schema reference (Movies, Series, Seasons, Episodes, Mirrors, Headers, Subtitles), M3U IPTV format, IMDb enrichment, Multi-CDN failover, origin pre-warming, and TV RAM-Direct vs Mobile edge disk caching. |
-| [**Memory Management & Android TV Optimization**](docs/MEMORY_AND_TV_OPTIMIZATION.md) | Deep dive into 32-bit Android 9 TV OOM & buffering fixes, HTTP/3 Cronet on Android 9, TV RAM-Direct eMMC bypass, Stereo DSP priority, heap-capped buffering, surface reclamation, Coil RGB_565 optimization, ABI/APK compression, and Android TV D-pad ergonomics. |
-| [**Testing & Troubleshooting Playbook**](docs/TESTING_AND_TROUBLESHOOTING.md) | Running all 41 unit & Robolectric tests, reading Stats for Nerds diagnostics (`HTTP/3`, `RAM Direct`, `Decoder`, `Buffer Health`), and step-by-step troubleshooting for Android 9 TV Wi-Fi buffering, Qualcomm HEVC, 10-bit HDR10, HLS, and CDN issues. |
+| [**Architecture & Codebase Guide**](docs/ARCHITECTURE.md) | Complete v1.25 MVVM architecture, end-to-end streaming/prefetch/VPN pipeline, full 60+ file package inventory, Room v3 + Keystore persistence, state-frequency isolation, and UI design tokens. |
+| [**Decoder, Transport & Playback Engine**](docs/DECODER_AND_PLAYBACK_ENGINE.md) | Media3 `1.11.1`, Play Services Cronet HTTP/3 + `QuicThroughputWatchdog`, `ParallelPrefetchEngine`, `NordLynxEngine` WireGuard + DoH, NextLib FFmpeg 10-bit, `FrameDropAnalyzer`, `DelayAudioProcessor`, Night Mode DSP, and OpenSubtitles JWT client. |
+| [**Playlists, Live TV EPG, NAS & CDN Guide**](docs/PLAYLIST_AND_CDN_GUIDE.md) | Multi-JSON Movies & Series schema, field aliases, IMDb enrichment, 5-layer in-app CDN, M3U + XMLTV EPG format, WebDAV/Jellyfin streaming, and Phone-to-TV Web Remote / Wi-Fi Sync API. |
+| [**Memory Management & Android TV Optimization**](docs/MEMORY_AND_TV_OPTIMIZATION.md) | Zero-OOM engineering for 32-bit Android 9 TVs, bounded prefetch & heap budgets, TV RAM-Direct mode, APK compression (36 MB universal), and v1.25 10-foot TV ergonomics. |
+| [**Testing & Troubleshooting Playbook**](docs/TESTING_AND_TROUBLESHOOTING.md) | Running all **90 unit & Robolectric tests across 14 suites**, interpreting every Stats for Nerds indicator, and troubleshooting Wi-Fi buffering, QUIC throttling, frame drops, HEVC 10-bit, VPN, OpenSubtitles auth, and audio lip-sync. |
 
 ---
 
@@ -67,14 +66,14 @@ It runs from a single universal APK (`cinistream-v21.apk`, **36 MB**) across mod
 
 | Category | Supported Formats / Protocols / Codecs | Engine |
 | :--- | :--- | :--- |
-| **Network Transports** | **HTTP/3 (QUIC + TLS 1.3 + BBR + 0-RTT)**, **HTTP/2 Multiplexed**, HTTP/1.1 Fallback, IPv4-First Cached DNS | **Play Services Cronet `18.1.1`** + **OkHttp `4.10.0`** |
-| **Streaming Protocols** | HLS (`.m3u8` TS & fMP4/CMAF), DASH (`.mpd`), Progressive HTTP/HTTPS | Media3 ExoPlayer `1.11.1` |
+| **Network Transports** | **HTTP/3 (QUIC + TLS 1.3 + BBR)**, **HTTP/2 Multiplexed**, Parallel HLS/Byte-Range Prefetch, DoH (`1.1.1.1`/`8.8.8.8`), WireGuard NordLynx | **Play Services Cronet `18.1.1`**, **OkHttp `4.10.0`**, **`GoBackend` WireGuard** |
+| **Streaming Protocols** | HLS (`.m3u8` TS & fMP4/CMAF), DASH (`.mpd`), Progressive HTTP/HTTPS, WebDAV, Jellyfin | Media3 ExoPlayer `1.11.1` + `LocalNetworkClient` |
 | **Containers** | MP4, MKV (Matroska), WebM, MPEG-TS, FLV, OGG, Local `content://` / `file://` | Media3 Extractors + Tolerant TS |
-| **Video (Hardware)** | H.264/AVC, HEVC/H.265 (8-bit & 10-bit HDR10), VP8, VP9, AV1, Dolby Vision (with HEVC fallback) | Android `MediaCodec` (Sync Queueing) |
-| **Video (Software Fallback)** | **HEVC/H.265 8-bit & 10-bit Main 10**, H.264, VP8, VP9, **AV1 (`dav1d`)** | **NextLib Native FFmpeg (`FfmpegVideoRenderer`)** + Android SW |
+| **Video (Hardware)** | H.264/AVC, HEVC/H.265 (8-bit & 10-bit HDR10), VP8, VP9, AV1, Dolby Vision (HEVC fallback) | Android `MediaCodec` (Selective Async/Sync) |
+| **Video (Software Fallback)** | **HEVC/H.265 8-bit & 10-bit Main 10**, H.264, VP8, VP9, **AV1 (`dav1d`)** | **NextLib Native FFmpeg (`FfmpegVideoRenderer`)** |
 | **Audio** | AAC, MP3, Opus, Vorbis, FLAC, PCM, **AC-3, E-AC-3, DTS, TrueHD, ALAC** | Platform `MediaCodec` + **NextLib FFmpeg (`FfmpegAudioRenderer`)** |
-| **Subtitles** | SRT, WebVTT (`.vtt`), ASS/SSA, TTML, Embedded Closed Captions | Media3 `SubtitleView` + `MergingMediaSource` |
-| **Playlists** | Unified JSON (Movies + Multi-Season Series), M3U / M3U8 IPTV | `JsonPlaylistParser` & `M3uPlaylistParser` |
+| **Subtitles** | SRT, WebVTT (`.vtt`), ASS/SSA, TTML, Embedded CC, Dual Subtitles, OpenSubtitles REST v1 | Media3 `SubtitleView` + `SecondarySubtitleEngine` |
+| **Playlists & Guides** | Multi-JSON (Movies + Multi-Season Series), M3U / M3U8 IPTV, XMLTV EPG (`.xml`/`.xml.gz`) | `JsonPlaylistParser`, `M3uPlaylistParser`, `XmltvEpgParser` |
 
 ---
 
@@ -82,27 +81,27 @@ It runs from a single universal APK (`cinistream-v21.apk`, **36 MB**) across mod
 
 ### Requirements
 - **Android SDK:** `compileSdk = 36`, `targetSdk = 36`, `minSdk = 24` (Android 7.0+)
-- **JDK:** Java 11+
+- **JDK:** Java 17
 - **Build Tool:** Gradle (Kotlin DSL)
 
 ### Build & Verify
 ```bash
-# Run all 61 unit & Robolectric Compose UI tests
+# Run all 90 unit & Robolectric Compose UI tests across 14 suites
 gradle :app:testDebugUnitTest
 
 # Build universal debug APK (arm64-v8a + armeabi-v7a + x86_64)
 gradle :app:assembleDebug
 
-# Output APK location
-# app/build/outputs/apk/debug/app-debug.apk
-# Pre-packaged root artifact: ./cinistream-v21.apk (36 MB)
+# Pre-packaged root APKs (v1.25 / 36 MB):
+#   ./cinistream-v25.apk
+#   ./CineStream-universal.apk
 ```
 
 ### Installing on Phone or Android TV
-1. Transfer **`cinistream-v21.apk`** to your Android phone, tablet, or Android TV.
-2. Enable **Install Unknown Apps** for your file manager or sideloading tool.
-3. Install `cinistream-v21.apk` (universal build covers both 64-bit phones and 32-bit Android TVs).
-4. Optional: open **1.1.1.1 / VPN** from the Home header (or Player → Tracks) to enable **Cloudflare 1.1.1.1 DoH**, sign in with your **NordVPN Access Token**, switch regions, or tap **Disable 1.1.1.1 & NordVPN (Direct ISP)** anytime.
+1. Use AI Studio's **Settings → Generate APK** (recommended if you configured `OPENSUBTITLES_API_KEY` or `NORDVPN_ACCESS_TOKEN` in the AI Studio Secrets panel so your keys are injected) or sideload **`cinistream-v25.apk`**.
+2. Enable **Install Unknown Apps** for your file manager or sideloader and install.
+3. **Optional — OpenSubtitles Sign-In:** In **Player → CC (Subtitles) → OpenSubtitles Search**, sign in once with your OpenSubtitles username & password to unlock authenticated free (20/day) or VIP (1,000/day) downloads.
+4. **Optional — DNS & NordVPN:** Open **DNS & VPN** from the Home header to enable Cloudflare `1.1.1.1` DoH, connect any of **118+ NordVPN countries/cities** via embedded WireGuard NordLynx, or enable **Auto-VPN Failover**.
 
 ---
 
@@ -112,13 +111,14 @@ gradle :app:assembleDebug
 | :--- | :--- | :--- |
 | **Show / Hide Controls** | Single tap on video | `DPAD_CENTER` / `OK` / `MENU` |
 | **Play / Pause** | Center Play/Pause button | `MEDIA_PLAY_PAUSE` or `OK` on Play button |
-| **Seek −10s / +10s** | Double-tap left / right side | `DPAD_LEFT` / `DPAD_RIGHT` (or `MEDIA_REWIND` / `MEDIA_FAST_FORWARD`) |
-| **Precision Timeline Scrub** | Drag CinemaSeekBar | Focus SeekBar + hold `DPAD_LEFT` / `DPAD_RIGHT` |
-| **Volume Boost (0%–200%)** | Vertical swipe on right side OR Volume button | Focus Volume button → `DPAD_LEFT` / `DPAD_RIGHT` |
-| **Decoder / Quality / Audio / Stats** | Tap **Tracks** icon in top bar | Focus **Tracks** icon → select Video Quality, Audio, **Video Decoder Engine**, or **Stats for Nerds** |
-| **Subtitles** | Tap **CC** icon | Focus **CC** icon → toggle, load local/URL subtitle, or style font/colors |
-| **Next Episode / Series Drawer** | Tap **Next Ep** or **Episodes / Catalog** icon | Focus **Next Ep** or **Playlist** button |
-| **Exit Player Safely** | Back button / system back gesture | `BACK` key (automatically stops playback, detaches surface & trims buffers) |
+| **Seek −10s / +10s** *(configurable 5–30s)* | Double-tap left / right side | `DPAD_LEFT` / `DPAD_RIGHT` or `MEDIA_REWIND` / `MEDIA_FAST_FORWARD` |
+| **Hold 2.0× Speed** | Press and hold anywhere on video | Speed menu in player bar |
+| **Precision Timeline Scrub** | Drag `CinemaSeekBar` or tap `-1m`/`+1m` | Focus SeekBar + hold `DPAD_LEFT` / `DPAD_RIGHT` |
+| **Brightness / Volume / Zoom** | Left swipe (brightness), Right swipe (0–200% volume), Pinch (`1.0×–2.5×`) | Focus Volume button → `DPAD_LEFT` / `DPAD_RIGHT` |
+| **Live TV Channel Zap** | `CH-` / `CH+` buttons in top bar | Remote `CHANNEL_UP` / `CHANNEL_DOWN` keys |
+| **Playback, Tracks & Audio DSP** | Tap **Tracks** icon | Focus **Tracks** → Quality, Audio, Decoder, Transport, Delay, Night Mode, Sleep Timer, A-B Loop, Stats |
+| **Subtitles & OpenSubtitles** | Tap **CC** icon | Focus **CC** → Tracks, OpenSubtitles Search/Sign-In, Dual Subtitles, Sync, Style |
+| **Exit Player Safely** | Back button / gesture | `BACK` key (saves position, clears surface & trims buffers) |
 
 ---
 
@@ -126,45 +126,57 @@ gradle :app:assembleDebug
 
 ```text
 .
-├── README.md                          # Project overview, quick start & version history
+├── README.md                          # Project overview, quick start & complete version history
+├── cinistream-v25.apk                 # Universal Phone + Android TV APK (v1.25 / 36 MB)
+├── CineStream-universal.apk           # Latest universal APK alias (v1.25 / 36 MB)
 ├── eg-playlist.json                   # Sample unified Movie + Multi-Season Series + CDN playlist
-├── cinistream-v21.apk                 # Latest universal Phone + Android TV APK (v1.21, 36 MB)
+├── .env.example                       # Optional secret placeholders (OPENSUBTITLES_API_KEY, NORDVPN_ACCESS_TOKEN)
 ├── docs/
-│   ├── ARCHITECTURE.md                # Full MVVM architecture, request pipeline & state isolation
-│   ├── DECODER_AND_PLAYBACK_ENGINE.md # Cronet HTTP/3, Media3 1.11.1 + NextLib FFmpeg 10-bit & recovery
-│   ├── PLAYLIST_AND_CDN_GUIDE.md      # JSON/M3U schemas, Series structure, CDN failover & pre-warming
-│   ├── MEMORY_AND_TV_OPTIMIZATION.md  # Zero-OOM Android 9 TV engineering, RAM-Direct & D-pad guide
-│   └── TESTING_AND_TROUBLESHOOTING.md # 61-test suite, Stats for Nerds guide & issue playbooks
-├── gradle/libs.versions.toml          # Version catalog (Media3 1.11.1, Cronet 18.1.1, NextLib 1.11.1-0.16.0)
+│   ├── ARCHITECTURE.md                # Full v1.25 MVVM architecture, pipeline & complete module inventory
+│   ├── DECODER_AND_PLAYBACK_ENGINE.md # Cronet HTTP/3, ParallelPrefetch, NordLynx, FFmpeg 10-bit, FrameDropAnalyzer & Audio DSP
+│   ├── PLAYLIST_AND_CDN_GUIDE.md      # Multi-JSON/M3U/XMLTV schemas, NAS/Jellyfin, Web Remote & 5-layer CDN
+│   ├── MEMORY_AND_TV_OPTIMIZATION.md  # Zero-OOM Android 9 TV engineering, APK sizing & v1.25 10-foot UI
+│   └── TESTING_AND_TROUBLESHOOTING.md # 90-test suite (14 files), Stats for Nerds reference & issue playbooks
+├── gradle/libs.versions.toml          # Version catalog (Media3 1.11.1, Cronet 18.1.1, NextLib, WireGuard, Room)
 └── app/src/
-    ├── main/java/com/example/
-    │   ├── CineStreamApplication.kt   # Async Cronet HTTP/3 init, FastDns/DoH + SOCKS5 OkHttp pool, RGB_565 Coil
-    │   ├── MainActivity.kt            # Edge-to-edge host, Navigation Compose, Privacy sheet & VIEW intent router
-    │   ├── data/                      # Room history DB & DataStore subtitle/decoder/transport/privacy prefs
-    │   ├── model/                     # StreamFormat, JsonPlaylistItem, SeriesSeason, SeriesEpisode, Tracks
-    │   ├── player/                    # CinePlayerManager, PrivateDnsAndVpnEngine, NordVpnApiClient,
-    │   │                              # ParallelPrefetchEngine, StreamingNetworkEngine, DecoderEngine,
-    │   │                              # CdnMirrorResolver, MediaEdgeCache, AudioVolumeBooster,
-    │   │                              # JsonPlaylistParser, M3uPlaylistParser, ImdbMetadataClient,
-    │   │                              # MediaFormatDetector, PlayerNetworkStats, SeekBarScrubEngine, SubtitleHelper
-    │   ├── ui/                        # HomeScreen, PlayerScreen, NetworkPrivacySheet, overlays, sheets & theme
-    │   └── viewmodel/                 # CineStreamViewModel, NetworkPrivacyState & MultiJsonPlaylistReducer
-    └── test/java/com/example/         # 12 JVM unit & Robolectric Compose UI test suites (61 tests)
+    ├── main/
+    │   ├── res/font/                  # Bundled Fraunces, DM Sans & JetBrains Mono (.ttf)
+    │   ├── res/values/strings.xml     # Zero-slop UI strings
+    │   └── java/com/example/
+    │       ├── CineStreamApplication.kt   # Async Cronet HTTP/3, FastDns/DoH + OkHttp pool, RGB_565 Coil, onTrimMemory
+    │       ├── MainActivity.kt            # Edge-to-edge host, Navigation Compose, PiP, VPN consent & VIEW intents
+    │       ├── data/                      # Room v3 DB (History, Favorites, Downloads, NAS), DataStore & DeviceSyncCodec
+    │       ├── model/                     # MediaModels & V24Models (EPG, SleepTimer, AbLoop, Chapters, OpenSubtitles)
+    │       ├── player/                    # 26 playback, transport, prefetch, VPN, decoder, DSP, subtitle & NAS engines
+    │       ├── remote/                    # LocalWebRemoteServer (LAN HTTP + Sync) & QrCodeMatrixGenerator
+    │       ├── ui/                        # 35mm Screening Room theme, Home, Player, 15 sheets/overlays & TV utilities
+    │       └── viewmodel/                 # CineStreamViewModel, MultiJsonPlaylistState, NetworkPrivacyState, V24UiStates
+    └── test/java/com/example/             # 14 JVM unit & Robolectric Compose UI test suites (90 tests)
 ```
 
 ---
 
 ## Version History Highlights
 
-- **v1.21 (`cinistream-v21.apk`, 36 MB):** Added 1-tap **"Disable 1.1.1.1 & NordVPN (Direct ISP)"** button inside `NetworkPrivacySheet` (resets DoH + NordVPN SOCKS5 to direct ISP and evicts sockets while keeping saved key & chosen region ready for instant re-enable); fixed Home header UI collision on Phone & Android TV by moving **`Now Playing`** into its own dedicated full-width banner row cleanly below the brand + **`1.1.1.1 / VPN`** pill; clarified the 12 official NordVPN SOCKS5 proxy regions vs. 118+ NordLynx/WireGuard countries via the integrated **NordVPN App** launcher. Verified with 61/61 passing unit & Robolectric Compose UI tests (including compact 360dp zero-overlap layout assertions).
-- **v1.20 (`cinistream-v20.apk`, 36 MB):** Integrated **Cloudflare `1.1.1.1` Encrypted DNS-over-HTTPS (DoH)** (plus `Google 8.8.8.8` DoH and `System DNS`) directly into `FastDnsResolver`, and built-in **NordVPN Access Token Login + Live SOCKS5 Proxy Routing** (`PrivateDnsAndVpnEngine`, `NordVpnApiClient`, `CredentialVault` Android Keystore AES-256-GCM encryption, regional SOCKS5 server picker, automatic OkHttp routing when Private DNS/NordVPN is active while keeping LAN/loopback/DoH/API hosts bypassed, and live **Test Connection** exit IP, edge colo & latency probe via Cloudflare trace); added **Android System VPN (`TRANSPORT_VPN`) detection + 1-tap launchers** for installed **1.1.1.1 WARP** and **NordVPN** apps (Mobile + Android TV Leanback); added TV/Mobile **`NetworkPrivacySheet`** accessible from Home header & Player Tracks, plus live **`1.1.1.1` / `NORD` / `VPN`** badges in Stats for Nerds. Verified with 59/59 passing unit & Robolectric Compose UI tests.
-- **v1.19 (`cinistream-v19.apk`, 36 MB):** Added full **Multi-JSON Playlist** support across Phone and Android TV: persist multiple remote JSON playlist URLs in DataStore (with automatic upgrade migration from v1.18's single saved URL) and load local JSON files alongside them; concurrent bounded startup loading (silent per-URL failure tolerance so one offline feed never blocks others); collision-free item ID namespacing (`MultiJsonPlaylistReducer`) so combined `"All"` catalogs never collide; TV-focusable **`All (N)` + individual playlist switcher chips** in both `HomeScreen` and `JsonPlaylistSheet` (with source badges in `"All"` view); inline **`+` Add JSON URL** controls in both the Home launcher card and `JsonPlaylistSheet`, per-playlist or Refresh-All syncing, individual playlist removal, and cross-playlist Series/Next-Episode resolution.
-- **v1.18 (`cinistream-v18.apk`, 36 MB):** Upgraded `ParallelPrefetchEngine` with **live progressive streaming handoff (`StreamingPrefetchEntry`)** so ExoPlayer attaches mid-download at 0 ms and reads 32 KB chunks live (eliminating blocking waits and the 6 MB VBR segment discard cliff); raised single-segment ceilings to **12 MB (TV) / 16 MB (Mobile)**; added **foreground-first anti-starvation** (`1×` lookahead during seeks/low buffer `< 8s`, focused `2×` TV / `3×` Mobile steady-state) and a **dedicated non-blocking audio prefetch lane**; fixed `QuicThroughputWatchdog` to ignore `1 ms` RAM prefetch hits and monitor pure `BandwidthMeter` samples + rebuffer stalls (`>= 2` stalls at `< 2.5 Mbps`) with immediate HTTP/2 IPv4 TCP socket reconnection; tightened TV `Stats for Nerds` vertical spacing so it never overlaps the bottom-left seekbar timestamp when controls are open.
-- **v1.17 (`cinistream-v17.apk`, 36 MB):** Added `ParallelPrefetchEngine` (`HlsSegmentIndex`, `ParallelHlsPrefetchManager`, `ParallelPrefetchDataSource`) to download **3× parallel HLS segments on Android TV** (`<= 12 MB` consume-once RAM cap) and **4× on Mobile** (`<= 24 MB` cap), plus **2–3× parallel `206 Content-Range` lookahead** for progressive `.mp4`/`.mkv`/`.webm` streams, multiplying cold Cloudflare/S3 origin throughput 2×–4× while staying 100% OOM-proof; raised OkHttp `Dispatcher` (`maxRequests = 32, maxRequestsPerHost = 12`) and `ConnectionPool(12, 5m)`; added `QuicThroughputWatchdog` (auto-demotes Cronet HTTP/3 to HTTP/2 TCP after 3 slow `< 2 Mbps` segments or QUIC I/O errors when ISPs throttle UDP-443); added persistent 1-tap **Network Engine (`Auto` / `HTTP/2` / `HTTP/3`)** selector in `TracksSheet`; added inline `3×/4× Prefetch (hit%)` telemetry in Stats for Nerds and OS `onTrimMemory` prefetch RAM eviction.
-- **v1.16 (`cinistream-v16.apk`, 36 MB):** Added `StreamingNetworkEngine` with asynchronous **Google Play Services Cronet (`HTTP/3 QUIC + TLS 1.3 + BoringSSL + BBR + 0-RTT`)** and automatic zero-crash fallback to HTTP/2 OkHttp (strictly excluding slow Java HTTP/1.1 Cronet fallback); added 5-minute IPv4-first `FastDnsResolver`; switched constrained Android TVs to **RAM-Direct mode** (eliminating slow eMMC `SimpleCache` flash-write stalls on ExoPlayer's loader thread) while upgrading mobile disk edge cache writes to `128 KB` buffers; added smart Wi-Fi/Ethernet/5G initial bitrate estimates (`6 Mbps` TV / `10 Mbps` phone) + debounced `HEAD` origin pre-warming; added `FastStreamingLoadErrorHandlingPolicy` (`500 ms` initial transient retry + fail-fast 4xx Multi-CDN failover); added compact `HTTP/3` / `HTTP/2` transport pill and `RAM Direct` telemetry in Stats for Nerds.
-- **v1.15 (`cinistream-v15.apk`, 34 MB):** Switched Media3 streaming transport to HTTP/2 multiplexed `OkHttpDataSource` (fixing 3.95 Mbps Android 9 TV HTTP/1.1 bottleneck on demuxed fMP4 HLS), prioritized 2-channel Stereo hardware DSP audio on Android TV (eliminating 7.1 SW AAC `AudioTrack` underruns), tuned faster TV ABR downshifts (`0.70f` bandwidth fraction, 10s decrease window, 9.5 Mbps 1080p TV cap), and upgraded the heap-capped `LoadControl` to 20–45s / 12–40 MB / 2.5s play / 6s rebuffer / 0–5s back-buffer.
-- **v1.14 (`cinistream-v14.apk`, 34 MB):** Upgraded Media3 to `1.11.1`, integrated **NextLib native FFmpeg (`1.11.1-0.16.0`)** for **10-bit HEVC Main 10**, AV1 (`dav1d`), and DTS/AC-3/TrueHD decoding; blocked `.low_latency` Qualcomm WebRTC codecs; added clean `surfaceResetToken` surface handoff; added deterministic `allocator.trim()` + `clearVideoSurface()` + OkHttp pool eviction; compressed universal APK to 34 MB.
-- **v1.13 (`cinistream-v13.apk`, 23 MB):** Added tolerant HLS HEVC TS extraction (`FLAG_ALLOW_NON_IDR_KEYFRAMES | FLAG_DETECT_ACCESS_UNITS`), synchronous MediaCodec queueing (`forceDisableMediaCodecAsynchronousQueueing()`), automatic edge-cache bypass on decode errors, bidirectional HW↔SW + H.264/lower-res track fallback, and `Skip Bad Segment (+5s)`.
-- **v1.12 (`cinistream-v12.apk`):** Introduced `DecoderEngine` (`VideoDecoderMode`, `SmartMediaCodecSelector`), Qualcomm `c2.qti.hevc.decoder` detection & automatic SW failover, Dolby Vision → HEVC fallback, Tracks decoder mode selector, and active Decoder row in Stats for Nerds.
-- **v1.11 (`cinistream-v11.apk`):** Added unified Movies + Multi-Season Series JSON playlists (`SeriesDetailSheet`, `Next Ep`, auto-advance) and 3-layer hybrid in-app CDN engine (`CdnMirrorResolver`, `MediaEdgeCache`, custom HTTP headers).
-- **v1.10 (`cinistream-v10.apk`):** Added YouTube-style **Stats for Nerds** telemetry with sparklines, removed Gemini dependencies cleanly, and hardened 32-bit Android 9 TV memory safety (Zero-OOM `LoadControl`, `largeHeap`, RGB_565 Coil, isolated `PlaybackProgressState`).
+- **v1.25 (`cinistream-v25.apk`, 36 MB):** Complete **"No-AI-Slop" Editorial Cinema UI Revamp (35mm Screening Room)** + **OpenSubtitles Account Sign-In (`/api/v1/login` JWT Auth)**.
+  - Replaced generic Tailwind-slate dark SaaS colors with warm film-black carbon surfaces (`#09090B`/`#121215`/`#1A1A1F`), archival warm ivory ink (`#F4F1EA`), projector tungsten gold (`#E8A435`), and `0.75dp` hairlines.
+  - Upgraded bundled typography to **Fraunces** (editorial display), **DM Sans** (UI/body), and **JetBrains Mono** (technical telemetry).
+  - Applied `petergyang/no-ai-slop` writing rules across `strings.xml` and composables—cutting filler, passive phrasing, and marketing clichés.
+  - Unboxed the Home Stream Dock (hairline-separated Subtitle & JSON rows instead of nested cards), upgraded Watchlist cards with 2:3 poster artwork thumbnails, refined 2:3 poster cards and 16:9 Continue Watching cinema stills with flush bottom progress rails, and harmonized player seekbar & HUD overlays into warm smoked-glass chrome.
+  - Added full OpenSubtitles `/api/v1/login` JWT Bearer authentication, VIP/standard dynamic base URL routing, live remaining daily download quota display, and Android Keystore AES-256-GCM encrypted account persistence.
+  - Verified with **90/90** passing unit & Robolectric Compose UI tests across 14 suites.
+- **v1.24:** Shipped 13 end-to-end features across Phone and Android TV: Phone-to-TV Web Remote & QR Link Sender, Local Wi-Fi Sync & SAF JSON Backup, Up-Next 10s Episode Countdown + Skip Intro (`+85s`), Sleep Timer with 5s fade-out, Night Mode / Dialogue Boost DSP, Preferred Audio & Subtitle Language Defaults, Hold-to-2× Fast Forward & Configurable Skip Interval, Chapter Markers & A-B Loop, Global Search & Unified Watchlist (Room v3), Live TV XMLTV EPG Guide & Channel Zapping, Online OpenSubtitles Search & Dual Subtitles, Mobile Offline Downloads (MP4/MKV & HLS), and Local Network Browser (WebDAV + Jellyfin).
+- **v1.23:** Added Frame-Drop Root-Cause Diagnostics (`FrameDropAnalyzer` + selective Android 12+ Async MediaCodec queueing + seamless display refresh-rate matching + SW-decode prefetch CPU throttling), Continue Watching & Per-Episode Resume (Room v2), Mobile PiP & Background Audio Playback, Real-Time Audio Delay (`DelayAudioProcessor`) & Subtitle Sync, Left-Side Brightness Swipe & Pinch-to-Zoom (`1.0×–2.5×`), and Smart Auto-VPN Failover.
+- **v1.22:** Embedded native in-app WireGuard (`GoBackend`) NordLynx engine supporting all 118+ NordVPN countries & cities directly inside CineStream with searchable location picker and per-app `1.1.1.1` DNS.
+- **v1.21:** Added 1-tap Direct ISP disable button in Privacy sheet and separated the Home `Resume` banner cleanly below the header on compact phones and Android TV.
+- **v1.20:** Integrated Cloudflare `1.1.1.1` / Google `8.8.8.8` Encrypted DNS-over-HTTPS (DoH), NordVPN Access Token login + Keystore encryption (`CredentialVault`), and live Cloudflare trace route testing.
+- **v1.19:** Added Multi-JSON Playlist persistence, concurrent loading, collision-free item namespacing (`MultiJsonPlaylistReducer`), `"All"` + per-playlist switcher chips, and cross-playlist series navigation.
+- **v1.18:** Upgraded `ParallelPrefetchEngine` with zero-wait live progressive streaming handoff (`StreamingPrefetchEntry`), 12–16 MB VBR ceilings, dedicated audio lane, and RAM-hit-immune `QuicThroughputWatchdog`.
+- **v1.17:** Added `ParallelPrefetchEngine` (parallel HLS segments + progressive `206 Content-Range` lookahead), high-concurrency OkHttp pooling, and persistent Network Transport selector (`Auto`/`HTTP/2`/`HTTP/3`).
+- **v1.16:** Added `StreamingNetworkEngine` (asynchronous Play Services Cronet HTTP/3 QUIC), 5-min IPv4-first `FastDnsResolver`, Android TV RAM-Direct mode, origin pre-warming, and `FastStreamingLoadErrorHandlingPolicy`.
+- **v1.15:** Switched streaming transport to HTTP/2 `OkHttpDataSource`, prioritized Stereo 2-ch hardware DSP audio on Android TV, tuned faster TV ABR downshifts, and upgraded heap-capped `LoadControl` to 20–45s / 12–40 MB.
+- **v1.14:** Upgraded Media3 to `1.11.1`, integrated NextLib native FFmpeg (`1.11.1-0.16.0`) for 10-bit HEVC Main 10, AV1, and DTS/AC-3/TrueHD, blocked `.low_latency` Qualcomm WebRTC codecs, and added `surfaceResetToken` surface handoff.
+- **v1.13:** Added tolerant HLS HEVC TS flags, synchronous MediaCodec queueing, automatic cache bypass on decode error, bidirectional HW↔SW fallback, and `Skip Bad Segment (+5s)`.
+- **v1.12:** Introduced `DecoderEngine` (`VideoDecoderMode`, `SmartMediaCodecSelector`), Qualcomm HEVC failover, Dolby Vision → HEVC fallback, and Decoder telemetry.
+- **v1.11:** Added unified Movies + Multi-Season Series JSON playlists (`SeriesDetailSheet`, `Next Ep`) and hybrid in-app CDN (`CdnMirrorResolver`, `MediaEdgeCache`, custom HTTP headers).
+- **v1.10:** Added YouTube-style **Stats for Nerds** telemetry with sparklines and hardened 32-bit Android 9 TV Zero-OOM memory safety.

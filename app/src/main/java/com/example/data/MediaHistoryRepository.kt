@@ -13,7 +13,14 @@ class MediaHistoryRepository(private val dao: MediaHistoryDao) {
         sourceUri: String,
         format: StreamFormat,
         isLocalFile: Boolean,
-        subtitle: ExternalSubtitle?
+        subtitle: ExternalSubtitle?,
+        seriesId: String? = null,
+        seriesTitle: String? = null,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null,
+        episodeId: String? = null,
+        posterUrl: String? = null,
+        playlistId: String? = null
     ): MediaHistoryEntity {
         val existing = dao.getBySourceUri(sourceUri)
         val now = System.currentTimeMillis()
@@ -25,7 +32,14 @@ class MediaHistoryRepository(private val dao: MediaHistoryDao) {
                 subtitleUri = subtitle?.uri ?: existing.subtitleUri,
                 subtitleName = subtitle?.label ?: existing.subtitleName,
                 subtitleMimeType = subtitle?.mimeType ?: existing.subtitleMimeType,
-                lastPlayedAt = now
+                lastPlayedAt = now,
+                seriesId = seriesId ?: existing.seriesId,
+                seriesTitle = seriesTitle ?: existing.seriesTitle,
+                seasonNumber = seasonNumber ?: existing.seasonNumber,
+                episodeNumber = episodeNumber ?: existing.episodeNumber,
+                episodeId = episodeId ?: existing.episodeId,
+                posterUrl = posterUrl ?: existing.posterUrl,
+                playlistId = playlistId ?: existing.playlistId
             )
         } else {
             MediaHistoryEntity(
@@ -36,7 +50,14 @@ class MediaHistoryRepository(private val dao: MediaHistoryDao) {
                 subtitleUri = subtitle?.uri,
                 subtitleName = subtitle?.label,
                 subtitleMimeType = subtitle?.mimeType,
-                lastPlayedAt = now
+                lastPlayedAt = now,
+                seriesId = seriesId,
+                seriesTitle = seriesTitle,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+                episodeId = episodeId,
+                posterUrl = posterUrl,
+                playlistId = playlistId
             )
         }
         dao.upsert(updated)
@@ -61,11 +82,48 @@ class MediaHistoryRepository(private val dao: MediaHistoryDao) {
         )
     }
 
+    suspend fun saveSyncOffsets(sourceUri: String, subtitleOffsetMs: Long, audioDelayMs: Long) {
+        if (sourceUri.isBlank()) return
+        dao.updateSyncOffsets(sourceUri, subtitleOffsetMs, audioDelayMs)
+    }
+
+    suspend fun clearResumeProgress(id: Long) {
+        dao.clearResumeProgress(id)
+    }
+
     suspend fun togglePin(item: MediaHistoryEntity) {
         dao.setPinned(item.id, !item.isPinned)
     }
 
     suspend fun deleteItem(id: Long) {
         dao.deleteById(id)
+    }
+
+    suspend fun getAllHistory(): List<MediaHistoryEntity> = dao.getAllHistory()
+
+    suspend fun mergeSyncedHistory(items: List<MediaHistoryEntity>): Int {
+        var merged = 0
+        for (incoming in items) {
+            val existing = dao.getBySourceUri(incoming.sourceUri)
+            if (existing == null) {
+                dao.upsert(incoming.copy(id = 0L))
+                merged++
+            } else if (incoming.lastPlayedAt > existing.lastPlayedAt) {
+                dao.upsert(
+                    existing.copy(
+                        title = incoming.title.ifBlank { existing.title },
+                        lastPositionMs = incoming.lastPositionMs,
+                        durationMs = maxOf(incoming.durationMs, existing.durationMs),
+                        isPinned = existing.isPinned || incoming.isPinned,
+                        lastPlayedAt = incoming.lastPlayedAt,
+                        posterUrl = incoming.posterUrl ?: existing.posterUrl,
+                        audioDelayMs = incoming.audioDelayMs,
+                        subtitleOffsetMs = incoming.subtitleOffsetMs
+                    )
+                )
+                merged++
+            }
+        }
+        return merged
     }
 }

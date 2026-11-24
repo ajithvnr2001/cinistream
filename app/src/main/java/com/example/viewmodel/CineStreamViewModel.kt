@@ -1,10 +1,12 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppDatabase
+import com.example.data.ContinueWatchingHelper
 import com.example.data.MediaHistoryEntity
 import com.example.data.MediaHistoryRepository
 import com.example.data.SubtitlePrefsRepository
@@ -22,6 +24,7 @@ import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
 import com.example.model.TrackOption
 import com.example.BuildConfig
+import com.example.player.AudioDelayMath
 import com.example.player.CinePlayerManager
 import com.example.player.DynamicSocksProxyManager
 import com.example.player.ImdbMetadataClient
@@ -31,19 +34,52 @@ import com.example.player.M3uInspectionResult
 import com.example.player.M3uPlaylistParser
 import com.example.player.MediaEdgeCache
 import com.example.player.MediaFormatDetector
+import com.example.player.MediaPlaybackService
 import com.example.player.NetworkTransportMode
+import com.example.player.NordLynxTunnelController
 import com.example.player.NordVpnApiClient
 import com.example.player.NordVpnCatalog
+import com.example.player.NordVpnLocation
+import com.example.player.NordVpnLocationCatalog
 import com.example.player.NordVpnLoginResult
 import com.example.player.NordVpnServer
 import com.example.player.PlaybackProgressState
 import com.example.player.PlayerNetworkStats
 import com.example.player.PlayerPlaybackState
 import com.example.player.PrivateDnsMode
+import com.example.player.SmartVpnFailoverCoordinator
 import com.example.player.StreamingNetworkEngine
 import com.example.player.SubtitleHelper
 import com.example.player.SystemVpnMonitor
 import com.example.player.VideoDecoderMode
+import com.example.data.DeviceSyncCodec
+import com.example.data.DeviceSyncSnapshot
+import com.example.data.FavoriteItemEntity
+import com.example.data.FavoriteRepository
+import com.example.data.GlobalSearchEngine
+import com.example.data.NetworkServerEntity
+import com.example.data.OfflineDownloadEntity
+import com.example.model.AbLoopState
+import com.example.model.ChapterMarker
+import com.example.model.ChannelEpgNowNext
+import com.example.model.GlobalSearchResult
+import com.example.model.OnlineSubtitleCandidate
+import com.example.model.SleepTimerMode
+import com.example.model.SleepTimerUiState
+import com.example.model.UpNextCountdownState
+import com.example.player.CredentialVault
+import com.example.player.LocalNetworkClient
+import com.example.player.NetworkBrowserItem
+import com.example.player.OfflineDownloadManager
+import com.example.player.OpenSubtitlesClient
+import com.example.player.OpenSubtitlesLoginResult
+import com.example.player.OnlineSubtitleSearchResult
+import com.example.player.SecondarySubtitleEngine
+import com.example.player.SecondarySubtitleTrack
+import com.example.player.XmltvEpgParser
+import com.example.remote.LocalWebRemoteServer
+import com.example.remote.RemotePushAction
+import com.example.remote.RemotePushCommand
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -60,11 +96,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import kotlin.math.abs
 
 data class ActiveMediaSession(
@@ -78,8 +117,12 @@ data class ActiveMediaSession(
     val headers: Map<String, String> = emptyMap(),
     val seriesItemId: String? = null,
     val seriesTitle: String? = null,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
     val episodeId: String? = null,
-    val episodeCodeLabel: String? = null
+    val episodeCodeLabel: String? = null,
+    val posterUrl: String? = null,
+    val playlistId: String? = null
 )
 
 data class CineStreamUiState(
@@ -105,6 +148,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
     private val database = AppDatabase.getInstance(application)
     private val historyRepo = MediaHistoryRepository(database.mediaHistoryDao())
+    private val favoriteRepo = FavoriteRepository(database.favoriteDao())
+    private val offlineDownloadDao = database.offlineDownloadDao()
+    private val networkServerDao = database.networkServerDao()
     private val prefsRepo = SubtitlePrefsRepository(application)
 
     val playerManager = CinePlayerManager(application)
@@ -113,8 +159,24 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private val jsonParser = JsonPlaylistParser(application, playerManager.okHttpClient)
     private val imdbClient = ImdbMetadataClient(playerManager.okHttpClient)
     private val nordVpnClient = NordVpnApiClient()
+    private val nordLynxController = NordLynxTunnelController(application)
+    private val smartVpnFailover = SmartVpnFailoverCoordinator()
+    private val offlineDownloadManager = OfflineDownloadManager(application, offlineDownloadDao, playerManager.okHttpClient)
+    private val localNetworkClient = LocalNetworkClient(playerManager.okHttpClient)
+    private val openSubtitlesClient = OpenSubtitlesClient(application, playerManager.okHttpClient)
+    private val xmltvEpgParser = XmltvEpgParser(playerManager.okHttpClient)
+    private val webRemoteServer = LocalWebRemoteServer(
+        onCommandReceived = { cmd -> handleRemotePushCommand(cmd) },
+        onExportSyncJson = { exportDeviceSyncSnapshotJsonBlocking() }
+    )
     private var activeNordUsername: String = ""
     private var activeNordPassword: String = ""
+    private var activeNordLynxKey: String = ""
+    private var pendingNordLynxLocation: NordVpnLocation? = null
+    private var pendingNordLynxDnsMode: PrivateDnsMode? = null
+
+    private val _vpnConsentEvents = MutableSharedFlow<Intent>(extraBufferCapacity = 1)
+    val vpnConsentEvents: SharedFlow<Intent> = _vpnConsentEvents.asSharedFlow()
 
     private val _uiState = MutableStateFlow(CineStreamUiState())
     val uiState: StateFlow<CineStreamUiState> = _uiState.asStateFlow()
@@ -151,6 +213,22 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         initialValue = emptyList()
     )
 
+    val continueWatching: StateFlow<List<MediaHistoryEntity>> = history
+        .map { ContinueWatchingHelper.buildContinueWatchingList(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val episodeProgressMap: StateFlow<Map<String, Float>> = history
+        .map { ContinueWatchingHelper.buildEpisodeProgressMap(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyMap()
+        )
+
     val subtitleAppearance: StateFlow<SubtitleAppearance> = prefsRepo.appearance.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -169,12 +247,136 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         initialValue = false
     )
 
+    val backgroundAudioEnabled: StateFlow<Boolean> = prefsRepo.backgroundAudioEnabled.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = false
+    )
+
+    val nightModeAudioEnabled: StateFlow<Boolean> = prefsRepo.nightModeAudioEnabled.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = false
+    )
+
+    val preferredAudioLanguage: StateFlow<String> = prefsRepo.preferredAudioLanguage.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = ""
+    )
+
+    val preferredSubtitleLanguage: StateFlow<String> = prefsRepo.preferredSubtitleLanguage.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = ""
+    )
+
+    val seekIntervalSeconds: StateFlow<Int> = prefsRepo.seekIntervalSeconds.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = 10
+    )
+
+    val autoPlayUpNextEnabled: StateFlow<Boolean> = prefsRepo.autoPlayUpNextEnabled.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = true
+    )
+
+    val favorites: StateFlow<List<FavoriteItemEntity>> = favoriteRepo.favorites.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val offlineDownloads: StateFlow<List<OfflineDownloadEntity>> = offlineDownloadManager.observeDownloads().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    val networkServers: StateFlow<List<NetworkServerEntity>> = networkServerDao.observeServers().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    private val _globalSearchQuery = MutableStateFlow("")
+    val globalSearchQuery: StateFlow<String> = _globalSearchQuery.asStateFlow()
+
+    val globalSearchResults: StateFlow<List<GlobalSearchResult>> = combine(
+        _globalSearchQuery,
+        favorites,
+        _jsonPlaylistState,
+        _uiState,
+        offlineDownloads,
+        history
+    ) { values ->
+        val query = values[0] as String
+        @Suppress("UNCHECKED_CAST")
+        val favs = values[1] as List<FavoriteItemEntity>
+        val jsonState = values[2] as JsonPlaylistUiState
+        val ui = values[3] as CineStreamUiState
+        @Suppress("UNCHECKED_CAST")
+        val downloads = values[4] as List<OfflineDownloadEntity>
+        @Suppress("UNCHECKED_CAST")
+        val hist = values[5] as List<MediaHistoryEntity>
+        GlobalSearchEngine.search(
+            query = query,
+            favorites = favs,
+            jsonItems = jsonState.allItems,
+            m3uEntries = ui.m3uEntries,
+            downloads = downloads,
+            history = hist
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
+
+    private val _sleepTimerState = MutableStateFlow(SleepTimerUiState())
+    val sleepTimerState: StateFlow<SleepTimerUiState> = _sleepTimerState.asStateFlow()
+
+    private val _upNextCountdown = MutableStateFlow<UpNextCountdownState?>(null)
+    val upNextCountdown: StateFlow<UpNextCountdownState?> = _upNextCountdown.asStateFlow()
+
+    private val _abLoopState = MutableStateFlow(AbLoopState())
+    val abLoopState: StateFlow<AbLoopState> = _abLoopState.asStateFlow()
+
+    private val _chapters = MutableStateFlow<List<ChapterMarker>>(emptyList())
+    val chapters: StateFlow<List<ChapterMarker>> = _chapters.asStateFlow()
+
+    private val _secondarySubtitleState = MutableStateFlow(SecondarySubtitleUiState())
+    val secondarySubtitleState: StateFlow<SecondarySubtitleUiState> = _secondarySubtitleState.asStateFlow()
+
+    private val _epgState = MutableStateFlow(EpgUiState())
+    val epgState: StateFlow<EpgUiState> = _epgState.asStateFlow()
+
+    private val _channelZapBanner = MutableStateFlow<ChannelZapBannerState?>(null)
+    val channelZapBanner: StateFlow<ChannelZapBannerState?> = _channelZapBanner.asStateFlow()
+
+    private val _onlineSubtitleState = MutableStateFlow(
+        OnlineSubtitleUiState(isConfigured = openSubtitlesClient.hasApiKey)
+    )
+    val onlineSubtitleState: StateFlow<OnlineSubtitleUiState> = _onlineSubtitleState.asStateFlow()
+
+    private val _localNetworkState = MutableStateFlow(LocalNetworkUiState())
+    val localNetworkState: StateFlow<LocalNetworkUiState> = _localNetworkState.asStateFlow()
+
+    private val _webRemoteState = MutableStateFlow(WebRemoteUiState())
+    val webRemoteState: StateFlow<WebRemoteUiState> = _webRemoteState.asStateFlow()
+
     private val _navEvents = MutableSharedFlow<CineNavigationEvent>(extraBufferCapacity = 4)
     val navEvents: SharedFlow<CineNavigationEvent> = _navEvents.asSharedFlow()
 
     private var progressPollingJob: Job? = null
     private var jsonEnrichJob: Job? = null
     private var volumePersistJob: Job? = null
+    private var sleepTimerJob: Job? = null
+    private var upNextCountdownJob: Job? = null
+    private var channelZapBannerJob: Job? = null
+    private var dismissedUpNextEpisodeId: String? = null
     private var lastSavedProgressUri: String? = null
     private var lastSavedProgressMs: Long = -1L
 
@@ -215,11 +417,51 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
         playerManager.onMediaEnded = {
-            playNextEpisodeIfAvailable(autoTriggered = true)
+            if (_sleepTimerState.value.mode == SleepTimerMode.END_OF_EPISODE) {
+                cancelSleepTimer(silent = true)
+                playerManager.pause()
+                _uiState.update { it.copy(toastMessage = "Sleep timer paused playback at end of episode") }
+            } else if (_upNextCountdown.value == null && autoPlayUpNextEnabled.value) {
+                val started = maybeStartUpNextCountdown(forceImmediateOnEnd = true)
+                if (!started) {
+                    playNextEpisodeIfAvailable(autoTriggered = true)
+                }
+            }
+        }
+        playerManager.onSmartVpnStallCandidate = { estimatedBps ->
+            handleSmartVpnStallCandidate(estimatedBps)
+        }
+        playerManager.onSmartVpnFatalNetworkError = { reason ->
+            handleSmartVpnFatalNetworkError(reason)
+        }
+        MediaPlaybackService.onNotificationTogglePlayPause = {
+            playerManager.togglePlayPause()
+            syncBackgroundAudioNotification()
+        }
+        MediaPlaybackService.onNotificationStop = {
+            pauseAndPersistProgress()
+            setBackgroundAudioEnabled(false)
         }
         viewModelScope.launch {
             val savedVolume = prefsRepo.volumeBoostPercent.first()
             playerManager.setVolumePercent(savedVolume)
+        }
+        viewModelScope.launch {
+            val savedNight = prefsRepo.nightModeAudioEnabled.first()
+            playerManager.setNightModeAudio(savedNight)
+        }
+        viewModelScope.launch {
+            val audioLang = prefsRepo.preferredAudioLanguage.first()
+            val subLang = prefsRepo.preferredSubtitleLanguage.first()
+            if (audioLang.isNotBlank() || subLang.isNotBlank()) {
+                playerManager.applyPreferredLanguages(audioLang, subLang)
+            }
+        }
+        viewModelScope.launch {
+            val savedEpgUrl = prefsRepo.epgUrl.first()
+            if (savedEpgUrl.isNotBlank()) {
+                _epgState.update { it.copy(epgUrl = savedEpgUrl) }
+            }
         }
         viewModelScope.launch {
             val savedDecoderMode = prefsRepo.videoDecoderMode.first()
@@ -228,43 +470,91 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val savedTransportMode = prefsRepo.networkTransportMode.first()
             playerManager.setPreferredTransportMode(savedTransportMode, reloadActiveStream = false)
+            if (openSubtitlesClient.hasApiKey) {
+                prefsRepo.loadOpenSubtitlesCredentials()?.let { (osUser, osPass) ->
+                    when (val res = openSubtitlesClient.login(osUser, osPass)) {
+                        is OpenSubtitlesLoginResult.Success -> _onlineSubtitleState.update {
+                            it.copy(
+                                loggedInUsername = res.username,
+                                remainingDownloads = res.allowedDownloads
+                            )
+                        }
+                        is OpenSubtitlesLoginResult.Error -> Unit
+                    }
+                }
+            }
         }
         viewModelScope.launch {
             val savedPrivacy = prefsRepo.networkPrivacyPrefs.first()
             activeNordUsername = savedPrivacy.nordVpnUsername
             activeNordPassword = savedPrivacy.nordVpnPassword
-            val nordConfig = DynamicSocksProxyManager.ActiveConfig(
-                enabled = savedPrivacy.nordVpnEnabled && savedPrivacy.hasNordCredentials,
-                host = savedPrivacy.nordVpnServerHost,
-                username = savedPrivacy.nordVpnUsername,
-                password = savedPrivacy.nordVpnPassword
-            )
+            activeNordLynxKey = savedPrivacy.nordLynxPrivateKey
+            val savedLocation = savedPrivacy.selectedLocation
+
+            // Apply saved Private DNS immediately; SOCKS5 stays off when NordLynx key is present
+            val useSocksFallback = savedPrivacy.nordVpnEnabled &&
+                activeNordLynxKey.isBlank() &&
+                activeNordUsername.isNotBlank() &&
+                activeNordPassword.isNotBlank()
+            val socksConfig = if (useSocksFallback) {
+                DynamicSocksProxyManager.ActiveConfig(
+                    enabled = true,
+                    host = savedPrivacy.nordVpnServerHost,
+                    username = activeNordUsername,
+                    password = activeNordPassword
+                )
+            } else {
+                DynamicSocksProxyManager.ActiveConfig()
+            }
             playerManager.applyNetworkPrivacyConfig(
                 dnsMode = savedPrivacy.privateDnsMode,
-                nordConfig = nordConfig,
+                nordConfig = socksConfig,
                 reloadActiveStream = false
             )
             val appCtx = getApplication<Application>()
             val sysVpn = SystemVpnMonitor.isSystemVpnActive(appCtx)
-            val warpInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_CLOUDFLARE_WARP)
-            val nordInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_NORDVPN)
             _networkPrivacyState.update {
                 it.copy(
                     privateDnsMode = savedPrivacy.privateDnsMode,
                     nordVpnLoggedIn = savedPrivacy.hasNordCredentials,
-                    nordVpnEnabled = nordConfig.isActive,
+                    nordVpnEnabled = savedPrivacy.nordVpnEnabled && savedPrivacy.hasNordCredentials,
+                    smartAutoVpnFailoverEnabled = savedPrivacy.smartAutoVpnFailoverEnabled && savedPrivacy.hasNordCredentials,
+                    selectedLocation = savedLocation,
                     selectedNordServerHost = savedPrivacy.nordVpnServerHost,
-                    selectedNordServerLabel = savedPrivacy.nordVpnServerLabel,
-                    systemVpnActive = sysVpn,
-                    warpAppInstalled = warpInstalled,
-                    nordAppInstalled = nordInstalled
+                    selectedNordServerLabel = savedLocation.displayLabel,
+                    systemVpnActive = sysVpn
                 )
             }
-            if (savedPrivacy.hasNordCredentials) {
-                val liveServers = nordVpnClient.fetchRecommendedSocksServers()
-                if (liveServers.isNotEmpty()) {
-                    _networkPrivacyState.update { it.copy(availableNordServers = liveServers) }
+
+            // Refresh all 118+ NordVPN countries & cities silently in background
+            launch {
+                val liveLocations = nordVpnClient.fetchAllLocations()
+                if (liveLocations.isNotEmpty()) {
+                    _networkPrivacyState.update { state ->
+                        val resolvedLoc = NordVpnLocationCatalog.findByCountryAndCity(
+                            countryId = state.selectedLocation.countryId,
+                            cityId = state.selectedLocation.cityId,
+                            available = liveLocations
+                        )
+                        state.copy(
+                            allLocations = liveLocations,
+                            selectedLocation = resolvedLoc,
+                            selectedNordServerLabel = resolvedLoc.displayLabel
+                        )
+                    }
                 }
+            }
+
+            // Auto-reconnect embedded NordLynx tunnel if VPN consent was previously granted
+            if (savedPrivacy.nordVpnEnabled && activeNordLynxKey.isNotBlank() &&
+                nordLynxController.prepareVpnPermissionIntent() == null
+            ) {
+                connectNordLynxInternal(
+                    location = savedLocation,
+                    dnsMode = savedPrivacy.privateDnsMode,
+                    reloadActiveStream = false,
+                    autoProbe = false
+                )
             }
         }
         viewModelScope.launch {
@@ -377,6 +667,10 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                                 toastMessage = "Loaded ${inspection.entries.size} streams from M3U playlist"
                             )
                         }
+                        val autoEpg = inspection.epgUrl ?: _epgState.value.epgUrl.takeIf { it.isNotBlank() }
+                        if (!autoEpg.isNullOrBlank()) {
+                            loadEpgFromUrl(autoEpg, silent = true)
+                        }
                         if (inspection.entries.size == 1) {
                             playM3uEntry(inspection.entries.first())
                         } else {
@@ -446,6 +740,10 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                             toastMessage = "Loaded ${result.entries.size} entries from M3U"
                         )
                     }
+                    val autoEpg = result.epgUrl ?: _epgState.value.epgUrl.takeIf { it.isNotBlank() }
+                    if (!autoEpg.isNullOrBlank()) {
+                        loadEpgFromUrl(autoEpg, silent = true)
+                    }
                     _navEvents.tryEmit(CineNavigationEvent.OpenM3uSheet)
                 }
                 M3uInspectionResult.DirectHlsStream,
@@ -488,7 +786,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 sourceUri = sample.url,
                 format = sample.format,
                 isLocalFile = false,
-                initialSubtitles = subs
+                initialSubtitles = subs,
+                posterUrl = sample.posterUrl
             )
         }
     }
@@ -804,7 +1103,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 isLocalFile = item.url.startsWith("content://") || item.url.startsWith("file://"),
                 initialSubtitles = subs,
                 mirrors = item.mirrors,
-                headers = item.headers
+                headers = item.headers,
+                posterUrl = item.imageUrl,
+                playlistId = _jsonPlaylistState.value.selectedPlaylistId
             )
         }
     }
@@ -849,8 +1150,12 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 headers = episode.headers,
                 seriesItemId = series.id,
                 seriesTitle = series.title,
+                seasonNumber = episode.seasonNumber,
+                episodeNumber = episode.episodeNumber,
                 episodeId = episode.id,
-                episodeCodeLabel = episode.codeLabel
+                episodeCodeLabel = episode.codeLabel,
+                posterUrl = series.imageUrl,
+                playlistId = _jsonPlaylistState.value.selectedPlaylistId
             )
             val nextEp = series.findNextEpisode(episode.id)
             if (nextEp != null) {
@@ -951,14 +1256,20 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     fun refreshSystemVpnStatus() {
         val appCtx = getApplication<Application>()
         val sysVpn = SystemVpnMonitor.isSystemVpnActive(appCtx)
-        val warpInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_CLOUDFLARE_WARP)
-        val nordInstalled = SystemVpnMonitor.isPackageInstalled(appCtx, SystemVpnMonitor.PACKAGE_NORDVPN)
         _networkPrivacyState.update {
             it.copy(
                 systemVpnActive = sysVpn,
-                warpAppInstalled = warpInstalled,
-                nordAppInstalled = nordInstalled
+                nordLynxTunnelUp = nordLynxController.isTunnelUp
             )
+        }
+        // Populate live 118+ countries & cities catalog when sheet opens if still on offline list
+        if (_networkPrivacyState.value.allLocations.size <= NordVpnLocationCatalog.FALLBACK_COUNTRIES.size) {
+            viewModelScope.launch {
+                val liveLocations = nordVpnClient.fetchAllLocations()
+                if (liveLocations.isNotEmpty()) {
+                    _networkPrivacyState.update { it.copy(allLocations = liveLocations) }
+                }
+            }
         }
         if (statsForNerdsEnabled.value) {
             playerManager.syncNetworkStats()
@@ -967,17 +1278,25 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
     fun setPrivateDnsMode(mode: PrivateDnsMode) {
         val current = _networkPrivacyState.value
-        val nordConfig = buildCurrentNordConfig(current)
+        val socksConfig = buildCurrentSocksFallbackConfig(current)
         playerManager.applyNetworkPrivacyConfig(
             dnsMode = mode,
-            nordConfig = nordConfig,
-            reloadActiveStream = true
+            nordConfig = socksConfig,
+            reloadActiveStream = !current.nordLynxTunnelUp
         )
         _networkPrivacyState.update {
             it.copy(privateDnsMode = mode, probeResult = null)
         }
         viewModelScope.launch {
             prefsRepo.updatePrivateDnsMode(mode)
+            if (current.nordVpnLoggedIn && current.nordVpnEnabled && activeNordLynxKey.isNotBlank()) {
+                connectNordLynxInternal(
+                    location = current.selectedLocation,
+                    dnsMode = mode,
+                    reloadActiveStream = true,
+                    autoProbe = false
+                )
+            }
         }
         _uiState.update {
             it.copy(toastMessage = "Private DNS set to ${mode.label}")
@@ -1011,11 +1330,16 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 is NordVpnLoginResult.Success -> {
                     activeNordUsername = result.credentials.username
                     activeNordPassword = result.credentials.password
+                    activeNordLynxKey = result.credentials.nordLynxPrivateKey
 
+                    val locations = result.locations.ifEmpty { NordVpnLocationCatalog.FALLBACK_COUNTRIES }
                     val servers = result.servers.ifEmpty { NordVpnCatalog.DEFAULT_SERVERS }
                     val currentState = _networkPrivacyState.value
-                    val chosen = NordVpnCatalog.findByHostname(currentState.selectedNordServerHost, servers)
-                    // Auto-enable Cloudflare 1.1.1.1 DoH when connecting with NordVPN key if still on System DNS
+                    val chosenLocation = NordVpnLocationCatalog.findByCountryAndCity(
+                        countryId = currentState.selectedLocation.countryId,
+                        cityId = currentState.selectedLocation.cityId,
+                        available = locations
+                    )
                     val effectiveDnsMode = if (currentState.privateDnsMode == PrivateDnsMode.SYSTEM) {
                         PrivateDnsMode.CLOUDFLARE_1111
                     } else {
@@ -1027,22 +1351,10 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                     }
                     prefsRepo.saveNordVpnCredentials(
                         credentials = result.credentials,
-                        serverHost = chosen.hostname,
-                        serverLabel = chosen.label,
+                        serverHost = currentState.selectedNordServerHost,
+                        serverLabel = chosenLocation.displayLabel,
+                        location = chosenLocation,
                         enableImmediately = true
-                    )
-
-                    val activeNordConfig = DynamicSocksProxyManager.ActiveConfig(
-                        enabled = true,
-                        host = chosen.hostname,
-                        port = chosen.port,
-                        username = activeNordUsername,
-                        password = activeNordPassword
-                    )
-                    playerManager.applyNetworkPrivacyConfig(
-                        dnsMode = effectiveDnsMode,
-                        nordConfig = activeNordConfig,
-                        reloadActiveStream = true
                     )
 
                     _networkPrivacyState.update {
@@ -1050,27 +1362,49 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                             privateDnsMode = effectiveDnsMode,
                             nordVpnLoggedIn = true,
                             nordVpnEnabled = true,
-                            selectedNordServerHost = chosen.hostname,
-                            selectedNordServerLabel = chosen.label,
+                            selectedLocation = chosenLocation,
+                            allLocations = locations,
+                            selectedNordServerLabel = chosenLocation.displayLabel,
                             availableNordServers = servers,
                             isLoggingInNord = false,
                             loginError = null,
                             probeResult = null
                         )
                     }
+
+                    if (activeNordLynxKey.isNotBlank()) {
+                        connectNordLynxInternal(
+                            location = chosenLocation,
+                            dnsMode = effectiveDnsMode,
+                            reloadActiveStream = true,
+                            autoProbe = true
+                        )
+                    } else {
+                        // Fallback to SOCKS5 only if account returned no NordLynx key
+                        val fallbackHost = NordVpnCatalog.findByHostname(currentState.selectedNordServerHost, servers)
+                        playerManager.applyNetworkPrivacyConfig(
+                            dnsMode = effectiveDnsMode,
+                            nordConfig = DynamicSocksProxyManager.ActiveConfig(
+                                enabled = true,
+                                host = fallbackHost.hostname,
+                                port = fallbackHost.port,
+                                username = activeNordUsername,
+                                password = activeNordPassword
+                            ),
+                            reloadActiveStream = true
+                        )
+                        probeNetworkPrivacyRoute()
+                    }
+
                     _uiState.update {
                         it.copy(
                             toastMessage = if (wasAlreadyLoggedIn) {
-                                "NordVPN key updated · 1.1.1.1 + ${chosen.label}"
+                                "NordVPN key updated · ${chosenLocation.displayLabel}"
                             } else {
-                                "Connected: ${effectiveDnsMode.shortBadge.ifBlank { "DNS" }} + NordVPN (${chosen.label})"
+                                "Connected: ${effectiveDnsMode.shortBadge.ifBlank { "DNS" }} + NordVPN (${chosenLocation.displayLabel})"
                             }
                         )
                     }
-                    if (statsForNerdsEnabled.value) {
-                        playerManager.syncNetworkStats()
-                    }
-                    probeNetworkPrivacyRoute()
                 }
                 is NordVpnLoginResult.Error -> {
                     _networkPrivacyState.update {
@@ -1081,120 +1415,300 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    /**
+     * Called by MainActivity after Android's built-in 1-tap VPN consent dialog returns.
+     */
+    fun onVpnPermissionResult(granted: Boolean) {
+        val targetLoc = pendingNordLynxLocation ?: _networkPrivacyState.value.selectedLocation
+        val targetDns = pendingNordLynxDnsMode ?: _networkPrivacyState.value.privateDnsMode
+        pendingNordLynxLocation = null
+        pendingNordLynxDnsMode = null
+        if (!granted) {
+            _networkPrivacyState.update {
+                it.copy(
+                    isConnectingVpn = false,
+                    nordVpnEnabled = false,
+                    nordLynxTunnelUp = false,
+                    loginError = "Android VPN permission is required to connect in-app NordLynx."
+                )
+            }
+            viewModelScope.launch { prefsRepo.updateNordVpnEnabled(false) }
+            return
+        }
+        viewModelScope.launch {
+            connectNordLynxInternal(
+                location = targetLoc,
+                dnsMode = targetDns,
+                reloadActiveStream = true,
+                autoProbe = true
+            )
+        }
+    }
+
+    fun selectNordVpnLocation(location: NordVpnLocation) {
+        val current = _networkPrivacyState.value
+        _networkPrivacyState.update {
+            it.copy(
+                selectedLocation = location,
+                selectedNordServerLabel = location.displayLabel,
+                loginError = null,
+                probeResult = null
+            )
+        }
+        viewModelScope.launch {
+            prefsRepo.updateNordVpnLocation(location)
+            if (current.nordVpnLoggedIn && current.nordVpnEnabled) {
+                if (activeNordLynxKey.isNotBlank()) {
+                    connectNordLynxInternal(
+                        location = location,
+                        dnsMode = current.privateDnsMode,
+                        reloadActiveStream = true,
+                        autoProbe = true
+                    )
+                } else {
+                    _networkPrivacyState.update {
+                        it.copy(loginError = "Replace/re-enter your NordVPN Access Key to activate all-countries NordLynx.")
+                    }
+                }
+            }
+        }
+        _uiState.update {
+            it.copy(toastMessage = "NordVPN location set to ${location.displayLabel}")
+        }
+    }
+
     fun setNordVpnEnabled(enabled: Boolean) {
         val current = _networkPrivacyState.value
-        val hasCreds = activeNordUsername.isNotBlank() && activeNordPassword.isNotBlank()
+        val hasCreds = activeNordLynxKey.isNotBlank() ||
+            (activeNordUsername.isNotBlank() && activeNordPassword.isNotBlank())
         if (enabled && !hasCreds) {
             _networkPrivacyState.update {
-                it.copy(loginError = "Log in with your NordVPN Access Token first.")
+                it.copy(loginError = "Log in with your NordVPN Access Key first.")
             }
             return
         }
-        val updatedState = current.copy(nordVpnEnabled = enabled, probeResult = null)
-        _networkPrivacyState.value = updatedState
-        playerManager.applyNetworkPrivacyConfig(
-            dnsMode = updatedState.privateDnsMode,
-            nordConfig = buildCurrentNordConfig(updatedState),
-            reloadActiveStream = true
-        )
+        _networkPrivacyState.update {
+            it.copy(nordVpnEnabled = enabled, loginError = null, probeResult = null)
+        }
         viewModelScope.launch {
             prefsRepo.updateNordVpnEnabled(enabled)
+            if (enabled) {
+                if (activeNordLynxKey.isNotBlank()) {
+                    connectNordLynxInternal(
+                        location = current.selectedLocation,
+                        dnsMode = current.privateDnsMode,
+                        reloadActiveStream = true,
+                        autoProbe = true
+                    )
+                } else {
+                    playerManager.applyNetworkPrivacyConfig(
+                        dnsMode = current.privateDnsMode,
+                        nordConfig = buildCurrentSocksFallbackConfig(_networkPrivacyState.value),
+                        reloadActiveStream = true
+                    )
+                    probeNetworkPrivacyRoute()
+                }
+            } else {
+                smartVpnFailover.suppressForCurrentSession()
+                nordLynxController.disconnect()
+                playerManager.applyNetworkPrivacyConfig(
+                    dnsMode = current.privateDnsMode,
+                    nordConfig = DynamicSocksProxyManager.ActiveConfig(),
+                    reloadActiveStream = true
+                )
+                _networkPrivacyState.update {
+                    it.copy(
+                        nordLynxTunnelUp = false,
+                        activeNordLynxHostname = "",
+                        isConnectingVpn = false,
+                        systemVpnActive = SystemVpnMonitor.isSystemVpnActive(getApplication())
+                    )
+                }
+            }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
         }
         _uiState.update {
             it.copy(
                 toastMessage = if (enabled) {
-                    "NordVPN routing ON (${updatedState.selectedNordServerLabel})"
+                    "Connecting NordVPN (${current.selectedLocation.displayLabel})…"
                 } else {
-                    "NordVPN routing paused"
+                    "NordVPN disconnected"
                 }
             )
-        }
-        if (statsForNerdsEnabled.value) {
-            playerManager.syncNetworkStats()
         }
     }
 
     fun selectNordVpnServer(server: NordVpnServer) {
         val current = _networkPrivacyState.value
-        val updatedState = current.copy(
-            selectedNordServerHost = server.hostname,
-            selectedNordServerLabel = server.label,
-            probeResult = null
-        )
-        _networkPrivacyState.value = updatedState
-        playerManager.applyNetworkPrivacyConfig(
-            dnsMode = updatedState.privateDnsMode,
-            nordConfig = buildCurrentNordConfig(updatedState),
-            reloadActiveStream = true
-        )
-        viewModelScope.launch {
-            prefsRepo.updateNordVpnServer(server.hostname, server.label)
-        }
-        _uiState.update {
-            it.copy(toastMessage = "NordVPN location switched to ${server.label}")
-        }
-        if (statsForNerdsEnabled.value) {
-            playerManager.syncNetworkStats()
-        }
-        if (updatedState.nordVpnLoggedIn && updatedState.nordVpnEnabled) {
-            probeNetworkPrivacyRoute()
-        }
+        val matchedLoc = current.allLocations.firstOrNull {
+            it.countryName.equals(server.country, ignoreCase = true) && it.cityId == null
+        } ?: current.selectedLocation
+        selectNordVpnLocation(matchedLoc)
     }
 
     fun logoutNordVpn() {
         activeNordUsername = ""
         activeNordPassword = ""
+        activeNordLynxKey = ""
+        pendingNordLynxLocation = null
+        pendingNordLynxDnsMode = null
         val current = _networkPrivacyState.value
-        val updatedState = current.copy(
-            nordVpnLoggedIn = false,
-            nordVpnEnabled = false,
-            loginError = null,
-            probeResult = null
-        )
-        _networkPrivacyState.value = updatedState
-        playerManager.applyNetworkPrivacyConfig(
-            dnsMode = updatedState.privateDnsMode,
-            nordConfig = DynamicSocksProxyManager.ActiveConfig(),
-            reloadActiveStream = true
-        )
+        _networkPrivacyState.update {
+            it.copy(
+                nordVpnLoggedIn = false,
+                nordVpnEnabled = false,
+                smartAutoVpnFailoverEnabled = false,
+                nordLynxTunnelUp = false,
+                activeNordLynxHostname = "",
+                isConnectingVpn = false,
+                loginError = null,
+                probeResult = null
+            )
+        }
         viewModelScope.launch {
+            nordLynxController.disconnect()
+            playerManager.applyNetworkPrivacyConfig(
+                dnsMode = current.privateDnsMode,
+                nordConfig = DynamicSocksProxyManager.ActiveConfig(),
+                reloadActiveStream = true
+            )
             prefsRepo.clearNordVpnCredentials()
+            _networkPrivacyState.update {
+                it.copy(systemVpnActive = SystemVpnMonitor.isSystemVpnActive(getApplication()))
+            }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
         }
         _uiState.update {
             it.copy(toastMessage = "Signed out of NordVPN")
-        }
-        if (statsForNerdsEnabled.value) {
-            playerManager.syncNetworkStats()
         }
     }
 
     /**
      * Disables both Cloudflare 1.1.1.1 / Google 8.8.8.8 Private DNS (back to System DNS) and
-     * NordVPN SOCKS5 routing in a single tap, while keeping the saved NordVPN key & location
-     * intact so the user can re-enable anytime without re-entering their key.
+     * in-app NordVPN NordLynx/SOCKS5 routing in a single tap, while keeping the saved NordVPN key
+     * & selected location intact so the user can re-enable anytime without re-entering their key.
      */
     fun disableAllPrivacyRouting() {
-        val current = _networkPrivacyState.value
-        val updatedState = current.copy(
-            privateDnsMode = PrivateDnsMode.SYSTEM,
-            nordVpnEnabled = false,
-            probeResult = null
-        )
-        _networkPrivacyState.value = updatedState
-        playerManager.applyNetworkPrivacyConfig(
-            dnsMode = PrivateDnsMode.SYSTEM,
-            nordConfig = DynamicSocksProxyManager.ActiveConfig(),
-            reloadActiveStream = true
-        )
+        smartVpnFailover.suppressForCurrentSession()
+        pendingNordLynxLocation = null
+        pendingNordLynxDnsMode = null
+        _networkPrivacyState.update {
+            it.copy(
+                privateDnsMode = PrivateDnsMode.SYSTEM,
+                nordVpnEnabled = false,
+                nordLynxTunnelUp = false,
+                activeNordLynxHostname = "",
+                isConnectingVpn = false,
+                loginError = null,
+                probeResult = null
+            )
+        }
         viewModelScope.launch {
+            nordLynxController.disconnect()
+            playerManager.applyNetworkPrivacyConfig(
+                dnsMode = PrivateDnsMode.SYSTEM,
+                nordConfig = DynamicSocksProxyManager.ActiveConfig(),
+                reloadActiveStream = true
+            )
             prefsRepo.updatePrivateDnsMode(PrivateDnsMode.SYSTEM)
             prefsRepo.updateNordVpnEnabled(false)
+            _networkPrivacyState.update {
+                it.copy(systemVpnActive = SystemVpnMonitor.isSystemVpnActive(getApplication()))
+            }
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
         }
         _uiState.update {
             it.copy(toastMessage = "1.1.1.1 & NordVPN disabled (Direct ISP)")
         }
-        if (statsForNerdsEnabled.value) {
-            playerManager.syncNetworkStats()
+    }
+
+    private suspend fun connectNordLynxInternal(
+        location: NordVpnLocation,
+        dnsMode: PrivateDnsMode,
+        reloadActiveStream: Boolean,
+        autoProbe: Boolean
+    ) {
+        val privateKey = activeNordLynxKey.trim()
+        if (privateKey.isBlank()) return
+
+        // Request Android's built-in 1-tap VPN consent dialog if not yet approved (stays inside CineStream)
+        val consentIntent = nordLynxController.prepareVpnPermissionIntent()
+        if (consentIntent != null) {
+            pendingNordLynxLocation = location
+            pendingNordLynxDnsMode = dnsMode
+            _networkPrivacyState.update { it.copy(isConnectingVpn = true, loginError = null) }
+            _vpnConsentEvents.tryEmit(consentIntent)
+            return
+        }
+
+        _networkPrivacyState.update { it.copy(isConnectingVpn = true, loginError = null) }
+        val endpoint = nordVpnClient.fetchRecommendedNordLynxServer(location)
+        if (endpoint == null) {
+            _networkPrivacyState.update {
+                it.copy(
+                    isConnectingVpn = false,
+                    loginError = "No NordLynx server responded for ${location.displayLabel}. Try another location."
+                )
+            }
+            return
+        }
+
+        // Disable OkHttp SOCKS5 so traffic routes cleanly through the native WireGuard tunnel
+        playerManager.applyNetworkPrivacyConfig(
+            dnsMode = dnsMode,
+            nordConfig = DynamicSocksProxyManager.ActiveConfig(),
+            reloadActiveStream = false
+        )
+
+        val connectResult = nordLynxController.connect(
+            privateKey = privateKey,
+            endpoint = endpoint,
+            dnsMode = dnsMode
+        )
+
+        if (connectResult.isSuccess) {
+            val sysVpn = SystemVpnMonitor.isSystemVpnActive(getApplication())
+            _networkPrivacyState.update {
+                it.copy(
+                    nordVpnEnabled = true,
+                    nordLynxTunnelUp = true,
+                    isConnectingVpn = false,
+                    activeNordLynxHostname = endpoint.hostname,
+                    selectedNordServerHost = endpoint.hostname,
+                    selectedNordServerLabel = location.displayLabel,
+                    systemVpnActive = sysVpn,
+                    loginError = null
+                )
+            }
+            playerManager.applyNetworkPrivacyConfig(
+                dnsMode = dnsMode,
+                nordConfig = DynamicSocksProxyManager.ActiveConfig(),
+                nordLynxActive = true,
+                nordLynxHost = endpoint.hostname,
+                reloadActiveStream = reloadActiveStream
+            )
+            if (statsForNerdsEnabled.value) {
+                playerManager.syncNetworkStats()
+            }
+            if (autoProbe) {
+                delay(400L) // allow TUN routes to settle before tracing exit IP
+                probeNetworkPrivacyRoute()
+            }
+        } else {
+            val err = connectResult.exceptionOrNull()?.message ?: "Unable to establish NordLynx tunnel"
+            _networkPrivacyState.update {
+                it.copy(
+                    isConnectingVpn = false,
+                    nordLynxTunnelUp = false,
+                    loginError = "NordLynx connection failed: $err"
+                )
+            }
         }
     }
 
@@ -1203,12 +1717,13 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             refreshSystemVpnStatus()
             val state = _networkPrivacyState.value
             _networkPrivacyState.update { it.copy(isProbingRoute = true) }
+            val activeHost = state.activeNordLynxHostname.ifBlank { state.selectedLocation.displayLabel }
             val result = nordVpnClient.probeActiveRoute(
                 activeStreamingClient = playerManager.okHttpClient,
                 dnsMode = state.privateDnsMode,
                 nordEnabled = state.nordVpnLoggedIn && state.nordVpnEnabled,
-                nordServerHost = state.selectedNordServerHost,
-                systemVpnActive = state.systemVpnActive
+                nordServerHost = activeHost,
+                systemVpnActive = state.systemVpnActive || state.nordLynxTunnelUp
             )
             _networkPrivacyState.update {
                 it.copy(isProbingRoute = false, probeResult = result)
@@ -1216,23 +1731,108 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun launchCompanionVpnApp(packageName: String) {
-        val launched = SystemVpnMonitor.launchOrOpenStore(getApplication(), packageName)
-        if (!launched) {
-            _uiState.update {
-                it.copy(toastMessage = "Unable to open companion app or Play Store on this device")
+    fun setSmartAutoVpnFailoverEnabled(enabled: Boolean) {
+        val current = _networkPrivacyState.value
+        if (enabled && !current.nordVpnLoggedIn) {
+            _networkPrivacyState.update {
+                it.copy(loginError = "Log in with your NordVPN Access Key to enable Smart Auto-VPN Failover.")
+            }
+            return
+        }
+        _networkPrivacyState.update { it.copy(smartAutoVpnFailoverEnabled = enabled) }
+        viewModelScope.launch {
+            prefsRepo.updateSmartAutoVpnFailover(enabled)
+        }
+        _uiState.update {
+            it.copy(
+                toastMessage = if (enabled) {
+                    "Smart Auto-VPN Failover enabled (${current.selectedLocation.displayLabel})"
+                } else {
+                    "Smart Auto-VPN Failover disabled"
+                }
+            )
+        }
+    }
+
+    private fun handleSmartVpnStallCandidate(estimatedBps: Long) {
+        val privacy = _networkPrivacyState.value
+        val isLocal = _uiState.value.activeSession?.isLocalFile ?: false
+        val isNordActive = privacy.nordVpnEnabled || privacy.nordLynxTunnelUp || privacy.systemVpnActive
+        val shouldFailover = smartVpnFailover.recordRebufferStall(
+            isFeatureEnabled = privacy.smartAutoVpnFailoverEnabled,
+            hasNordCredentials = privacy.nordVpnLoggedIn,
+            isNordAlreadyActive = isNordActive,
+            isLocalMedia = isLocal,
+            estimatedBandwidthBps = estimatedBps
+        )
+        if (shouldFailover) {
+            triggerSmartVpnFailover("Direct ISP stalled")
+        }
+    }
+
+    private fun handleSmartVpnFatalNetworkError(reason: String): Boolean {
+        val privacy = _networkPrivacyState.value
+        val isLocal = _uiState.value.activeSession?.isLocalFile ?: false
+        val isNordActive = privacy.nordVpnEnabled || privacy.nordLynxTunnelUp || privacy.systemVpnActive
+        val shouldFailover = smartVpnFailover.recordFatalNetworkError(
+            isFeatureEnabled = privacy.smartAutoVpnFailoverEnabled,
+            hasNordCredentials = privacy.nordVpnLoggedIn,
+            isNordAlreadyActive = isNordActive,
+            isLocalMedia = isLocal
+        )
+        if (shouldFailover) {
+            triggerSmartVpnFailover("Upstream error ($reason)")
+            return true
+        }
+        return false
+    }
+
+    private fun triggerSmartVpnFailover(triggerReason: String) {
+        val current = _networkPrivacyState.value
+        val loc = current.selectedLocation
+        _uiState.update {
+            it.copy(toastMessage = "$triggerReason → Auto-connecting NordVPN (${loc.displayLabel})…")
+        }
+        viewModelScope.launch {
+            if (activeNordLynxKey.isNotBlank()) {
+                connectNordLynxInternal(
+                    location = loc,
+                    dnsMode = current.privateDnsMode,
+                    reloadActiveStream = true,
+                    autoProbe = false
+                )
+            } else if (activeNordUsername.isNotBlank() && activeNordPassword.isNotBlank()) {
+                _networkPrivacyState.update { it.copy(nordVpnEnabled = true) }
+                playerManager.applyNetworkPrivacyConfig(
+                    dnsMode = current.privateDnsMode,
+                    nordConfig = buildCurrentSocksFallbackConfig(_networkPrivacyState.value),
+                    reloadActiveStream = true
+                )
             }
         }
     }
 
-    private fun buildCurrentNordConfig(state: NetworkPrivacyUiState): DynamicSocksProxyManager.ActiveConfig {
-        return DynamicSocksProxyManager.ActiveConfig(
-            enabled = state.nordVpnLoggedIn && state.nordVpnEnabled,
-            host = state.selectedNordServerHost,
-            port = NordVpnServer.DEFAULT_SOCKS5_PORT,
-            username = activeNordUsername,
-            password = activeNordPassword
-        )
+    fun launchCompanionVpnApp(packageName: String) {
+        // Kept as no-op fallback; all 118+ NordVPN countries run natively inside CineStream.
+    }
+
+    private fun buildCurrentSocksFallbackConfig(state: NetworkPrivacyUiState): DynamicSocksProxyManager.ActiveConfig {
+        val useSocks = state.nordVpnLoggedIn &&
+            state.nordVpnEnabled &&
+            activeNordLynxKey.isBlank() &&
+            activeNordUsername.isNotBlank() &&
+            activeNordPassword.isNotBlank()
+        return if (useSocks) {
+            DynamicSocksProxyManager.ActiveConfig(
+                enabled = true,
+                host = state.selectedNordServerHost,
+                port = NordVpnServer.DEFAULT_SOCKS5_PORT,
+                username = activeNordUsername,
+                password = activeNordPassword
+            )
+        } else {
+            DynamicSocksProxyManager.ActiveConfig()
+        }
     }
 
     fun retryWithDecoderMode(mode: VideoDecoderMode) {
@@ -1357,15 +1957,44 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             } else {
                 0L
             }
+
+            // Re-attach mirrors & headers if this item still exists in an active JSON playlist
+            val matchingPlaylistItem = _jsonPlaylistState.value.allItems.firstOrNull { candidate ->
+                (item.seriesId != null && candidate.id == item.seriesId) ||
+                    candidate.url == item.sourceUri
+            }
+            val matchingEpisode = if (matchingPlaylistItem != null && item.episodeId != null) {
+                matchingPlaylistItem.seasons.flatMap { it.episodes }.firstOrNull { it.id == item.episodeId }
+            } else {
+                null
+            }
+
             startPlayback(
                 title = item.title,
                 sourceUri = item.sourceUri,
                 format = format,
                 isLocalFile = item.isLocalFile,
                 initialSubtitles = subs,
-                resumePositionMs = resumeMs
+                resumePositionMs = resumeMs,
+                mirrors = matchingEpisode?.mirrors ?: matchingPlaylistItem?.mirrors.orEmpty(),
+                headers = matchingEpisode?.headers ?: matchingPlaylistItem?.headers.orEmpty(),
+                seriesItemId = item.seriesId,
+                seriesTitle = item.seriesTitle,
+                seasonNumber = item.seasonNumber,
+                episodeNumber = item.episodeNumber,
+                episodeId = item.episodeId,
+                episodeCodeLabel = ContinueWatchingHelper.formatEpisodeCode(item.seasonNumber, item.episodeNumber),
+                posterUrl = item.posterUrl ?: matchingPlaylistItem?.imageUrl,
+                playlistId = item.playlistId
             )
         }
+    }
+
+    fun dismissContinueWatchingItem(item: MediaHistoryEntity) {
+        viewModelScope.launch {
+            historyRepo.clearResumeProgress(item.id)
+        }
+        _uiState.update { it.copy(toastMessage = "Removed from Continue Watching") }
     }
 
     fun handleExternalIntentUri(uri: Uri) {
@@ -1397,9 +2026,14 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         headers: Map<String, String> = emptyMap(),
         seriesItemId: String? = null,
         seriesTitle: String? = null,
+        seasonNumber: Int? = null,
+        episodeNumber: Int? = null,
         episodeId: String? = null,
-        episodeCodeLabel: String? = null
+        episodeCodeLabel: String? = null,
+        posterUrl: String? = null,
+        playlistId: String? = null
     ) {
+        smartVpnFailover.onNewMediaSession(sourceUri)
         val existingRecord = historyRepo.getBySourceUri(sourceUri)
         val mergedSubs = initialSubtitles.ifEmpty {
             val savedUri = existingRecord?.subtitleUri
@@ -1433,25 +2067,41 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
+        val restoredSubOffset = (existingRecord?.subtitleOffsetMs ?: 0L).coerceIn(-5_000L, 5_000L)
+        val restoredAudioDelay = AudioDelayMath.clampDelayMs(existingRecord?.audioDelayMs ?: 0L)
+        playerManager.setAudioDelayMs(restoredAudioDelay)
+
         val session = ActiveMediaSession(
             title = title,
             sourceUri = sourceUri,
             format = format,
             isLocalFile = isLocalFile,
             externalSubtitles = mergedSubs,
-            subtitleOffsetMs = 0L,
+            subtitleOffsetMs = restoredSubOffset,
             mirrors = mirrors,
             headers = headers,
-            seriesItemId = seriesItemId,
-            seriesTitle = seriesTitle,
-            episodeId = episodeId,
-            episodeCodeLabel = episodeCodeLabel
+            seriesItemId = seriesItemId ?: existingRecord?.seriesId,
+            seriesTitle = seriesTitle ?: existingRecord?.seriesTitle,
+            seasonNumber = seasonNumber ?: existingRecord?.seasonNumber,
+            episodeNumber = episodeNumber ?: existingRecord?.episodeNumber,
+            episodeId = episodeId ?: existingRecord?.episodeId,
+            episodeCodeLabel = episodeCodeLabel ?: ContinueWatchingHelper.formatEpisodeCode(
+                seasonNumber ?: existingRecord?.seasonNumber,
+                episodeNumber ?: existingRecord?.episodeNumber
+            ),
+            posterUrl = posterUrl ?: existingRecord?.posterUrl,
+            playlistId = playlistId ?: existingRecord?.playlistId
         )
 
         _uiState.update { it.copy(activeSession = session) }
+        clearAbLoop(silent = true)
+        dismissUpNextCountdown(rememberDismissal = false)
+        dismissedUpNextEpisodeId = null
+        _chapters.value = emptyList()
+        _secondarySubtitleState.update { it.copy(currentText = null) }
 
         val resolvedPairs = mergedSubs.map { sub ->
-            sub to subtitleHelper.resolvePlayableSubtitleUri(sub, 0L)
+            sub to subtitleHelper.resolvePlayableSubtitleUri(sub, restoredSubOffset)
         }
 
         playerManager.loadMedia(
@@ -1470,9 +2120,17 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             sourceUri = sourceUri,
             format = format,
             isLocalFile = isLocalFile,
-            subtitle = mergedSubs.lastOrNull()
+            subtitle = mergedSubs.lastOrNull(),
+            seriesId = session.seriesItemId,
+            seriesTitle = session.seriesTitle,
+            seasonNumber = session.seasonNumber,
+            episodeNumber = session.episodeNumber,
+            episodeId = session.episodeId,
+            posterUrl = session.posterUrl,
+            playlistId = session.playlistId
         )
 
+        syncBackgroundAudioNotification()
         _navEvents.tryEmit(CineNavigationEvent.OpenPlayer)
     }
 
@@ -1554,7 +2212,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     fun adjustSubtitleOffset(deltaMs: Long) {
         val currentSession = _uiState.value.activeSession ?: return
         if (currentSession.externalSubtitles.isEmpty()) return
-        val newOffset = (currentSession.subtitleOffsetMs + deltaMs).coerceIn(-10_000L, 10_000L)
+        val newOffset = (currentSession.subtitleOffsetMs + deltaMs).coerceIn(-5_000L, 5_000L)
         applySubtitleOffset(currentSession, newOffset)
     }
 
@@ -1584,6 +2242,70 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 mirrors = updatedSession.mirrors,
                 headers = updatedSession.headers
             )
+            historyRepo.saveSyncOffsets(
+                sourceUri = updatedSession.sourceUri,
+                subtitleOffsetMs = newOffsetMs,
+                audioDelayMs = playbackState.value.audioDelayMs
+            )
+        }
+    }
+
+    fun adjustAudioDelay(deltaMs: Long) {
+        val next = playerManager.adjustAudioDelayMs(deltaMs)
+        val session = _uiState.value.activeSession ?: return
+        viewModelScope.launch {
+            historyRepo.saveSyncOffsets(
+                sourceUri = session.sourceUri,
+                subtitleOffsetMs = session.subtitleOffsetMs,
+                audioDelayMs = next
+            )
+        }
+    }
+
+    fun resetAudioDelay() {
+        playerManager.resetAudioDelayMs()
+        val session = _uiState.value.activeSession ?: return
+        viewModelScope.launch {
+            historyRepo.saveSyncOffsets(
+                sourceUri = session.sourceUri,
+                subtitleOffsetMs = session.subtitleOffsetMs,
+                audioDelayMs = 0L
+            )
+        }
+    }
+
+    fun setBackgroundAudioEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefsRepo.updateBackgroundAudioEnabled(enabled)
+        }
+        syncBackgroundAudioNotification(forceEnabled = enabled)
+        _uiState.update {
+            it.copy(
+                toastMessage = if (enabled) {
+                    "Background Audio ON — plays with screen off"
+                } else {
+                    "Background Audio OFF"
+                }
+            )
+        }
+    }
+
+    fun syncBackgroundAudioNotification(forceEnabled: Boolean? = null) {
+        val enabled = forceEnabled ?: backgroundAudioEnabled.value
+        val session = _uiState.value.activeSession
+        val appCtx = getApplication<Application>()
+        if (enabled && session != null && playerManager.hasLoadedMedia()) {
+            val subtitle = session.episodeCodeLabel
+                ?.let { "${session.seriesTitle ?: session.title} · $it" }
+                ?: "Background audio playing"
+            MediaPlaybackService.startOrUpdate(
+                context = appCtx,
+                title = session.title,
+                subtitle = subtitle,
+                isPlaying = playerManager.player.isPlaying
+            )
+        } else {
+            MediaPlaybackService.stop(appCtx)
         }
     }
 
@@ -1665,6 +2387,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
      */
     fun exitPlayerAndReleaseBuffers() {
         persistCurrentPosition()
+        MediaPlaybackService.stop(getApplication())
         playerManager.stopAndTrimBuffers()
     }
 
@@ -1676,6 +2399,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         val session = _uiState.value.activeSession ?: return
         if (playerManager.hasLoadedMedia()) {
             playerManager.player.play()
+            syncBackgroundAudioNotification()
             _navEvents.tryEmit(CineNavigationEvent.OpenPlayer)
             return
         }
@@ -1692,8 +2416,12 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 headers = session.headers,
                 seriesItemId = session.seriesItemId,
                 seriesTitle = session.seriesTitle,
+                seasonNumber = session.seasonNumber,
+                episodeNumber = session.episodeNumber,
                 episodeId = session.episodeId,
-                episodeCodeLabel = session.episodeCodeLabel
+                episodeCodeLabel = session.episodeCodeLabel,
+                posterUrl = session.posterUrl,
+                playlistId = session.playlistId
             )
         }
     }
@@ -1726,12 +2454,24 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
                 if (session != null && isPlayingOrBuffering) {
                     playerManager.syncPlaybackProgress()
+                    val progress = playbackProgressState.value
+                    updateDualSubtitleCue(progress.currentPositionMs)
+                    if (progress.durationMs > 0L && _chapters.value.isEmpty() && !progress.isLiveStream) {
+                        _chapters.value = buildDefaultChapters(progress.durationMs)
+                    }
+                    if (!progress.isLiveStream &&
+                        progress.durationMs > 30_000L &&
+                        (progress.durationMs - progress.currentPositionMs) in 1L..15_000L &&
+                        autoPlayUpNextEnabled.value &&
+                        _sleepTimerState.value.mode != SleepTimerMode.END_OF_EPISODE
+                    ) {
+                        maybeStartUpNextCountdown(forceImmediateOnEnd = false)
+                    }
                     tick++
                     if (tick % 2 == 0 && statsForNerdsEnabled.value) {
                         playerManager.syncNetworkStats()
                     }
                     if (tick % 10 == 0 && playbackState.value.isPlaying) {
-                        val progress = playbackProgressState.value
                         val movedEnough = session.sourceUri != lastSavedProgressUri ||
                             abs(progress.currentPositionMs - lastSavedProgressMs) >= 2_000L
                         if (progress.currentPositionMs > 0L && movedEnough) {
@@ -1748,6 +2488,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 } else {
                     if (session != null && playerManager.hasLoadedMedia()) {
                         playerManager.syncPlaybackProgress()
+                        updateDualSubtitleCue(playbackProgressState.value.currentPositionMs)
                         if (statsForNerdsEnabled.value) {
                             playerManager.syncNetworkStats()
                         }
@@ -1758,10 +2499,953 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    // ==================== V1.24: SLEEP TIMER ====================
+
+    fun setSleepTimer(mode: SleepTimerMode) {
+        sleepTimerJob?.cancel()
+        playerManager.setSleepFadeMultiplier(1.0f)
+        if (mode == SleepTimerMode.OFF) {
+            _sleepTimerState.value = SleepTimerUiState()
+            _uiState.update { it.copy(toastMessage = "Sleep Timer turned off") }
+            return
+        }
+        if (mode == SleepTimerMode.END_OF_EPISODE) {
+            _sleepTimerState.value = SleepTimerUiState(mode = mode, remainingMs = 0L, isFadingOut = false)
+            _uiState.update { it.copy(toastMessage = "Sleep Timer set to End of Episode") }
+            return
+        }
+        val totalMs = mode.minutes * 60_000L
+        _sleepTimerState.value = SleepTimerUiState(mode = mode, remainingMs = totalMs, isFadingOut = false)
+        _uiState.update { it.copy(toastMessage = "Sleep Timer set for ${mode.minutes} minutes") }
+        sleepTimerJob = viewModelScope.launch {
+            var remaining = totalMs
+            while (isActive && remaining > 0L) {
+                delay(1_000L)
+                remaining = (remaining - 1_000L).coerceAtLeast(0L)
+                val fading = remaining in 1L..5_000L
+                if (fading) {
+                    playerManager.setSleepFadeMultiplier(remaining / 5_000f)
+                }
+                _sleepTimerState.value = SleepTimerUiState(
+                    mode = mode,
+                    remainingMs = remaining,
+                    isFadingOut = fading
+                )
+            }
+            if (isActive) {
+                playerManager.pause()
+                playerManager.setSleepFadeMultiplier(1.0f)
+                persistCurrentPosition()
+                _sleepTimerState.value = SleepTimerUiState()
+                _uiState.update { it.copy(toastMessage = "Sleep Timer paused playback") }
+            }
+        }
+    }
+
+    fun cancelSleepTimer(silent: Boolean = false) {
+        sleepTimerJob?.cancel()
+        playerManager.setSleepFadeMultiplier(1.0f)
+        _sleepTimerState.value = SleepTimerUiState()
+        if (!silent) {
+            _uiState.update { it.copy(toastMessage = "Sleep Timer cancelled") }
+        }
+    }
+
+    // ==================== V1.24: UP-NEXT COUNTDOWN ====================
+
+    private fun maybeStartUpNextCountdown(forceImmediateOnEnd: Boolean): Boolean {
+        if (_upNextCountdown.value != null) return true
+        val session = _uiState.value.activeSession ?: return false
+        val seriesId = session.seriesItemId ?: return false
+        val series = _jsonPlaylistState.value.allItems.firstOrNull { it.id == seriesId } ?: return false
+        val nextEp = series.findNextEpisode(session.episodeId) ?: return false
+        if (!forceImmediateOnEnd && dismissedUpNextEpisodeId == nextEp.id) return false
+
+        val totalSecs = 10
+        _upNextCountdown.value = UpNextCountdownState(
+            series = series,
+            nextEpisode = nextEp,
+            secondsRemaining = totalSecs,
+            totalSeconds = totalSecs
+        )
+        upNextCountdownJob?.cancel()
+        upNextCountdownJob = viewModelScope.launch {
+            var secs = totalSecs
+            while (isActive && secs > 0) {
+                delay(1_000L)
+                secs--
+                _upNextCountdown.update { cur -> cur?.copy(secondsRemaining = secs) }
+            }
+            if (isActive && _upNextCountdown.value != null) {
+                val pending = _upNextCountdown.value
+                _upNextCountdown.value = null
+                if (pending != null) {
+                    playSeriesEpisode(pending.series, pending.nextEpisode)
+                }
+            }
+        }
+        return true
+    }
+
+    fun playUpNextNow() {
+        val pending = _upNextCountdown.value
+        upNextCountdownJob?.cancel()
+        _upNextCountdown.value = null
+        if (pending != null) {
+            playSeriesEpisode(pending.series, pending.nextEpisode)
+        } else {
+            playNextEpisode()
+        }
+    }
+
+    fun dismissUpNextCountdown(rememberDismissal: Boolean = true) {
+        if (rememberDismissal) {
+            dismissedUpNextEpisodeId = _upNextCountdown.value?.nextEpisode?.id
+        }
+        upNextCountdownJob?.cancel()
+        _upNextCountdown.value = null
+    }
+
+    fun setAutoPlayUpNextEnabled(enabled: Boolean) {
+        viewModelScope.launch { prefsRepo.updateAutoPlayUpNextEnabled(enabled) }
+    }
+
+    // ==================== V1.24: NIGHT MODE, LANGUAGES, SKIP, 2X HOLD ====================
+
+    fun setNightModeAudioEnabled(enabled: Boolean) {
+        playerManager.setNightModeAudio(enabled)
+        viewModelScope.launch { prefsRepo.updateNightModeAudioEnabled(enabled) }
+        _uiState.update {
+            it.copy(
+                toastMessage = if (enabled) {
+                    "Night Mode ON — Dialogue Boost & Dynamic Limiter active"
+                } else {
+                    "Night Mode OFF"
+                }
+            )
+        }
+    }
+
+    fun setPreferredAudioLanguage(langCode: String) {
+        viewModelScope.launch { prefsRepo.updatePreferredAudioLanguage(langCode) }
+        playerManager.applyPreferredLanguages(langCode, preferredSubtitleLanguage.value)
+        _uiState.update { it.copy(toastMessage = "Default audio language updated") }
+    }
+
+    fun setPreferredSubtitleLanguage(langCode: String) {
+        viewModelScope.launch { prefsRepo.updatePreferredSubtitleLanguage(langCode) }
+        playerManager.applyPreferredLanguages(preferredAudioLanguage.value, langCode)
+        _uiState.update { it.copy(toastMessage = "Default subtitle language updated") }
+    }
+
+    fun setSeekIntervalSeconds(seconds: Int) {
+        val clamped = seconds.coerceIn(5, 30)
+        viewModelScope.launch { prefsRepo.updateSeekIntervalSeconds(clamped) }
+        _uiState.update { it.copy(toastMessage = "Skip interval set to ${clamped}s") }
+    }
+
+    fun setTemporaryFastForward(active: Boolean) {
+        playerManager.setTemporarySpeed(if (active) 2.0f else null)
+    }
+
+    fun skipIntro() {
+        playerManager.seekBy(85_000L)
+        _uiState.update { it.copy(toastMessage = "Skipped intro (+85s)") }
+    }
+
+    // ==================== V1.24: A-B LOOP & CHAPTER MARKERS ====================
+
+    fun setAbLoopPointA() {
+        val pos = playerManager.player.currentPosition.coerceAtLeast(0L)
+        _abLoopState.value = AbLoopState(startMs = pos, endMs = null)
+        playerManager.setAbLoopBounds(pos, null)
+        _uiState.update { it.copy(toastMessage = "A-B Loop point A set") }
+    }
+
+    fun setAbLoopPointB() {
+        val cur = _abLoopState.value
+        val pos = playerManager.player.currentPosition.coerceAtLeast(0L)
+        val start = cur.startMs ?: (pos - 10_000L).coerceAtLeast(0L)
+        if (pos <= start + 500L) {
+            _uiState.update { it.copy(toastMessage = "Point B must be after Point A") }
+            return
+        }
+        _abLoopState.value = AbLoopState(startMs = start, endMs = pos)
+        playerManager.setAbLoopBounds(start, pos)
+        _uiState.update { it.copy(toastMessage = "A-B Loop active") }
+    }
+
+    fun clearAbLoop(silent: Boolean = false) {
+        _abLoopState.value = AbLoopState()
+        playerManager.setAbLoopBounds(null, null)
+        if (!silent) {
+            _uiState.update { it.copy(toastMessage = "A-B Loop cleared") }
+        }
+    }
+
+    private fun buildDefaultChapters(durationMs: Long): List<ChapterMarker> {
+        if (durationMs < 180_000L) return emptyList()
+        val count = when {
+            durationMs >= 5_400_000L -> 8 // >= 90m movie
+            durationMs >= 2_400_000L -> 6 // >= 40m episode
+            else -> 4
+        }
+        val step = durationMs / count
+        return (0 until count).map { idx ->
+            val label = when (idx) {
+                0 -> "Start"
+                count - 1 -> "Finale"
+                else -> "Part ${idx + 1}"
+            }
+            ChapterMarker(title = label, startMs = idx * step)
+        }
+    }
+
+    fun jumpToChapter(chapter: ChapterMarker) {
+        playerManager.seekTo(chapter.startMs)
+        _uiState.update { it.copy(toastMessage = "Chapter: ${chapter.title}") }
+    }
+
+    fun jumpNextChapter() {
+        val list = _chapters.value
+        if (list.isEmpty()) {
+            playerManager.seekBy(seekIntervalSeconds.value * 1_000L)
+            return
+        }
+        val pos = playerManager.player.currentPosition.coerceAtLeast(0L)
+        val next = list.firstOrNull { it.startMs > pos + 2_000L } ?: list.last()
+        jumpToChapter(next)
+    }
+
+    fun jumpPreviousChapter() {
+        val list = _chapters.value
+        if (list.isEmpty()) {
+            playerManager.seekBy(-seekIntervalSeconds.value * 1_000L)
+            return
+        }
+        val pos = playerManager.player.currentPosition.coerceAtLeast(0L)
+        val prev = list.lastOrNull { it.startMs < pos - 3_000L } ?: list.first()
+        jumpToChapter(prev)
+    }
+
+    // ==================== V1.24: GLOBAL SEARCH & FAVORITES / WATCHLIST ====================
+
+    fun updateGlobalSearchQuery(query: String) {
+        _globalSearchQuery.value = query
+    }
+
+    fun isFavorited(mediaKey: String): Boolean {
+        return favorites.value.any { it.mediaKey == mediaKey }
+    }
+
+    fun toggleFavoriteActiveSession() {
+        val session = _uiState.value.activeSession ?: return
+        val mediaKey = session.seriesItemId ?: session.sourceUri
+        val title = session.seriesTitle ?: session.title
+        val type = if (session.seriesItemId != null) "SERIES" else "STREAM_URL"
+        toggleFavorite(
+            mediaKey = mediaKey,
+            title = title,
+            sourceUri = session.sourceUri,
+            itemType = type,
+            format = session.format,
+            posterUrl = session.posterUrl,
+            subtitleUrl = session.externalSubtitles.lastOrNull()?.uri
+        )
+    }
+
+    fun toggleFavoriteM3uEntry(entry: M3uEntry) {
+        toggleFavorite(
+            mediaKey = entry.url,
+            title = entry.title,
+            sourceUri = entry.url,
+            itemType = "M3U_CHANNEL",
+            format = entry.format,
+            posterUrl = entry.tvgLogo,
+            groupTitle = entry.groupTitle
+        )
+    }
+
+    fun toggleFavoriteJsonItem(item: JsonPlaylistItem) {
+        val uri = if (item.isSeries) {
+            item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url.orEmpty()
+        } else {
+            item.url
+        }
+        toggleFavorite(
+            mediaKey = item.id,
+            title = item.title,
+            sourceUri = uri,
+            itemType = if (item.isSeries) "SERIES" else "MOVIE",
+            format = item.format,
+            posterUrl = item.imageUrl,
+            imdbId = item.imdbId,
+            imdbRating = item.imdbRating,
+            releaseYear = item.releaseYear,
+            groupTitle = item.groupTitle,
+            subtitleUrl = item.subtitleUrl
+        )
+    }
+
+    fun toggleFavorite(
+        mediaKey: String,
+        title: String,
+        sourceUri: String,
+        itemType: String,
+        format: StreamFormat = StreamFormat.AUTO,
+        posterUrl: String? = null,
+        imdbId: String? = null,
+        imdbRating: String? = null,
+        releaseYear: String? = null,
+        groupTitle: String? = null,
+        subtitleUrl: String? = null
+    ) {
+        viewModelScope.launch {
+            val added = favoriteRepo.toggleFavorite(
+                FavoriteItemEntity(
+                    mediaKey = mediaKey,
+                    title = title,
+                    sourceUri = sourceUri,
+                    itemType = itemType,
+                    formatName = format.name,
+                    posterUrl = posterUrl,
+                    imdbId = imdbId,
+                    imdbRating = imdbRating,
+                    releaseYear = releaseYear,
+                    groupTitle = groupTitle,
+                    subtitleUrl = subtitleUrl
+                )
+            )
+            _uiState.update {
+                it.copy(
+                    toastMessage = if (added) "Added \"$title\" to My Watchlist" else "Removed \"$title\" from My Watchlist"
+                )
+            }
+        }
+    }
+
+    fun playFavoriteItem(fav: FavoriteItemEntity) {
+        val matchingJson = _jsonPlaylistState.value.allItems.firstOrNull {
+            it.id == fav.mediaKey || (!it.isSeries && it.url == fav.sourceUri)
+        }
+        if (matchingJson != null) {
+            playJsonPlaylistItem(matchingJson)
+            return
+        }
+        val fmt = StreamFormat.entries.firstOrNull { it.name == fav.formatName } ?: StreamFormat.AUTO
+        viewModelScope.launch {
+            val subs = fav.subtitleUrl?.takeIf { it.isNotBlank() }?.let {
+                listOf(subtitleHelper.buildFromRemoteUrl(it))
+            }.orEmpty()
+            startPlayback(
+                title = fav.title,
+                sourceUri = fav.sourceUri,
+                format = fmt,
+                isLocalFile = fav.sourceUri.startsWith("file://") || fav.sourceUri.startsWith("content://"),
+                initialSubtitles = subs,
+                posterUrl = fav.posterUrl
+            )
+        }
+    }
+
+    fun openGlobalSearchResult(result: GlobalSearchResult) {
+        _globalSearchQuery.value = ""
+        when {
+            result.jsonItem != null -> playJsonPlaylistItem(result.jsonItem)
+            result.m3uEntry != null -> playM3uEntry(result.m3uEntry)
+            else -> {
+                viewModelScope.launch {
+                    val isLocal = result.sourceUri.startsWith("file://") || result.sourceUri.startsWith("content://")
+                    startPlayback(
+                        title = result.title,
+                        sourceUri = result.sourceUri,
+                        format = result.format,
+                        isLocalFile = isLocal,
+                        initialSubtitles = emptyList(),
+                        posterUrl = result.posterUrl
+                    )
+                }
+            }
+        }
+    }
+
+    // ==================== V1.24: LIVE TV EPG & CHANNEL ZAPPING ====================
+
+    fun loadEpgFromUrl(url: String, silent: Boolean = false) {
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true)) {
+            if (!silent) {
+                _epgState.update { it.copy(errorMessage = "Enter a valid http:// or https:// XMLTV EPG URL") }
+            }
+            return
+        }
+        viewModelScope.launch {
+            _epgState.update { it.copy(epgUrl = trimmed, isLoading = true, errorMessage = null) }
+            prefsRepo.updateEpgUrl(trimmed)
+            val result = xmltvEpgParser.fetchAndParse(trimmed)
+            result.onFailure { err ->
+                val msg = err.localizedMessage ?: "Failed to load XMLTV EPG"
+                _epgState.update { it.copy(isLoading = false, errorMessage = msg) }
+                if (!silent) {
+                    _uiState.update { it.copy(toastMessage = "EPG load failed: $msg") }
+                }
+            }.onSuccess { programsMap ->
+                val totalPrograms = programsMap.values.sumOf { it.size }
+                _epgState.update {
+                    it.copy(
+                        isLoading = false,
+                        programsByChannel = programsMap,
+                        loadedProgramCount = totalPrograms,
+                        errorMessage = null
+                    )
+                }
+                if (!silent) {
+                    _uiState.update { it.copy(toastMessage = "Loaded EPG guide ($totalPrograms programs)") }
+                }
+            }
+        }
+    }
+
+    fun resolveEpgForChannel(entry: M3uEntry, nowMs: Long = System.currentTimeMillis()): ChannelEpgNowNext? {
+        val epg = _epgState.value
+        if (epg.programsByChannel.isEmpty()) return null
+        return XmltvEpgParser.resolveNowNext(
+            epgIndex = epg.programsByChannel,
+            entry = entry,
+            nowMs = nowMs
+        )
+    }
+
+    fun zapM3uChannel(delta: Int) {
+        val entries = _uiState.value.m3uEntries
+        if (entries.size < 2) return
+        val currentIdx = entries.indexOfFirst { it.id == _uiState.value.activeM3uEntryId }.coerceAtLeast(0)
+        val nextIdx = (currentIdx + delta + entries.size) % entries.size
+        val nextEntry = entries[nextIdx]
+        playM3uEntry(nextEntry)
+        val epgInfo = resolveEpgForChannel(nextEntry)
+        _channelZapBanner.value = ChannelZapBannerState(
+            channelNumber = nextIdx + 1,
+            totalChannels = entries.size,
+            channelTitle = nextEntry.title,
+            groupTitle = nextEntry.groupTitle,
+            epgNowNext = epgInfo
+        )
+        channelZapBannerJob?.cancel()
+        channelZapBannerJob = viewModelScope.launch {
+            delay(4_500L)
+            _channelZapBanner.value = null
+        }
+    }
+
+    // ==================== V1.24: ONLINE SUBTITLES & DUAL SUBTITLES ====================
+
+    fun updateOnlineSubtitleQuery(query: String) {
+        _onlineSubtitleState.update { it.copy(query = query) }
+    }
+
+    fun updateOnlineSubtitleLanguage(language: String) {
+        _onlineSubtitleState.update { it.copy(language = language) }
+    }
+
+    fun searchOnlineSubtitles(overrideQuery: String? = null) {
+        val sessionTitle = _uiState.value.activeSession?.let { it.seriesTitle ?: it.title }.orEmpty()
+        val query = (overrideQuery ?: _onlineSubtitleState.value.query).ifBlank { sessionTitle }.trim()
+        val lang = _onlineSubtitleState.value.language
+        _onlineSubtitleState.update {
+            it.copy(
+                query = query,
+                isConfigured = openSubtitlesClient.hasApiKey,
+                isSearching = true,
+                errorMessage = null
+            )
+        }
+        viewModelScope.launch {
+            when (val result = openSubtitlesClient.searchSubtitles(query = query, languageCode = lang)) {
+                is OnlineSubtitleSearchResult.Success -> _onlineSubtitleState.update {
+                    it.copy(
+                        isSearching = false,
+                        results = result.candidates,
+                        errorMessage = if (result.candidates.isEmpty()) "No subtitles found for \"$query\"" else null
+                    )
+                }
+                is OnlineSubtitleSearchResult.MissingApiKey -> _onlineSubtitleState.update {
+                    it.copy(isSearching = false, isConfigured = false, errorMessage = result.message)
+                }
+                is OnlineSubtitleSearchResult.Error -> _onlineSubtitleState.update {
+                    it.copy(isSearching = false, errorMessage = result.message)
+                }
+            }
+        }
+    }
+
+    fun loginOpenSubtitles(username: String, password: String) {
+        viewModelScope.launch {
+            _onlineSubtitleState.update { it.copy(isLoggingIn = true, errorMessage = null) }
+            when (val res = openSubtitlesClient.login(username, password)) {
+                is OpenSubtitlesLoginResult.Success -> {
+                    prefsRepo.saveOpenSubtitlesCredentials(res.username, password)
+                    _onlineSubtitleState.update {
+                        it.copy(
+                            isLoggingIn = false,
+                            loggedInUsername = res.username,
+                            remainingDownloads = res.allowedDownloads,
+                            errorMessage = null
+                        )
+                    }
+                    _uiState.update {
+                        it.copy(toastMessage = "Signed in to OpenSubtitles as ${res.username} (${res.allowedDownloads}/day)")
+                    }
+                }
+                is OpenSubtitlesLoginResult.Error -> {
+                    _onlineSubtitleState.update {
+                        it.copy(isLoggingIn = false, errorMessage = res.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun logoutOpenSubtitles() {
+        openSubtitlesClient.logout()
+        viewModelScope.launch {
+            prefsRepo.clearOpenSubtitlesCredentials()
+        }
+        _onlineSubtitleState.update {
+            it.copy(loggedInUsername = null, remainingDownloads = null)
+        }
+        _uiState.update { it.copy(toastMessage = "Signed out of OpenSubtitles") }
+    }
+
+    fun applyOnlineSubtitle(candidate: OnlineSubtitleCandidate, asSecondary: Boolean) {
+        val session = _uiState.value.activeSession ?: return
+        viewModelScope.launch {
+            _onlineSubtitleState.update { it.copy(isDownloadingId = candidate.fileId, errorMessage = null) }
+            val downloadResult = openSubtitlesClient.downloadSubtitleToCache(candidate)
+            _onlineSubtitleState.update { it.copy(isDownloadingId = null) }
+            val downloaded = downloadResult.getOrElse { err ->
+                val msg = err.localizedMessage ?: "Subtitle download failed"
+                _onlineSubtitleState.update { it.copy(errorMessage = msg) }
+                _uiState.update { it.copy(toastMessage = msg) }
+                return@launch
+            }
+            downloaded.remainingDownloads?.let { rem ->
+                _onlineSubtitleState.update { it.copy(remainingDownloads = rem) }
+            }
+            val fileUri = downloaded.uri
+            val label = "${candidate.language.uppercase()} · ${candidate.fileName}"
+            if (asSecondary) {
+                val track = SecondarySubtitleEngine.loadTrack(
+                    context = getApplication(),
+                    okHttpClient = playerManager.okHttpClient,
+                    uriString = fileUri.toString(),
+                    label = label
+                )
+                if (track == null) {
+                    _uiState.update { it.copy(toastMessage = "Could not parse downloaded dual subtitle") }
+                } else {
+                    _secondarySubtitleState.value = SecondarySubtitleUiState(
+                        activeTrack = track,
+                        currentText = SecondarySubtitleEngine.findActiveCueText(
+                            track.cues,
+                            playerManager.player.currentPosition
+                        )
+                    )
+                    _uiState.update { it.copy(toastMessage = "Dual subtitle active (${track.cues.size} cues)") }
+                }
+            } else {
+                val mime = subtitleHelper.detectMimeFromName(candidate.fileName)
+                    ?: androidx.media3.common.MimeTypes.APPLICATION_SUBRIP
+                val extSub = ExternalSubtitle(
+                    id = "os_${candidate.fileId}",
+                    uri = fileUri.toString(),
+                    label = label,
+                    mimeType = mime,
+                    formatBadge = subtitleHelper.mimeToBadge(mime),
+                    isLocalFile = true
+                )
+                attachSubtitleToActiveSession(session, extSub)
+            }
+        }
+    }
+
+    fun loadSecondarySubtitleFromUri(uri: Uri) {
+        viewModelScope.launch {
+            _secondarySubtitleState.update { it.copy(isLoading = true) }
+            val name = subtitleHelper.resolveDisplayName(uri)
+            val track = SecondarySubtitleEngine.loadTrack(
+                context = getApplication(),
+                okHttpClient = playerManager.okHttpClient,
+                uriString = uri.toString(),
+                label = name
+            )
+            if (track == null) {
+                _secondarySubtitleState.update { it.copy(isLoading = false) }
+                _uiState.update { it.copy(toastMessage = "Could not parse secondary subtitle (.srt / .vtt)") }
+            } else {
+                _secondarySubtitleState.value = SecondarySubtitleUiState(
+                    activeTrack = track,
+                    currentText = SecondarySubtitleEngine.findActiveCueText(
+                        track.cues,
+                        playerManager.player.currentPosition
+                    ),
+                    isLoading = false
+                )
+                _uiState.update { it.copy(toastMessage = "Dual subtitle loaded: ${track.label}") }
+            }
+        }
+    }
+
+    fun loadSecondarySubtitleFromUrl(url: String) {
+        val trimmed = url.trim()
+        if (!MediaFormatDetector.isValidMediaLink(trimmed)) {
+            _uiState.update { it.copy(toastMessage = "Enter a valid http:// or https:// subtitle URL") }
+            return
+        }
+        viewModelScope.launch {
+            _secondarySubtitleState.update { it.copy(isLoading = true) }
+            val label = MediaFormatDetector.inferTitle(trimmed)
+            val track = SecondarySubtitleEngine.loadTrack(
+                context = getApplication(),
+                okHttpClient = playerManager.okHttpClient,
+                uriString = trimmed,
+                label = label
+            )
+            if (track == null) {
+                _secondarySubtitleState.update { it.copy(isLoading = false) }
+                _uiState.update { it.copy(toastMessage = "Failed to load dual subtitle URL") }
+            } else {
+                _secondarySubtitleState.value = SecondarySubtitleUiState(
+                    activeTrack = track,
+                    currentText = SecondarySubtitleEngine.findActiveCueText(
+                        track.cues,
+                        playerManager.player.currentPosition
+                    ),
+                    isLoading = false
+                )
+                _uiState.update { it.copy(toastMessage = "Dual subtitle loaded (${track.label})") }
+            }
+        }
+    }
+
+    fun clearSecondarySubtitle() {
+        _secondarySubtitleState.value = SecondarySubtitleUiState()
+    }
+
+    private fun updateDualSubtitleCue(positionMs: Long) {
+        val track = _secondarySubtitleState.value.activeTrack ?: return
+        val text = SecondarySubtitleEngine.findActiveCueText(track.cues, positionMs)
+        if (text != _secondarySubtitleState.value.currentText) {
+            _secondarySubtitleState.update { it.copy(currentText = text) }
+        }
+    }
+
+    // ==================== V1.24: OFFLINE DOWNLOADS (MOBILE) ====================
+
+    fun startOfflineDownloadForActiveSession() {
+        val session = _uiState.value.activeSession ?: return
+        if (session.isLocalFile) {
+            _uiState.update { it.copy(toastMessage = "Already playing from local storage") }
+            return
+        }
+        offlineDownloadManager.enqueueDownload(
+            title = session.title,
+            sourceUrl = session.sourceUri,
+            format = session.format,
+            posterUrl = session.posterUrl,
+            headers = session.headers
+        )
+        _uiState.update { it.copy(toastMessage = "Downloading \"${session.title}\" for offline playback") }
+    }
+
+    fun startOfflineDownload(
+        title: String,
+        url: String,
+        format: StreamFormat = StreamFormat.AUTO,
+        posterUrl: String? = null
+    ) {
+        offlineDownloadManager.enqueueDownload(title, url, format, posterUrl)
+        _uiState.update { it.copy(toastMessage = "Queued offline download: $title") }
+    }
+
+    fun cancelOfflineDownload(downloadId: Long) {
+        offlineDownloadManager.cancelDownload(downloadId)
+        _uiState.update { it.copy(toastMessage = "Download cancelled") }
+    }
+
+    fun deleteOfflineDownload(downloadId: Long) {
+        offlineDownloadManager.deleteDownload(downloadId)
+        _uiState.update { it.copy(toastMessage = "Offline file deleted") }
+    }
+
+    fun playOfflineDownload(entity: OfflineDownloadEntity) {
+        if (entity.status != OfflineDownloadManager.STATUS_COMPLETED || entity.localFilePath.isBlank()) {
+            _uiState.update { it.copy(toastMessage = "Download is not completed yet") }
+            return
+        }
+        val localFile = File(entity.localFilePath)
+        if (!localFile.exists()) {
+            _uiState.update { it.copy(toastMessage = "Offline file missing — please re-download") }
+            return
+        }
+        val fmt = if (localFile.extension.equals("m3u8", ignoreCase = true)) {
+            StreamFormat.HLS
+        } else {
+            StreamFormat.entries.firstOrNull { it.name == entity.formatName } ?: StreamFormat.AUTO
+        }
+        viewModelScope.launch {
+            startPlayback(
+                title = entity.title,
+                sourceUri = Uri.fromFile(localFile).toString(),
+                format = fmt,
+                isLocalFile = true,
+                initialSubtitles = emptyList(),
+                posterUrl = entity.posterUrl
+            )
+        }
+    }
+
+    // ==================== V1.24: LOCAL NETWORK (WEBDAV / JELLYFIN) ====================
+
+    fun addNetworkServer(
+        name: String,
+        serverType: String,
+        baseUrl: String,
+        username: String,
+        secret: String
+    ) {
+        val cleanUrl = LocalNetworkClient.normalizeBaseUrl(baseUrl)
+        if (!cleanUrl.startsWith("http://", true) && !cleanUrl.startsWith("https://", true)) {
+            _localNetworkState.update { it.copy(errorMessage = "Enter a valid server URL (e.g. http://192.168.1.10:8096)") }
+            return
+        }
+        val displayName = name.trim().ifBlank { cleanUrl.substringAfter("://").substringBefore("/") }
+        viewModelScope.launch {
+            val entity = NetworkServerEntity(
+                name = displayName,
+                serverType = serverType.uppercase(),
+                baseUrl = cleanUrl,
+                usernameEnc = CredentialVault.encrypt(username.trim()),
+                secretEnc = CredentialVault.encrypt(secret.trim())
+            )
+            val id = networkServerDao.upsert(entity)
+            _uiState.update { it.copy(toastMessage = "Saved $displayName (${serverType.uppercase()})") }
+            openNetworkServer(entity.copy(id = id))
+        }
+    }
+
+    fun deleteNetworkServer(serverId: Long) {
+        viewModelScope.launch {
+            networkServerDao.deleteById(serverId)
+            if (_localNetworkState.value.activeServer?.id == serverId) {
+                _localNetworkState.value = LocalNetworkUiState()
+            }
+            _uiState.update { it.copy(toastMessage = "Removed network server") }
+        }
+    }
+
+    fun openNetworkServer(server: NetworkServerEntity) {
+        viewModelScope.launch {
+            _localNetworkState.value = LocalNetworkUiState(
+                activeServer = server,
+                breadcrumbPath = listOf(server.name to ""),
+                isLoading = true
+            )
+            val res = localNetworkClient.browse(server, folderPathOrId = null)
+            _localNetworkState.update {
+                it.copy(
+                    items = res.items,
+                    isLoading = false,
+                    errorMessage = res.errorMessage
+                )
+            }
+        }
+    }
+
+    fun browseNetworkFolder(item: NetworkBrowserItem) {
+        val server = _localNetworkState.value.activeServer ?: return
+        if (!item.isFolder) {
+            playNetworkMediaItem(item)
+            return
+        }
+        viewModelScope.launch {
+            val nextBreadcrumbs = _localNetworkState.value.breadcrumbPath + (item.name to item.pathOrParentId)
+            _localNetworkState.update {
+                it.copy(breadcrumbPath = nextBreadcrumbs, isLoading = true, errorMessage = null)
+            }
+            val res = localNetworkClient.browse(server, folderPathOrId = item.pathOrParentId)
+            _localNetworkState.update {
+                it.copy(items = res.items, isLoading = false, errorMessage = res.errorMessage)
+            }
+        }
+    }
+
+    fun navigateNetworkFolderUp() {
+        val state = _localNetworkState.value
+        val server = state.activeServer ?: return
+        if (state.breadcrumbPath.size <= 1) {
+            _localNetworkState.value = LocalNetworkUiState()
+            return
+        }
+        val parentBreadcrumbs = state.breadcrumbPath.dropLast(1)
+        val targetPath = parentBreadcrumbs.last().second.ifBlank { null }
+        viewModelScope.launch {
+            _localNetworkState.update {
+                it.copy(breadcrumbPath = parentBreadcrumbs, isLoading = true, errorMessage = null)
+            }
+            val res = localNetworkClient.browse(server, folderPathOrId = targetPath)
+            _localNetworkState.update {
+                it.copy(items = res.items, isLoading = false, errorMessage = res.errorMessage)
+            }
+        }
+    }
+
+    fun playNetworkMediaItem(item: NetworkBrowserItem) {
+        if (item.playbackUrl.isBlank()) return
+        viewModelScope.launch {
+            startPlayback(
+                title = item.name,
+                sourceUri = item.playbackUrl,
+                format = item.format,
+                isLocalFile = false,
+                initialSubtitles = emptyList(),
+                posterUrl = item.posterUrl,
+                headers = item.requestHeaders
+            )
+        }
+    }
+
+    // ==================== V1.24: PHONE-TO-TV WEB REMOTE & LOCAL WI-FI / SAF SYNC ====================
+
+    fun startWebRemoteServer() {
+        val status = webRemoteServer.start(getApplication())
+        _webRemoteState.value = WebRemoteUiState(
+            isRunning = status.isRunning,
+            serverUrl = status.qrUrl,
+            pin = status.pin,
+            lastReceivedAction = _webRemoteState.value.lastReceivedAction,
+            errorMessage = status.errorMessage
+        )
+    }
+
+    fun stopWebRemoteServer() {
+        webRemoteServer.stop()
+        _webRemoteState.update { it.copy(isRunning = false) }
+    }
+
+    private fun handleRemotePushCommand(cmd: RemotePushCommand): String {
+        val payload = cmd.payload.trim()
+        viewModelScope.launch {
+            when (cmd.action) {
+                RemotePushAction.PLAY_STREAM -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "Stream URL pushed") }
+                    onUrlInputChanged(payload)
+                    launchFromUrlInput()
+                }
+                RemotePushAction.LOAD_JSON -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "JSON Catalog URL pushed") }
+                    loadJsonPlaylistFromUrl(payload, openSheetOnSuccess = true, silentOnError = false)
+                }
+                RemotePushAction.LOAD_M3U -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "M3U Playlist URL pushed") }
+                    onUrlInputChanged(payload)
+                    onFormatSelected(StreamFormat.M3U)
+                    launchFromUrlInput()
+                }
+                RemotePushAction.LOAD_SUBTITLE -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "Subtitle URL pushed") }
+                    if (_uiState.value.activeSession != null) {
+                        loadExternalSubtitleUrlIntoPlayer(payload)
+                    } else {
+                        stageRemoteSubtitle(payload)
+                    }
+                }
+                RemotePushAction.LOAD_EPG -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "EPG Guide URL pushed") }
+                    loadEpgFromUrl(payload)
+                }
+                RemotePushAction.SET_NORDVPN_TOKEN -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "NordVPN Access Key applied") }
+                    loginNordVpnWithToken(payload)
+                }
+                RemotePushAction.IMPORT_SYNC_JSON -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "Wi-Fi Sync snapshot imported") }
+                    importDeviceSyncSnapshotJson(payload)
+                }
+            }
+        }
+        return "Sent to CineStream: ${cmd.action.label}"
+    }
+
+    private fun exportDeviceSyncSnapshotJsonBlocking(): String {
+        return kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+            exportDeviceSyncSnapshotJson()
+        }
+    }
+
+    suspend fun exportDeviceSyncSnapshotJson(): String {
+        val allHistory = historyRepo.getAllHistory()
+        val allFavorites = favoriteRepo.getAll()
+        val playlistUrls = prefsRepo.loadJsonPlaylistUrls()
+        val snapshot = DeviceSyncSnapshot(
+            jsonPlaylistUrls = playlistUrls,
+            epgUrl = _epgState.value.epgUrl,
+            preferredAudioLanguage = preferredAudioLanguage.value,
+            preferredSubtitleLanguage = preferredSubtitleLanguage.value,
+            seekIntervalSeconds = seekIntervalSeconds.value,
+            nightModeAudioEnabled = nightModeAudioEnabled.value,
+            autoPlayUpNextEnabled = autoPlayUpNextEnabled.value,
+            favorites = allFavorites,
+            history = allHistory
+        )
+        return DeviceSyncCodec.encode(snapshot)
+    }
+
+    fun importDeviceSyncSnapshotJson(rawJson: String) {
+        viewModelScope.launch {
+            val snapshot = DeviceSyncCodec.decode(rawJson)
+            if (snapshot == null) {
+                _uiState.update { it.copy(toastMessage = "Invalid CineStream Sync JSON file") }
+                return@launch
+            }
+            val histCount = historyRepo.mergeSyncedHistory(snapshot.history)
+            val favCount = favoriteRepo.mergeSyncedFavorites(snapshot.favorites)
+            snapshot.jsonPlaylistUrls.forEach { url ->
+                loadJsonPlaylistFromUrl(url, openSheetOnSuccess = false, silentOnError = true)
+            }
+            if (snapshot.preferredAudioLanguage.isNotBlank()) {
+                prefsRepo.updatePreferredAudioLanguage(snapshot.preferredAudioLanguage)
+            }
+            if (snapshot.preferredSubtitleLanguage.isNotBlank()) {
+                prefsRepo.updatePreferredSubtitleLanguage(snapshot.preferredSubtitleLanguage)
+            }
+            prefsRepo.updateSeekIntervalSeconds(snapshot.seekIntervalSeconds)
+            prefsRepo.updateNightModeAudioEnabled(snapshot.nightModeAudioEnabled)
+            prefsRepo.updateAutoPlayUpNextEnabled(snapshot.autoPlayUpNextEnabled)
+            playerManager.setNightModeAudio(snapshot.nightModeAudioEnabled)
+            if (snapshot.epgUrl.isNotBlank()) {
+                loadEpgFromUrl(snapshot.epgUrl, silent = true)
+            }
+            _uiState.update {
+                it.copy(
+                    toastMessage = "Synced $histCount watch records & $favCount watchlist items"
+                )
+            }
+        }
+    }
+
     override fun onCleared() {
         progressPollingJob?.cancel()
         jsonEnrichJob?.cancel()
         volumePersistJob?.cancel()
+        sleepTimerJob?.cancel()
+        upNextCountdownJob?.cancel()
+        channelZapBannerJob?.cancel()
+        webRemoteServer.stop()
+        MediaPlaybackService.onNotificationTogglePlayPause = null
+        MediaPlaybackService.onNotificationStop = null
+        MediaPlaybackService.stop(getApplication())
+        nordLynxController.disconnectBlocking()
         playerManager.release()
         super.onCleared()
     }

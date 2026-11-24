@@ -31,9 +31,13 @@ import com.example.player.DynamicSocksProxyManager
 import com.example.player.FastDnsResolver
 import com.example.player.NetworkProbeResult
 import com.example.player.NetworkTransportMode
+import com.example.player.NordLynxServerEndpoint
+import com.example.player.NordLynxTunnelController
 import com.example.player.NordVpnApiClient
 import com.example.player.NordVpnCatalog
 import com.example.player.NordVpnCredentials
+import com.example.player.NordVpnLocation
+import com.example.player.NordVpnLocationCatalog
 import com.example.player.NordVpnLoginResult
 import com.example.player.PlayerNetworkStats
 import com.example.player.PrivateDnsMode
@@ -45,6 +49,7 @@ import com.example.viewmodel.ActiveMediaSession
 import com.example.viewmodel.CineStreamUiState
 import com.example.viewmodel.JsonPlaylistUiState
 import com.example.viewmodel.NetworkPrivacyUiState
+import com.wireguard.crypto.KeyPair
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import okhttp3.Credentials
@@ -440,7 +445,7 @@ class PrivateDnsAndNordVpnTest {
                                 .code(200)
                                 .message("OK")
                                 .body(
-                                    """{"username":"nord_svc_u1","password":"nord_svc_p1"}"""
+                                    """{"username":"nord_svc_u1","password":"nord_svc_p1","nordlynx_private_key":"MOCK_LYNX_KEY_BASE64"}"""
                                         .toResponseBody("application/json".toMediaType())
                                 )
                                 .build()
@@ -453,6 +458,39 @@ class PrivateDnsAndNordVpnTest {
                                 .body("""{"message":"Unauthorized"}""".toResponseBody("application/json".toMediaType()))
                                 .build()
                         }
+                    }
+                    url == NordVpnApiClient.COUNTRIES_ENDPOINT -> {
+                        Response.Builder()
+                            .request(chain.request())
+                            .protocol(Protocol.HTTP_2)
+                            .code(200)
+                            .message("OK")
+                            .body(
+                                """[
+                                  {"id":100,"name":"India","code":"IN","cities":[{"id":501,"name":"Mumbai"},{"id":502,"name":"Chennai"}]},
+                                  {"id":195,"name":"Singapore","code":"SG","cities":[{"id":601,"name":"Singapore"}]}
+                                ]""".trimIndent().toResponseBody("application/json".toMediaType())
+                            )
+                            .build()
+                    }
+                    url.startsWith("https://api.nordvpn.com/v1/servers/recommendations") && url.contains("wireguard_udp") -> {
+                        Response.Builder()
+                            .request(chain.request())
+                            .protocol(Protocol.HTTP_2)
+                            .code(200)
+                            .message("OK")
+                            .body(
+                                """[
+                                  {
+                                    "hostname":"in124.nordvpn.com",
+                                    "station":"198.51.100.44",
+                                    "load":18,
+                                    "locations":[{"country":{"id":100,"name":"India","city":{"id":501,"name":"Mumbai"}}}],
+                                    "technologies":[{"identifier":"wireguard_udp","metadata":[{"name":"public_key","value":"SERVER_PUB_KEY_IN124"}]}]
+                                  }
+                                ]""".trimIndent().toResponseBody("application/json".toMediaType())
+                            )
+                            .build()
                     }
                     url.startsWith("https://api.nordvpn.com/v1/servers/recommendations") -> {
                         Response.Builder()
@@ -490,7 +528,16 @@ class PrivateDnsAndNordVpnTest {
         val ok = success as NordVpnLoginResult.Success
         assertEquals("nord_svc_u1", ok.credentials.username)
         assertEquals("nord_svc_p1", ok.credentials.password)
+        assertEquals("MOCK_LYNX_KEY_BASE64", ok.credentials.nordLynxPrivateKey)
         assertEquals(12, ok.servers.size)
+        assertTrue(ok.locations.any { it.countryName == "India" && it.cityName == "Mumbai" })
+
+        val indiaEndpoint = apiClient.fetchRecommendedNordLynxServer(
+            NordVpnLocation("c_100_city_501", 100, "India", "IN", 501, "Mumbai")
+        )
+        assertEquals("in124.nordvpn.com", indiaEndpoint?.hostname)
+        assertEquals("198.51.100.44", indiaEndpoint?.stationIp)
+        assertEquals("SERVER_PUB_KEY_IN124", indiaEndpoint?.publicKey)
 
         val failure = apiClient.loginWithAccessToken("wrong_token_000000000000000000")
         assertTrue(failure is NordVpnLoginResult.Error)
@@ -540,7 +587,7 @@ class PrivateDnsAndNordVpnTest {
     }
 
     @Test
-    fun networkPrivacySheet_selectsLocation_logsIn_replacesKeyAnytime_andProbesRoute() {
+    fun networkPrivacySheet_searchesGlobalLocationsWithoutStaticList_logsIn_replacesKeyAnytime_andProbesRoute() {
         var uiState by mutableStateOf(NetworkPrivacyUiState())
         val submittedTokens = mutableListOf<String>()
 
@@ -554,15 +601,17 @@ class PrivateDnsAndNordVpnTest {
                         uiState = uiState.copy(
                             privateDnsMode = PrivateDnsMode.CLOUDFLARE_1111,
                             nordVpnLoggedIn = true,
-                            nordVpnEnabled = true
+                            nordVpnEnabled = true,
+                            nordLynxTunnelUp = true,
+                            activeNordLynxHostname = "in124.nordvpn.com"
                         )
                     },
                     onLoginNordConfiguredSecret = {},
                     onToggleNordEnabled = { enabled -> uiState = uiState.copy(nordVpnEnabled = enabled) },
-                    onSelectNordServer = { srv ->
+                    onSelectNordLocation = { loc ->
                         uiState = uiState.copy(
-                            selectedNordServerHost = srv.hostname,
-                            selectedNordServerLabel = srv.label
+                            selectedLocation = loc,
+                            selectedNordServerLabel = loc.displayLabel
                         )
                     },
                     onLogoutNord = {
@@ -573,22 +622,34 @@ class PrivateDnsAndNordVpnTest {
                             probeResult = NetworkProbeResult(
                                 success = true,
                                 exitIp = "185.220.101.5",
-                                locationCode = "SE",
-                                edgeColo = "ARN",
+                                locationCode = "IN",
+                                edgeColo = "BOM",
                                 latencyMs = 38L,
                                 routeSummary = "Cloudflare 1.1.1.1 DoH + NordVPN"
                             )
                         )
                     },
-                    onLaunchCompanionApp = {},
                     onDismiss = {}
                 )
             }
         }
 
-        // Select a NordVPN location BEFORE logging in
-        composeRule.onNodeWithTag("nordvpn_server_se_sto").performScrollTo().performClick()
-        assertEquals("stockholm.se.socks.nordhold.net", uiState.selectedNordServerHost)
+        // Before searching, NO country list item is shown
+        composeRule.onNodeWithTag("nordvpn_location_result_c_100").assertDoesNotExist()
+        // No external companion app launcher buttons exist
+        composeRule.onNodeWithTag("privacy_launch_nordvpn_app").assertDoesNotExist()
+
+        // Search "India" and select it from the dynamic search results
+        composeRule.onNodeWithTag("nordvpn_location_search_input")
+            .performScrollTo()
+            .performTextInput("India")
+        composeRule.onNodeWithTag("nordvpn_location_result_c_100")
+            .performScrollTo()
+            .performClick()
+        assertEquals("India", uiState.selectedLocation.countryName)
+        assertEquals("IN", uiState.selectedLocation.countryCode)
+        // Search results collapse automatically after choosing a location
+        composeRule.onNodeWithTag("nordvpn_location_result_c_100").assertDoesNotExist()
 
         // Enter key #1 and connect (auto-enables 1.1.1.1 + NordVPN)
         composeRule.onNodeWithTag("nordvpn_token_input")
@@ -608,9 +669,48 @@ class PrivateDnsAndNordVpnTest {
         assertEquals(2, submittedTokens.size)
         assertEquals("mock_nord_key_v2_fedcba0987654321", submittedTokens.last())
 
-        // Run live route test and verify exit IP & Sweden edge
+        // Run live route test and verify exit IP
         composeRule.onNodeWithTag("privacy_test_connection_button").performScrollTo().performClick()
         composeRule.onNodeWithText("185.220.101.5", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun nordLynxEngine_catalogCoversAll118Countries_rankedSearchWorks_andBuildsValidWireGuardConfig() {
+        assertTrue(NordVpnLocationCatalog.FALLBACK_COUNTRIES.size >= 115)
+        // Blank query never returns a list
+        assertTrue(NordVpnLocationCatalog.search(NordVpnLocationCatalog.FALLBACK_COUNTRIES, "").isEmpty())
+        assertTrue(NordVpnLocationCatalog.search(NordVpnLocationCatalog.FALLBACK_COUNTRIES, "   ").isEmpty())
+
+        // Country, ISO code, and alias searches return accurate top matches
+        assertEquals("India", NordVpnLocationCatalog.search(NordVpnLocationCatalog.FALLBACK_COUNTRIES, "india").first().countryName)
+        assertEquals("United Kingdom", NordVpnLocationCatalog.search(NordVpnLocationCatalog.FALLBACK_COUNTRIES, "uk").first().countryName)
+        assertEquals("Singapore", NordVpnLocationCatalog.search(NordVpnLocationCatalog.FALLBACK_COUNTRIES, "sg").first().countryName)
+        assertEquals("Japan", NordVpnLocationCatalog.search(NordVpnLocationCatalog.FALLBACK_COUNTRIES, "jap").first().countryName)
+
+        // Real WireGuard Curve25519 config build validation
+        val clientKeys = KeyPair()
+        val serverKeys = KeyPair()
+        val endpoint = NordLynxServerEndpoint(
+            hostname = "jp512.nordvpn.com",
+            stationIp = "198.51.100.88",
+            port = 51820,
+            publicKey = serverKeys.publicKey.toBase64(),
+            countryName = "Japan",
+            cityName = "Tokyo",
+            loadPercent = 14
+        )
+        val wgConfig = NordLynxTunnelController.buildWireGuardConfig(
+            privateKey = clientKeys.privateKey.toBase64(),
+            endpoint = endpoint,
+            dnsMode = PrivateDnsMode.CLOUDFLARE_1111,
+            includedPackageName = "com.aistudio.cinestream.vqxkpm"
+        )
+        assertEquals(2, wgConfig.`interface`.dnsServers.size)
+        assertEquals("1.1.1.1", wgConfig.`interface`.dnsServers.first().hostAddress)
+        assertTrue(wgConfig.`interface`.includedApplications.contains("com.aistudio.cinestream.vqxkpm"))
+        assertEquals(1, wgConfig.peers.size)
+        assertEquals(51820, wgConfig.peers.first().endpoint.get().port)
+        assertEquals("198.51.100.88", wgConfig.peers.first().endpoint.get().host)
     }
 
     @Test

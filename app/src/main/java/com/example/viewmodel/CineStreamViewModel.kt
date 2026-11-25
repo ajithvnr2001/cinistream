@@ -63,7 +63,6 @@ import com.example.model.AbLoopState
 import com.example.model.ChapterMarker
 import com.example.model.ChannelEpgNowNext
 import com.example.model.GlobalSearchResult
-import com.example.model.OnlineSubtitleCandidate
 import com.example.model.SleepTimerMode
 import com.example.model.SleepTimerUiState
 import com.example.model.UpNextCountdownState
@@ -71,9 +70,6 @@ import com.example.player.CredentialVault
 import com.example.player.LocalNetworkClient
 import com.example.player.NetworkBrowserItem
 import com.example.player.OfflineDownloadManager
-import com.example.player.OpenSubtitlesClient
-import com.example.player.OpenSubtitlesLoginResult
-import com.example.player.OnlineSubtitleSearchResult
 import com.example.player.SecondarySubtitleEngine
 import com.example.player.SecondarySubtitleTrack
 import com.example.player.XmltvEpgParser
@@ -163,7 +159,6 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private val smartVpnFailover = SmartVpnFailoverCoordinator()
     private val offlineDownloadManager = OfflineDownloadManager(application, offlineDownloadDao, playerManager.okHttpClient)
     private val localNetworkClient = LocalNetworkClient(playerManager.okHttpClient)
-    private val openSubtitlesClient = OpenSubtitlesClient(application, playerManager.okHttpClient)
     private val xmltvEpgParser = XmltvEpgParser(playerManager.okHttpClient)
     private val webRemoteServer = LocalWebRemoteServer(
         onCommandReceived = { cmd -> handleRemotePushCommand(cmd) },
@@ -356,11 +351,6 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private val _channelZapBanner = MutableStateFlow<ChannelZapBannerState?>(null)
     val channelZapBanner: StateFlow<ChannelZapBannerState?> = _channelZapBanner.asStateFlow()
 
-    private val _onlineSubtitleState = MutableStateFlow(
-        OnlineSubtitleUiState(isConfigured = openSubtitlesClient.hasApiKey)
-    )
-    val onlineSubtitleState: StateFlow<OnlineSubtitleUiState> = _onlineSubtitleState.asStateFlow()
-
     private val _localNetworkState = MutableStateFlow(LocalNetworkUiState())
     val localNetworkState: StateFlow<LocalNetworkUiState> = _localNetworkState.asStateFlow()
 
@@ -470,19 +460,6 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val savedTransportMode = prefsRepo.networkTransportMode.first()
             playerManager.setPreferredTransportMode(savedTransportMode, reloadActiveStream = false)
-            if (openSubtitlesClient.hasApiKey) {
-                prefsRepo.loadOpenSubtitlesCredentials()?.let { (osUser, osPass) ->
-                    when (val res = openSubtitlesClient.login(osUser, osPass)) {
-                        is OpenSubtitlesLoginResult.Success -> _onlineSubtitleState.update {
-                            it.copy(
-                                loggedInUsername = res.username,
-                                remainingDownloads = res.allowedDownloads
-                            )
-                        }
-                        is OpenSubtitlesLoginResult.Error -> Unit
-                    }
-                }
-            }
         }
         viewModelScope.launch {
             val savedPrivacy = prefsRepo.networkPrivacyPrefs.first()
@@ -2938,136 +2915,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // ==================== V1.24: ONLINE SUBTITLES & DUAL SUBTITLES ====================
-
-    fun updateOnlineSubtitleQuery(query: String) {
-        _onlineSubtitleState.update { it.copy(query = query) }
-    }
-
-    fun updateOnlineSubtitleLanguage(language: String) {
-        _onlineSubtitleState.update { it.copy(language = language) }
-    }
-
-    fun searchOnlineSubtitles(overrideQuery: String? = null) {
-        val sessionTitle = _uiState.value.activeSession?.let { it.seriesTitle ?: it.title }.orEmpty()
-        val query = (overrideQuery ?: _onlineSubtitleState.value.query).ifBlank { sessionTitle }.trim()
-        val lang = _onlineSubtitleState.value.language
-        _onlineSubtitleState.update {
-            it.copy(
-                query = query,
-                isConfigured = openSubtitlesClient.hasApiKey,
-                isSearching = true,
-                errorMessage = null
-            )
-        }
-        viewModelScope.launch {
-            when (val result = openSubtitlesClient.searchSubtitles(query = query, languageCode = lang)) {
-                is OnlineSubtitleSearchResult.Success -> _onlineSubtitleState.update {
-                    it.copy(
-                        isSearching = false,
-                        results = result.candidates,
-                        errorMessage = if (result.candidates.isEmpty()) "No subtitles found for \"$query\"" else null
-                    )
-                }
-                is OnlineSubtitleSearchResult.MissingApiKey -> _onlineSubtitleState.update {
-                    it.copy(isSearching = false, isConfigured = false, errorMessage = result.message)
-                }
-                is OnlineSubtitleSearchResult.Error -> _onlineSubtitleState.update {
-                    it.copy(isSearching = false, errorMessage = result.message)
-                }
-            }
-        }
-    }
-
-    fun loginOpenSubtitles(username: String, password: String) {
-        viewModelScope.launch {
-            _onlineSubtitleState.update { it.copy(isLoggingIn = true, errorMessage = null) }
-            when (val res = openSubtitlesClient.login(username, password)) {
-                is OpenSubtitlesLoginResult.Success -> {
-                    prefsRepo.saveOpenSubtitlesCredentials(res.username, password)
-                    _onlineSubtitleState.update {
-                        it.copy(
-                            isLoggingIn = false,
-                            loggedInUsername = res.username,
-                            remainingDownloads = res.allowedDownloads,
-                            errorMessage = null
-                        )
-                    }
-                    _uiState.update {
-                        it.copy(toastMessage = "Signed in to OpenSubtitles as ${res.username} (${res.allowedDownloads}/day)")
-                    }
-                }
-                is OpenSubtitlesLoginResult.Error -> {
-                    _onlineSubtitleState.update {
-                        it.copy(isLoggingIn = false, errorMessage = res.message)
-                    }
-                }
-            }
-        }
-    }
-
-    fun logoutOpenSubtitles() {
-        openSubtitlesClient.logout()
-        viewModelScope.launch {
-            prefsRepo.clearOpenSubtitlesCredentials()
-        }
-        _onlineSubtitleState.update {
-            it.copy(loggedInUsername = null, remainingDownloads = null)
-        }
-        _uiState.update { it.copy(toastMessage = "Signed out of OpenSubtitles") }
-    }
-
-    fun applyOnlineSubtitle(candidate: OnlineSubtitleCandidate, asSecondary: Boolean) {
-        val session = _uiState.value.activeSession ?: return
-        viewModelScope.launch {
-            _onlineSubtitleState.update { it.copy(isDownloadingId = candidate.fileId, errorMessage = null) }
-            val downloadResult = openSubtitlesClient.downloadSubtitleToCache(candidate)
-            _onlineSubtitleState.update { it.copy(isDownloadingId = null) }
-            val downloaded = downloadResult.getOrElse { err ->
-                val msg = err.localizedMessage ?: "Subtitle download failed"
-                _onlineSubtitleState.update { it.copy(errorMessage = msg) }
-                _uiState.update { it.copy(toastMessage = msg) }
-                return@launch
-            }
-            downloaded.remainingDownloads?.let { rem ->
-                _onlineSubtitleState.update { it.copy(remainingDownloads = rem) }
-            }
-            val fileUri = downloaded.uri
-            val label = "${candidate.language.uppercase()} · ${candidate.fileName}"
-            if (asSecondary) {
-                val track = SecondarySubtitleEngine.loadTrack(
-                    context = getApplication(),
-                    okHttpClient = playerManager.okHttpClient,
-                    uriString = fileUri.toString(),
-                    label = label
-                )
-                if (track == null) {
-                    _uiState.update { it.copy(toastMessage = "Could not parse downloaded dual subtitle") }
-                } else {
-                    _secondarySubtitleState.value = SecondarySubtitleUiState(
-                        activeTrack = track,
-                        currentText = SecondarySubtitleEngine.findActiveCueText(
-                            track.cues,
-                            playerManager.player.currentPosition
-                        )
-                    )
-                    _uiState.update { it.copy(toastMessage = "Dual subtitle active (${track.cues.size} cues)") }
-                }
-            } else {
-                val mime = subtitleHelper.detectMimeFromName(candidate.fileName)
-                    ?: androidx.media3.common.MimeTypes.APPLICATION_SUBRIP
-                val extSub = ExternalSubtitle(
-                    id = "os_${candidate.fileId}",
-                    uri = fileUri.toString(),
-                    label = label,
-                    mimeType = mime,
-                    formatBadge = subtitleHelper.mimeToBadge(mime),
-                    isLocalFile = true
-                )
-                attachSubtitleToActiveSession(session, extSub)
-            }
-        }
-    }
+    // ==================== V1.24: DUAL SUBTITLES ====================
 
     fun loadSecondarySubtitleFromUri(uri: Uri) {
         viewModelScope.launch {

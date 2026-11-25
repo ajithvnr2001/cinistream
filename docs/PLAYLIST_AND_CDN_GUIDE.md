@@ -1,6 +1,6 @@
-# Playlists, Live TV EPG, NAS & Hybrid In-App CDN Guide (v1.25)
+# Playlists, Live TV EPG, NAS & Hybrid In-App CDN Guide (v1.28)
 
-CineStream v1.25 supports **Multi-JSON Movie & Multi-Season Series catalogs**, **M3U / M3U8 Live TV + XMLTV EPG guides**, **WebDAV & Jellyfin LAN streaming**, **Phone-to-TV Web Remote & Local Wi-Fi Sync**, automatic **IMDb metadata enrichment**, and a **5-Layer Hybrid In-App CDN & Transport Acceleration Engine**.
+CineStream v1.28 supports **Multi-JSON Movie & Multi-Season Series catalogs**, **M3U / M3U8 Live TV + XMLTV EPG guides**, **WebDAV & Jellyfin LAN streaming**, **Phone-to-TV Web Remote & Local Wi-Fi Sync**, automatic **IMDb metadata enrichment**, and a **5-Layer Hybrid In-App CDN & Transport Acceleration Engine**.
 
 ---
 
@@ -147,7 +147,7 @@ https://stream.example.com/news/master.m3u8
   - External subtitle URLs
   - XMLTV EPG URLs
   - NordVPN Access Keys
-- **Local Sync (Phone ↔ TV):** Transfer Watchlist, Continue Watching, history, saved playlists, and playback preferences directly over LAN (`/api/sync/export` & `/api/sync/import`) or export/import a `.json` backup via Android's Storage Access Framework (SAF). Sensitive secrets (NordVPN keys, OpenSubtitles passwords, NAS passwords) are **never** included in sync snapshots.
+- **Local Sync (Phone ↔ TV):** Transfer Watchlist, Continue Watching, history, saved playlists, and playback preferences directly over LAN (`/api/sync/export` & `/api/sync/import`) or export/import a `.json` backup via Android's Storage Access Framework (SAF). Sensitive secrets (NordVPN keys and NAS passwords) are **never** included in sync snapshots.
 
 ---
 

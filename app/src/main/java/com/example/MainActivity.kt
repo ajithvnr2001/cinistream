@@ -478,7 +478,6 @@ private fun CineStreamApp(
             val chapters by viewModel.chapters.collectAsStateWithLifecycle()
             val upNextCountdown by viewModel.upNextCountdown.collectAsStateWithLifecycle()
             val favorites by viewModel.favorites.collectAsStateWithLifecycle()
-            val onlineSubtitleState by viewModel.onlineSubtitleState.collectAsStateWithLifecycle()
             val secondarySubtitleState by viewModel.secondarySubtitleState.collectAsStateWithLifecycle()
             val epgState by viewModel.epgState.collectAsStateWithLifecycle()
             val channelZapBanner by viewModel.channelZapBanner.collectAsStateWithLifecycle()
@@ -597,13 +596,6 @@ private fun CineStreamApp(
                 isFavorited = isActiveFavorited,
                 onToggleFavorite = viewModel::toggleFavoriteActiveSession,
                 onDownloadStream = if (!isTvDevice) viewModel::startOfflineDownloadForActiveSession else null,
-                onlineSubtitleState = onlineSubtitleState,
-                onUpdateOnlineSubQuery = viewModel::updateOnlineSubtitleQuery,
-                onUpdateOnlineSubLanguage = viewModel::updateOnlineSubtitleLanguage,
-                onSearchOnlineSubtitles = { viewModel.searchOnlineSubtitles() },
-                onApplyOnlineSubtitle = viewModel::applyOnlineSubtitle,
-                onLoginOpenSubtitles = viewModel::loginOpenSubtitles,
-                onLogoutOpenSubtitles = viewModel::logoutOpenSubtitles,
                 secondarySubtitleState = secondarySubtitleState,
                 onLoadSecondarySubtitleFile = viewModel::loadSecondarySubtitleFromUri,
                 onLoadSecondarySubtitleUrl = viewModel::loadSecondarySubtitleFromUrl,

@@ -1,6 +1,6 @@
-# Decoder, Transport, VPN & Playback Engine Deep Dive (v1.25)
+# Decoder, Transport, VPN & Playback Engine Deep Dive (v1.28)
 
-CineStream v1.25 combines a self-healing **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp + Live-Streaming Parallel Prefetch + Embedded WireGuard NordLynx** networking stack with a hybrid **Hardware MediaCodec + NextLib Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Play Services Cronet (`18.1.1`)**, **NextLib (`1.11.1-0.16.0`)**, and **`com.wireguard.android:tunnel` (`GoBackend`)**.
+CineStream v1.28 combines a self-healing **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp + Live-Streaming Parallel Prefetch + Embedded WireGuard NordLynx** networking stack with a hybrid **Hardware MediaCodec + NextLib Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Play Services Cronet (`18.1.1`)**, **NextLib (`1.11.1-0.16.0`)**, and **`com.wireguard.android:tunnel` (`GoBackend`)**.
 
 ---
 
@@ -101,9 +101,9 @@ private val renderersFactory = NextRenderersFactory(context)
 ### B. Real-Time PCM Audio Delay (`DelayAudioProcessor.kt`)
 - Circular PCM ring buffer inserted directly into `NextRenderersFactory.buildAudioSink()` for instant zero-reload Bluetooth/soundbar lip-sync (`-500 ms` to `+500 ms` in `±25 ms` / `±50 ms` steps), persisted per video in Room.
 
-### C. OpenSubtitles REST API v1 & Dual Subtitles (`OpenSubtitlesClient.kt`, `SecondarySubtitleEngine.kt`)
-- **Search (`GET /api/v1/subtitles`):** Uses `BuildConfig.OPENSUBTITLES_API_KEY` (injected via AI Studio Secrets) with sorted lowercase query parameters and exact JSON headers.
-- **Authenticated Downloads (`POST /api/v1/login` → `POST /api/v1/download`):** Optional OpenSubtitles account sign-in caches the session JWT (`Authorization: Bearer <token>`), routes to the returned VIP/standard `base_url`, unlocks full daily download quotas (**20/day free**, **1,000/day VIP**), tracks remaining downloads live, and persists credentials encrypted via `CredentialVault`.
+### C. HLS Extraction-Time Subtitle Transcoding & Dual Subtitles (`SubtitleHelper.kt`, `SecondarySubtitleEngine.kt`)
+- **Media3 `1.11.1` Sidecar Transcoding (`SubtitleMediaSourceBuilder`):** Media3 `1.11.1` disables legacy subtitle decoding in `TextRenderer` (`expected application/x-media3-cues`). Rather than feeding raw `SingleSampleMediaSource` bytes into `MergingMediaSource` for HLS streams, `SubtitleMediaSourceBuilder.buildMediaSource()` wraps `.srt`, `.vtt`, `.ass`/`.ssa`, and `.ttml` sidecar files in `ProgressiveMediaSource` + `SubtitleExtractor(DefaultSubtitleParserFactory().create(format), format)` so captions are transcoded to `application/x-media3-cues` during extraction.
+- **Embedded HLS Subtitles:** `DefaultHlsExtractorFactory(tolerantTsFlags, true)` enables `.experimentalParseSubtitlesDuringExtraction(true)` and formats cue codecs cleanly via `SubtitleMediaSourceBuilder.formatSubtitleCodecLabel()`.
 - **Dual Subtitles:** `SecondarySubtitleEngine` parses `.srt`/`.vtt` files into binary-searchable cue windows and renders a secondary caption line at the top of the screen while Media3 renders primary captions at the bottom.
 
 ### D. Playback Comfort & Background Audio

@@ -1,12 +1,12 @@
-# Memory Management, APK Sizing & Android TV Optimization (v1.25)
+# Memory Management, APK Sizing & Android TV Optimization (v1.28)
 
-CineStream v1.25 is engineered to run stall-free with **zero `OutOfMemoryError` crashes** on **32-bit Android 9 TVs** (1 GB RAM, `80 MB` default heap / `384 MB` `largeHeap`) while supporting **37+ Mbps 4K 10-bit HDR10 playback** on modern 64-bit smartphones—all from one **36 MB universal APK** (`cinistream-v25.apk`).
+CineStream v1.28 is engineered to run stall-free with **zero `OutOfMemoryError` crashes** on **32-bit Android 9 TVs** (1 GB RAM, `80 MB` default heap / `384 MB` `largeHeap`) while supporting **37+ Mbps 4K 10-bit HDR10 playback** on modern 64-bit smartphones—all from one **25 MB** R8-shrunk universal APK (`cinistream-v28.apk`).
 
 ---
 
-## 1. Root Causes of TV Buffering & OOMs (and How v1.25 Solves Them)
+## 1. Root Causes of TV Buffering & OOMs (and How v1.28 Solves Them)
 
-| Bottleneck | Stock Default Behavior | CineStream v1.25 Fix |
+| Bottleneck | Stock Default Behavior | CineStream v1.28 Fix |
 | :--- | :--- | :--- |
 | **1. Unbounded ExoPlayer Heap Buffers** | `DefaultLoadControl` buffers 50s up to **137.5 MB** on Java Heap—guaranteed OOM on 80 MB heaps. | Dynamic heap-capped `LoadControl` (`20%` of `maxMemory`, clamped **12–40 MB**), 20–45s window, `prioritizeTimeOverSizeThresholds = false`, `DefaultAllocator(trimOnReset = true)` + explicit `allocator.trim()`. |
 | **2. `largeHeap` Disabled** | 32-bit Android 9 TVs cap apps at `80 MB` by default. | Enabled `android:largeHeap="true"` in `AndroidManifest.xml` (`384 MB` ceiling). |
@@ -37,18 +37,19 @@ CineStream v1.25 is engineered to run stall-free with **zero `OutOfMemoryError` 
 
 ---
 
-## 3. Universal APK Size Engineering (36 MB — `app/build.gradle.kts`)
+## 3. Universal APK Size Engineering (25 MB — `app/build.gradle.kts` & `app/proguard-rules.pro`)
 
-CineStream packs Media3 `1.11.1`, NextLib FFmpeg (`libffmpeg`), embedded WireGuard (`libwg-go.so`), Room v3, Compose M3, and bundled **Fraunces + DM Sans + JetBrains Mono** fonts into a single **36 MB** universal APK via four deliberate optimizations:
-1. **Targeted ABIs (`ndk.abiFilters`):** Includes `arm64-v8a` (modern phones), `armeabi-v7a` (32-bit Android TVs), and `x86_64` (emulators), excluding obsolete 32-bit `x86`.
-2. **Compressed Native Libraries (`packaging.jniLibs.useLegacyPackaging = true`):** Compresses `.so` binaries inside the APK, saving ~21 MB.
-3. **WireGuard CLI Stripping (`excludes += setOf("**/libwg-quick.so", "**/libwg.so")`):** CineStream uses `GoBackend` (`libwg-go.so`), so root-only CLI binaries are stripped cleanly.
-4. **Compact Local Vector Icons (`ui/icons/ExtendedRoundedIcons.kt`):** Replaces the ~15 MB `material-icons-extended` DEX dependency with lightweight local Compose `ImageVector` definitions.
-5. **Play Services Cronet:** Loads Chromium's QUIC binary dynamically from Google Play Services (~150 KB client shim instead of embedding a 12+ MB Cronet `.so`).
+CineStream packs Media3 `1.11.1`, NextLib FFmpeg (`libffmpeg`), embedded WireGuard (`libwg-go.so`), Room v3, Compose M3, and bundled **Fraunces + DM Sans + JetBrains Mono** fonts into a single **25 MB** universal APK via six deliberate optimizations:
+1. **R8 Code & Resource Shrinking (`isMinifyEnabled = true`, `isShrinkResources = true` on `release`):** Removes dead DEX classes and unused resources for compact release/sideload APKs (cutting universal APK size from **36 MB → 25 MB**) while `app/proguard-rules.pro` preserves NextLib JNI symbols, WireGuard `GoBackend` callbacks, Media3 reflection factories, Play Services Cronet, Room v3, and `com.example.model.**`. The `debug` buildType remains unminified for fast incremental preview builds and clean Compose tooling.
+2. **Targeted ABIs (`ndk.abiFilters`):** Includes `arm64-v8a` (modern phones), `armeabi-v7a` (32-bit Android TVs), and `x86_64` (emulators), excluding obsolete 32-bit `x86`.
+3. **Compressed Native Libraries (`packaging.jniLibs.useLegacyPackaging = true`):** Compresses `.so` binaries inside the APK, saving ~21 MB.
+4. **WireGuard CLI Stripping (`excludes += setOf("**/libwg-quick.so", "**/libwg.so")`):** CineStream uses `GoBackend` (`libwg-go.so`), so root-only CLI binaries are stripped cleanly.
+5. **Compact Local Vector Icons (`ui/icons/ExtendedRoundedIcons.kt`):** Replaces the ~15 MB `material-icons-extended` DEX dependency with lightweight local Compose `ImageVector` definitions.
+6. **Play Services Cronet:** Loads Chromium's QUIC binary dynamically from Google Play Services (~150 KB client shim instead of embedding a 12+ MB Cronet `.so`).
 
 ---
 
-## 4. Android TV 10-Foot Ergonomics & v1.25 Editorial UI
+## 4. Android TV 10-Foot Ergonomics & 35mm Editorial UI
 
 - **Dual-Form-Factor Layout (`HomeScreen.kt`):** Switches automatically to an overscan-safe **2-Column 10-Foot Dashboard** on Android TV (`FEATURE_LEANBACK`) or wide screens (`>= 840.dp`), with brand hero + Stream Dock on the left and Quick Tools, Search, Watchlist, Continue Watching, Catalogs, Samples, and Recent on the right.
 - **35mm Screening Room Palette for Living-Room Screens:** Warm carbon matte surfaces (`#09090B` / `#121215`) and warm archival ivory ink (`#F4F1EA`) eliminate cold blue backlight bloom and harsh white glare in dark rooms.

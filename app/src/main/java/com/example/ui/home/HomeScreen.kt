@@ -95,6 +95,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.BuildConfig
 import com.example.R
 import com.example.data.FavoriteItemEntity
 import com.example.data.MediaHistoryEntity
@@ -749,7 +750,7 @@ private fun TvCompactHeroHeader(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = if (isTv) "TV · v1.25" else "v1.25",
+                            text = if (isTv) "TV · v${BuildConfig.VERSION_NAME}" else "v${BuildConfig.VERSION_NAME}",
                             style = MaterialTheme.typography.labelSmall,
                             color = CinemaAmber,
                             modifier = Modifier.padding(bottom = 4.dp)
@@ -857,7 +858,7 @@ private fun CinemaHeroHeader(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "v1.25",
+                        text = "v${BuildConfig.VERSION_NAME}",
                         style = MaterialTheme.typography.labelSmall,
                         color = CinemaAmber,
                         modifier = Modifier.padding(bottom = 4.dp)

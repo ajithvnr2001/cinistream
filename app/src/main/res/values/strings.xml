@@ -89,7 +89,6 @@
     <string name="downloads_sheet_title">Downloads</string>
     <string name="local_network_title">NAS &amp; Jellyfin</string>
     <string name="epg_guide_title">TV Guide (EPG)</string>
-    <string name="online_subtitles_title">OpenSubtitles Search</string>
     <string name="dual_subtitles_title">Secondary Subtitle</string>
     <string name="cd_web_remote">Open TV Web Remote and Wi-Fi Sync</string>
     <string name="cd_downloads">Open offline downloads</string>

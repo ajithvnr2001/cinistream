@@ -91,8 +91,6 @@ class SubtitlePrefsRepository(private val context: Context) {
         val SEEK_INTERVAL_SECONDS = intPreferencesKey("seek_interval_seconds")
         val EPG_URL = stringPreferencesKey("epg_url")
         val AUTO_PLAY_UP_NEXT_ENABLED = booleanPreferencesKey("auto_play_up_next_enabled")
-        val OPENSUBTITLES_USER_ENC = stringPreferencesKey("opensubtitles_user_enc")
-        val OPENSUBTITLES_PASS_ENC = stringPreferencesKey("opensubtitles_pass_enc")
     }
 
     val appearance: Flow<SubtitleAppearance> = context.cinePrefsDataStore.data.map { prefs ->
@@ -399,26 +397,5 @@ class SubtitlePrefsRepository(private val context: Context) {
 
     suspend fun updateAutoPlayUpNextEnabled(enabled: Boolean) {
         context.cinePrefsDataStore.edit { it[Keys.AUTO_PLAY_UP_NEXT_ENABLED] = enabled }
-    }
-
-    suspend fun loadOpenSubtitlesCredentials(): Pair<String, String>? {
-        val prefs = context.cinePrefsDataStore.data.first()
-        val user = CredentialVault.decrypt(prefs[Keys.OPENSUBTITLES_USER_ENC]).trim()
-        val pass = CredentialVault.decrypt(prefs[Keys.OPENSUBTITLES_PASS_ENC])
-        return if (user.isNotBlank() && pass.isNotBlank()) user to pass else null
-    }
-
-    suspend fun saveOpenSubtitlesCredentials(username: String, password: String) {
-        context.cinePrefsDataStore.edit { prefs ->
-            prefs[Keys.OPENSUBTITLES_USER_ENC] = CredentialVault.encrypt(username.trim())
-            prefs[Keys.OPENSUBTITLES_PASS_ENC] = CredentialVault.encrypt(password)
-        }
-    }
-
-    suspend fun clearOpenSubtitlesCredentials() {
-        context.cinePrefsDataStore.edit { prefs ->
-            prefs.remove(Keys.OPENSUBTITLES_USER_ENC)
-            prefs.remove(Keys.OPENSUBTITLES_PASS_ENC)
-        }
     }
 }

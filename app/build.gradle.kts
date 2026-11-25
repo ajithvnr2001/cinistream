@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.cinestream.vqxkpm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 25
-    versionName = "1.25"
+    versionCode = 28
+    versionName = "1.28"
 
     ndk {
       // Keep 64-bit phones (arm64-v8a), 32-bit Android TVs (armeabi-v7a), and 64-bit emulators (x86_64)
@@ -48,13 +48,16 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
+      // Keep debug unminified for fast incremental builds and clean Compose debug tooling
+      // (avoids AGP debuggable+minify warnings and :app:reportDebugComposeMappingErrors)
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("debugConfig")

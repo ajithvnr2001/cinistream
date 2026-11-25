@@ -107,15 +107,6 @@ data class ChannelEpgNowNext(
     val next: EpgProgram? = null
 )
 
-data class OnlineSubtitleCandidate(
-    val fileId: Long,
-    val fileName: String,
-    val language: String,
-    val releaseName: String,
-    val downloadCount: Int,
-    val isHearingImpaired: Boolean = false
-)
-
 enum class GlobalSearchCategory(val label: String) {
     FAVORITE("Watchlist"),
     CATALOG("Catalog"),

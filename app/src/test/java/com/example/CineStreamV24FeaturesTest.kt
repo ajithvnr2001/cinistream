@@ -28,7 +28,6 @@ import com.example.model.EpgProgram
 import com.example.model.GlobalSearchCategory
 import com.example.model.JsonPlaylistItem
 import com.example.model.M3uEntry
-import com.example.model.OnlineSubtitleCandidate
 import com.example.model.SeriesEpisode
 import com.example.model.SleepTimerMode
 import com.example.model.SleepTimerUiState
@@ -40,7 +39,6 @@ import com.example.player.M3uInspectionResult
 import com.example.player.M3uPlaylistParser
 import com.example.player.NetworkBrowserItem
 import com.example.player.OfflineDownloadManager
-import com.example.player.OpenSubtitlesClient
 import com.example.player.SecondarySubtitleEngine
 import com.example.player.SecondarySubtitleTrack
 import com.example.player.SubtitleCue
@@ -62,7 +60,6 @@ import com.example.ui.remote.WebRemoteDialog
 import com.example.ui.theme.CineStreamTheme
 import com.example.viewmodel.ChannelZapBannerState
 import com.example.viewmodel.LocalNetworkUiState
-import com.example.viewmodel.OnlineSubtitleUiState
 import com.example.viewmodel.SecondarySubtitleUiState
 import com.example.viewmodel.WebRemoteUiState
 import org.junit.Assert.assertEquals
@@ -260,7 +257,7 @@ class CineStreamV24FeaturesTest {
     }
 
     // -------------------------------------------------------------------------
-    // 3. Dual Subtitles Engine & OpenSubtitles JSON Parser
+    // 3. Dual Subtitles Engine (SRT/VTT Parser & Cue Sync)
     // -------------------------------------------------------------------------
 
     @Test
@@ -292,41 +289,6 @@ class CineStreamV24FeaturesTest {
         val vttCues = SecondarySubtitleEngine.parseSrtOrVtt(vtt)
         assertEquals(1, vttCues.size)
         assertEquals("Bonjour", vttCues[0].text)
-    }
-
-    @Test
-    fun openSubtitlesClient_parsesAndSortsCandidatesByDownloads() {
-        val raw = """
-            {
-              "data": [
-                {
-                  "attributes": {
-                    "language": "en",
-                    "release": "Dune.2024.1080p",
-                    "download_count": 320,
-                    "hearing_impaired": false,
-                    "files": [{"file_id": 101, "file_name": "dune_en.srt"}]
-                  }
-                },
-                {
-                  "attributes": {
-                    "language": "ta",
-                    "release": "Dune.2024.WEB-DL.TA",
-                    "download_count": 980,
-                    "hearing_impaired": true,
-                    "files": [{"file_id": 202, "file_name": "dune_ta.srt"}]
-                  }
-                }
-              ]
-            }
-        """.trimIndent()
-
-        val parsed = OpenSubtitlesClient.parseSearchResponse(raw)
-        assertEquals(2, parsed.size)
-        assertEquals(202L, parsed[0].fileId)
-        assertEquals("TA", parsed[0].language)
-        assertTrue(parsed[0].isHearingImpaired)
-        assertEquals(101L, parsed[1].fileId)
     }
 
     // -------------------------------------------------------------------------
@@ -692,9 +654,8 @@ class CineStreamV24FeaturesTest {
     }
 
     @Test
-    fun subtitleSheetV24_displaysDualSubtitlesAndOnlineSearchControls() {
+    fun subtitleSheetV24_displaysDualSubtitlesControls() {
         var clearedDual = false
-        var searched = false
 
         composeRule.setContent {
             CineStreamTheme {
@@ -714,14 +675,6 @@ class CineStreamV24FeaturesTest {
                     onUpdateTextSize = {},
                     onUpdateColor = {},
                     onUpdateBg = {},
-                    onlineSubtitleState = OnlineSubtitleUiState(
-                        isConfigured = true,
-                        query = "Interstellar",
-                        results = listOf(
-                            OnlineSubtitleCandidate(500L, "interstellar.srt", "EN", "Interstellar.BluRay", 4200)
-                        )
-                    ),
-                    onSearchOnlineSubtitles = { searched = true },
                     secondarySubtitleState = SecondarySubtitleUiState(
                         activeTrack = SecondarySubtitleTrack(
                             label = "tamil.srt",
@@ -737,9 +690,6 @@ class CineStreamV24FeaturesTest {
 
         composeRule.onNodeWithTag("dual_subtitle_clear_button").performScrollTo().performClick()
         assertTrue(clearedDual)
-
-        composeRule.onNodeWithTag("online_sub_search_button").performScrollTo().performClick()
-        assertTrue(searched)
     }
 
     @Test
@@ -816,114 +766,5 @@ class CineStreamV24FeaturesTest {
         composeRule.onNodeWithText("Movie.mkv").assertIsDisplayed()
         composeRule.onNodeWithTag("network_browser_item_${item.id.hashCode()}").performClick()
         assertEquals("Movie.mkv", browsedItemName)
-    }
-
-    @Test
-    fun openSubtitlesClient_endToEndHttpSearchDownloadAndErrorHandling() {
-        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
-        val capturedHeaders = java.util.concurrent.CopyOnWriteArrayList<String>()
-        val server = java.net.ServerSocket(0)
-        val port = server.localPort
-        val worker = Thread {
-            repeat(4) {
-                try {
-                    server.accept().use { sock ->
-                        val reader = sock.getInputStream().bufferedReader(Charsets.ISO_8859_1)
-                        val reqLine = reader.readLine().orEmpty()
-                        val hdrs = HashMap<String, String>()
-                        var contentLen = 0
-                        while (true) {
-                            val line = reader.readLine() ?: break
-                            if (line.isEmpty()) break
-                            val colon = line.indexOf(':')
-                            if (colon > 0) {
-                                val k = line.substring(0, colon).trim().lowercase()
-                                val v = line.substring(colon + 1).trim()
-                                hdrs[k] = v
-                                if (k == "content-length") contentLen = v.toIntOrNull() ?: 0
-                            }
-                        }
-                        if (contentLen > 0) {
-                            val buf = CharArray(contentLen)
-                            reader.read(buf, 0, contentLen)
-                        }
-                        capturedHeaders.add(
-                            "$reqLine|api-key=${hdrs["api-key"]}|auth=${hdrs["authorization"]}|ua=${hdrs["user-agent"]}|ct=${hdrs["content-type"]}"
-                        )
-
-                        val (code, ctype, body) = when {
-                            reqLine.startsWith("POST /api/v1/login") -> Triple(
-                                200,
-                                "application/json",
-                                """{"token":"jwt-test-token-99","base_url":"api.opensubtitles.com","user":{"allowed_downloads":20,"vip":false}}"""
-                            )
-                            reqLine.startsWith("GET /api/v1/subtitles") -> Triple(
-                                200,
-                                "application/json",
-                                """{"data":[{"attributes":{"language":"en","release":"Interstellar.2014.1080p","download_count":500,"files":[{"file_id":777,"file_name":"interstellar.srt"}]}}]}"""
-                            )
-                            reqLine.startsWith("POST /api/v1/download") -> Triple(
-                                200,
-                                "application/json",
-                                """{"link":"http://127.0.0.1:$port/files/interstellar.srt","remaining":19}"""
-                            )
-                            reqLine.startsWith("GET /files/interstellar.srt") -> Triple(
-                                200,
-                                "text/plain; charset=utf-8",
-                                "1\n00:00:01,000 --> 00:00:04,000\nDo not go gentle into that good night.\n"
-                            )
-                            else -> Triple(404, "text/plain", "Not Found")
-                        }
-                        val bytes = body.toByteArray(Charsets.UTF_8)
-                        val resp = "HTTP/1.1 $code OK\r\nContent-Type: $ctype\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
-                        sock.getOutputStream().apply {
-                            write(resp.toByteArray(Charsets.ISO_8859_1))
-                            write(bytes)
-                            flush()
-                        }
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        }.apply { isDaemon = true; start() }
-
-        try {
-            val client = OpenSubtitlesClient(
-                context = ctx,
-                okHttpClient = OkHttpClient(),
-                baseUrl = "http://127.0.0.1:$port/api/v1",
-                apiKeyProvider = { "test-valid-key-xyz" }
-            )
-            assertTrue(client.hasApiKey)
-            kotlinx.coroutines.runBlocking {
-                val loginRes = client.login("demo_user", "demo_pass")
-                assertTrue(loginRes is com.example.player.OpenSubtitlesLoginResult.Success)
-                assertEquals(20, (loginRes as com.example.player.OpenSubtitlesLoginResult.Success).allowedDownloads)
-                assertTrue(client.isLoggedIn)
-
-                val searchRes = client.searchSubtitles(query = "Interstellar", imdbId = "tt0816692", languageCode = "en")
-                assertTrue(searchRes is com.example.player.OnlineSubtitleSearchResult.Success)
-                val candidates = (searchRes as com.example.player.OnlineSubtitleSearchResult.Success).candidates
-                assertEquals(1, candidates.size)
-                assertEquals(777L, candidates[0].fileId)
-
-                val downloaded = client.downloadSubtitleToCache(candidates[0]).getOrThrow()
-                assertEquals(19, downloaded.remainingDownloads)
-                val track = SecondarySubtitleEngine.loadTrack(ctx, OkHttpClient(), downloaded.uri.toString(), "EN")
-                assertNotNull(track)
-                assertEquals("Do not go gentle into that good night.", track!!.cues[0].text)
-            }
-            worker.join(3000)
-            assertTrue(capturedHeaders.any { it.contains("imdb_id=0816692&languages=en&query=interstellar") && it.contains("api-key=test-valid-key-xyz") })
-            assertTrue(capturedHeaders.any { it.startsWith("POST /api/v1/download") && it.contains("auth=Bearer jwt-test-token-99") && it.contains("ct=application/json") })
-
-            val quotaErr = OpenSubtitlesClient.extractApiErrorMessage(
-                406,
-                """{"remaining":0,"message":"You have downloaded your allowed 5 subtitles for 24h."}"""
-            )
-            assertTrue(quotaErr.contains("5 subtitles for 24h"))
-        } finally {
-            runCatching { server.close() }
-        }
     }
 }

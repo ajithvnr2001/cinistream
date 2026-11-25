@@ -479,9 +479,14 @@ class AudioBoostAndOptimizationTest {
             val len = segDs.open(androidx.media3.datasource.DataSpec(android.net.Uri.parse("${baseUrl}seg1.m4s")))
             assertEquals(1024L, len)
             val out = ByteArray(1024)
-            val read = segDs.read(out, 0, out.size)
+            var totalRead = 0
+            while (totalRead < out.size) {
+                val n = segDs.read(out, totalRead, out.size - totalRead)
+                if (n == androidx.media3.common.C.RESULT_END_OF_INPUT) break
+                if (n > 0) totalRead += n
+            }
             segDs.close()
-            assertEquals(1024, read)
+            assertEquals(1024, totalRead)
             assertEquals(2.toByte(), out[0])
 
             val seg3Deadline = System.currentTimeMillis() + 2_000L

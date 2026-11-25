@@ -4,7 +4,20 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.SingleSampleMediaSource
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
+import androidx.media3.extractor.text.SubtitleExtractor
 import com.example.model.ExternalSubtitle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -303,3 +316,84 @@ class SubtitleHelper(
         }
     }
 }
+
+/**
+ * Builds Media3 1.11.1 compliant subtitle [MediaSource] instances for [MergingMediaSource] (HLS/DASH).
+ *
+ * Media3 1.11.1 disables legacy decoding in `TextRenderer` by default (`application/x-media3-cues`
+ * required). Using [ProgressiveMediaSource] + [SubtitleExtractor] transcodes `.srt`, `.vtt`, `.ass`,
+ * `.ssa`, and `.ttml` sidecar files into `application/x-media3-cues` during extraction, matching
+ * `DefaultMediaSourceFactory` behavior and preventing `Legacy decoding is disabled` crashes.
+ */
+@OptIn(UnstableApi::class)
+object SubtitleMediaSourceBuilder {
+    private val subtitleParserFactory = DefaultSubtitleParserFactory()
+
+    fun supportsExtractionTranscoding(mimeType: String?): Boolean {
+        if (mimeType.isNullOrBlank()) return false
+        val format = Format.Builder().setSampleMimeType(mimeType).build()
+        return subtitleParserFactory.supportsFormat(format)
+    }
+
+    fun buildMediaSource(
+        subConfig: MediaItem.SubtitleConfiguration,
+        dataSourceFactory: DataSource.Factory,
+        loadErrorHandlingPolicy: LoadErrorHandlingPolicy? = null
+    ): MediaSource {
+        val rawMime = subConfig.mimeType ?: MimeTypes.APPLICATION_SUBRIP
+        val subtitleFormat = Format.Builder()
+            .setId(subConfig.id)
+            .setSampleMimeType(rawMime)
+            .setSelectionFlags(subConfig.selectionFlags)
+            .setRoleFlags(subConfig.roleFlags)
+            .setLanguage(subConfig.language)
+            .setLabel(subConfig.label)
+            .build()
+
+        return if (subtitleParserFactory.supportsFormat(subtitleFormat)) {
+            val extractorsFactory = ExtractorsFactory {
+                arrayOf(
+                    SubtitleExtractor(
+                        subtitleParserFactory.create(subtitleFormat),
+                        subtitleFormat
+                    )
+                )
+            }
+            val factory = ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
+            if (loadErrorHandlingPolicy != null) {
+                factory.setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+            }
+            factory.createMediaSource(MediaItem.fromUri(subConfig.uri))
+        } else {
+            @Suppress("DEPRECATION")
+            val factory = SingleSampleMediaSource.Factory(dataSourceFactory)
+            if (loadErrorHandlingPolicy != null) {
+                factory.setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+            }
+            factory.createMediaSource(subConfig, C.TIME_UNSET)
+        }
+    }
+
+    fun formatSubtitleCodecLabel(sampleMimeType: String?, codecs: String? = null): String {
+        val effectiveMime = if (sampleMimeType.equals(MimeTypes.APPLICATION_MEDIA3_CUES, ignoreCase = true) &&
+            !codecs.isNullOrBlank()
+        ) {
+            codecs.trim()
+        } else {
+            sampleMimeType.orEmpty().trim()
+        }
+        return when (effectiveMime.lowercase(Locale.ROOT)) {
+            MimeTypes.APPLICATION_SUBRIP -> "SRT"
+            MimeTypes.TEXT_VTT -> "VTT"
+            MimeTypes.TEXT_SSA -> "ASS"
+            MimeTypes.APPLICATION_TTML -> "TTML"
+            MimeTypes.APPLICATION_CEA608 -> "CEA-608"
+            MimeTypes.APPLICATION_CEA708 -> "CEA-708"
+            MimeTypes.APPLICATION_MEDIA3_CUES -> "CUES"
+            else -> effectiveMime.substringAfter('/', missingDelimiterValue = effectiveMime)
+                .uppercase(Locale.US)
+                .ifBlank { "TEXT" }
+        }
+    }
+}
+

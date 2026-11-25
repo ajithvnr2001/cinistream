@@ -1,19 +1,22 @@
-# Testing & Troubleshooting Playbook (v1.25)
+# Testing & Troubleshooting Playbook (v1.28)
 
-This document covers CineStream v1.25's **90-test automated JVM & Robolectric test suite (14 suites)**, how to read every indicator in **Stats for Nerds**, and actionable troubleshooting playbooks.
+This document covers CineStream v1.28's **94-test automated JVM & Robolectric test suite (15 suites)**, how to read every indicator in **Stats for Nerds**, and actionable troubleshooting playbooks.
 
 ---
 
-## 1. Automated Test Suite (90 Tests Across 14 Suites)
+## 1. Automated Test Suite (94 Tests Across 15 Suites)
 
 CineStream uses **JUnit 4**, **Robolectric (`4.16.1`)**, and **Jetpack Compose UI Test (`createComposeRule`)** so pure engines, HTTP/API flows, Room/DataStore logic, and Compose UI/TV focus interactions verify rapidly on the JVM without an emulator.
 
 ### Running Tests
 ```bash
-# Run all 90 unit & Robolectric UI tests
+# Run all 94 unit & Robolectric UI tests
 gradle :app:testDebugUnitTest
 
-# Run v1.24/v1.25 Ecosystem & OpenSubtitles JWT Auth tests (17 tests)
+# Run Media3 1.11.1 HLS external subtitle transcoding tests (6 tests)
+gradle :app:testDebugUnitTest --tests "com.example.HlsSubtitleTranscodingTest"
+
+# Run v1.24–v1.28 Ecosystem & Dual Subtitle tests (15 tests)
 gradle :app:testDebugUnitTest --tests "com.example.CineStreamV24FeaturesTest"
 
 # Run v1.23 Frame-Drop, Continue Watching, Audio Delay & Auto-VPN tests (11 tests)
@@ -27,12 +30,13 @@ gradle :app:testDebugUnitTest --tests "com.example.PrivateDnsAndNordVpnTest"
 
 | Test Suite | Tests | Coverage |
 | :--- | :---: | :--- |
-| `CineStreamV24FeaturesTest.kt` | 17 | `QrCodeMatrixGenerator`, `LocalWebRemoteServer` (PIN auth, push, `/api/sync`), `DeviceSyncCodec` (credential exclusion), `SleepTimer`, `SecondarySubtitleEngine`, `XmltvEpgParser` (`.xml` + `.xml.gz`), `OpenSubtitlesClient` (`POST /api/v1/login` JWT Bearer auth + search + download + remaining quota + error parsing), `OfflineDownloadManager`, `LocalNetworkClient` (WebDAV/Jellyfin), `GlobalSearchEngine`, and Compose UI tests for all v1.24/v1.25 overlays & sheets. |
+| `CineStreamV24FeaturesTest.kt` | 15 | `QrCodeMatrixGenerator`, `LocalWebRemoteServer` (PIN auth, push, `/api/sync`), `DeviceSyncCodec` (credential exclusion), `SleepTimer`, `SecondarySubtitleEngine`, `XmltvEpgParser` (`.xml` + `.xml.gz`), `OfflineDownloadManager`, `LocalNetworkClient` (WebDAV/Jellyfin), `GlobalSearchEngine`, and Compose UI tests for all overlays & sheets. |
 | `PrivateDnsAndNordVpnTest.kt` | 14 | `DohDnsClient` (`1.1.1.1`/`8.8.8.8`), `FastDnsResolver` DoH routing, `CredentialVault` Keystore encryption, `NordVpnApiClient` key exchange + 118+ country/city search, `NordLynxEngine` WireGuard config builder, `NetworkPrivacySheet` UI & compact 360dp zero-overlap layout. |
 | `CineStreamV23FeaturesTest.kt` | 11 | `FrameDropAnalyzer` (Healthy / Seek Burst / Stream PTS / SW CPU Load), `MediaCodecQueueingPolicy`, `ContinueWatchingHelper`, `DelayAudioProcessor` PCM ring buffer, `SmartVpnFailoverCoordinator`, and `ContinueWatchingRow` UI. |
 | `AudioBoostAndOptimizationTest.kt` | 11 | `AudioBoostMath` (0–200% / +20 dB), heap-capped `LoadControl`, `largeHeap`, HTTP/2 pool, `FastDnsResolver`, `FastStreamingLoadErrorHandlingPolicy`, `MediaEdgeCache` TV RAM-Direct, `ParallelPrefetchEngine` (HLS live handoff, audio lane, byte-range), `QuicThroughputWatchdog`, and `TracksSheet` UI. |
 | `JsonPlaylistAndImdbTest.kt` | 11 | Unified Movie + Series JSON parsing, flat episodes, header inheritance, `CdnMirrorResolver` swaps & cache rules, `ImdbMetadataClient`, `SeriesDetailSheet`, `JsonPlaylistSheet`, and `TracksSheet` CDN controls. |
 | `DecoderFallbackTest.kt` | 6 | Qualcomm HEVC detection, `.low_latency` exclusion, `SmartMediaCodecSelector` FFmpeg delegation, H.264/lower-res track fallback, `PlayerErrorCard` actions, and `PlayerStatsCard` decoder telemetry. |
+| `HlsSubtitleTranscodingTest.kt` | 6 | `SubtitleMediaSourceBuilder` `ProgressiveMediaSource` + `SubtitleExtractor` wrapping for SRT/VTT/ASS/TTML, CEA-608 fallback, `application/x-media3-cues` cue sample verification, local sidecar file merging, `formatSubtitleCodecLabel()`, and v1.28 `BuildConfig`. |
 | `LocalFilePickerTest.kt` | 4 | Zero-permission SAF local video, M3U, JSON, and subtitle picker URI handling. |
 | `SeekBarScrubEngineTest.kt` | 4 | Precision scrub step calculation and progressive D-pad hold acceleration (`±1m` to `±10m`). |
 | `HlsAndAppCheckTest.kt` | 3 | `MediaFormatDetector` format/MIME detection and `PlayerStatsCard` rendering & close action. |
@@ -41,7 +45,7 @@ gradle :app:testDebugUnitTest --tests "com.example.PrivateDnsAndNordVpnTest"
 | `FocusHighlightRobolectricTest.kt` | 2 | Android TV `tvFocusHighlight` focus ring and scale behavior. |
 | `ExampleRobolectricTest.kt` | 1 | App name resource verification (`CineStream`). |
 | `ExampleUnitTest.kt` | 1 | Baseline JVM sanity check. |
-| **Total** | **90** | **100% passing on local JVM (`gradle :app:testDebugUnitTest`).** |
+| **Total** | **94** | **100% passing on local JVM (`gradle :app:testDebugUnitTest`).** |
 
 ---
 
@@ -75,11 +79,9 @@ Toggle **Stats for Nerds** from **Tracks → Stats for Nerds** during playback (
 - `QuicThroughputWatchdog` automatically demotes throttled HTTP/3 QUIC to IPv4-first HTTP/2 TCP after repeated slow segments or stalls.
 - You can also force **HTTP/2** permanently in **Tracks → Network Transport → HTTP/2**, enable **Cloudflare 1.1.1.1 DoH**, or enable **Auto-VPN Failover** in **DNS & VPN**.
 
-### 3. OpenSubtitles Search Works, But Downloads Return HTTP 401 / 406
-- **Cause:** Free OpenSubtitles API consumers (`Package: -`) require user JWT login (`POST /api/v1/login`) for reliable downloads.
-- **Fix:**
-  1. Ensure **`OPENSUBTITLES_API_KEY`** is saved in the **Secrets panel in AI Studio** and build via AI Studio preview or **Settings → Generate APK**.
-  2. Inside **Player → CC (Subtitles) → OpenSubtitles Search**, tap **Sign In** and enter your OpenSubtitles username & password once (stored encrypted via Android Keystore) to unlock **20/day free** (or **1,000/day VIP**) downloads with live quota tracking.
+### 3. External Subtitles on HLS Streams (Media3 `1.11.1`)
+- **Symptom on older builds:** Loading a `.srt` or `.vtt` subtitle onto an `.m3u8` stream failed with `Legacy decoding is disabled, can't handle application/x-subrip samples`.
+- **v1.28 Resolution:** `CinePlayerManager` now builds sidecar subtitle sources through `SubtitleMediaSourceBuilder` (`ProgressiveMediaSource` + `SubtitleExtractor` → `application/x-media3-cues`) and sets `experimentalParseSubtitlesDuringExtraction(true)` on `DefaultHlsExtractorFactory`, supporting `.srt`, `.vtt`, `.ass`/`.ssa`, `.ttml`, and Dual Subtitles seamlessly across HLS, MKV, and MP4 streams.
 
 ### 4. Bluetooth / Soundbar Audio Out of Sync
 - Open **Tracks → Audio Delay** and tap `-25ms` / `-50ms` / `+25ms` / `+50ms` (range `-500ms` to `+500ms`). `DelayAudioProcessor` applies the lip-sync shift instantaneously with zero video reload and remembers it per video.

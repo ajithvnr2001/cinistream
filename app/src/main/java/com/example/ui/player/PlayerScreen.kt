@@ -90,7 +90,6 @@ import com.example.model.ChapterMarker
 import com.example.model.ChannelEpgNowNext
 import com.example.model.JsonPlaylistItem
 import com.example.model.M3uEntry
-import com.example.model.OnlineSubtitleCandidate
 import com.example.model.SeriesEpisode
 import com.example.model.SleepTimerMode
 import com.example.model.SleepTimerUiState
@@ -115,7 +114,6 @@ import com.example.viewmodel.ActiveMediaSession
 import com.example.viewmodel.ChannelZapBannerState
 import com.example.viewmodel.EpgUiState
 import com.example.viewmodel.LoadedJsonPlaylist
-import com.example.viewmodel.OnlineSubtitleUiState
 import com.example.viewmodel.SecondarySubtitleUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -225,13 +223,6 @@ fun PlayerScreen(
     isFavorited: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
     onDownloadStream: (() -> Unit)? = null,
-    onlineSubtitleState: OnlineSubtitleUiState = OnlineSubtitleUiState(),
-    onUpdateOnlineSubQuery: (String) -> Unit = {},
-    onUpdateOnlineSubLanguage: (String) -> Unit = {},
-    onSearchOnlineSubtitles: () -> Unit = {},
-    onApplyOnlineSubtitle: (OnlineSubtitleCandidate, Boolean) -> Unit = { _, _ -> },
-    onLoginOpenSubtitles: (String, String) -> Unit = { _, _ -> },
-    onLogoutOpenSubtitles: () -> Unit = {},
     secondarySubtitleState: SecondarySubtitleUiState = SecondarySubtitleUiState(),
     onLoadSecondarySubtitleFile: (Uri) -> Unit = {},
     onLoadSecondarySubtitleUrl: (String) -> Unit = {},
@@ -1189,13 +1180,6 @@ fun PlayerScreen(
             onUpdateTextSize = onUpdateSubtitleSize,
             onUpdateColor = onUpdateSubtitleColor,
             onUpdateBg = onUpdateSubtitleBg,
-            onlineSubtitleState = onlineSubtitleState,
-            onUpdateOnlineQuery = onUpdateOnlineSubQuery,
-            onUpdateOnlineLanguage = onUpdateOnlineSubLanguage,
-            onSearchOnlineSubtitles = onSearchOnlineSubtitles,
-            onApplyOnlineSubtitle = onApplyOnlineSubtitle,
-            onLoginOpenSubtitles = onLoginOpenSubtitles,
-            onLogoutOpenSubtitles = onLogoutOpenSubtitles,
             secondarySubtitleState = secondarySubtitleState,
             onPickSecondarySubtitleFile = {
                 pickingSecondarySub = true

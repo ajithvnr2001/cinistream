@@ -1,6 +1,6 @@
-# CineStream Architecture & Codebase Guide (v1.25)
+# CineStream Architecture & Codebase Guide (v1.28)
 
-This document provides an end-to-end architectural reference for **CineStream v1.25** (`com.aistudio.cinestream.vqxkpm`), detailing how the app coordinates Jetpack Compose Material 3 UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp + WireGuard NordLynx networking, parallel HLS/range prefetching, Media3 + NextLib FFmpeg playback, Room v3 + Android Keystore persistence, and zero-OOM memory engineering across both phones and 32-bit Android TVs.
+This document provides an end-to-end architectural reference for **CineStream v1.28** (`com.aistudio.cinestream.vqxkpm`), detailing how the app coordinates Jetpack Compose Material 3 UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp + WireGuard NordLynx networking, parallel HLS/range prefetching, Media3 + NextLib FFmpeg playback, extraction-time HLS subtitle transcoding, Room v3 + Android Keystore persistence, and zero-OOM memory engineering across both phones and 32-bit Android TVs.
 
 ---
 
@@ -30,7 +30,7 @@ CineStream uses **MVVM with Unidirectional Data Flow (UDF)**, **constructor depe
 │                               CineStreamViewModel                                     │
 │  • Coordinates CinePlayerManager, Room v3 repos, DataStore prefs, Parsers & Engines   │
 │  • Drives MultiJsonPlaylistReducer, GlobalSearchEngine, SmartVpnFailoverCoordinator   │
-│  • Manages OpenSubtitlesClient (REST v1 + /api/v1/login JWT), SecondarySubtitleEngine │
+│  • Manages SubtitleMediaSourceBuilder (HLS cue transcoding) & SecondarySubtitleEngine │
 │  • Hosts LocalWebRemoteServer (LAN HTTP + QR + Sync), OfflineDownloadManager, NAS     │
 │  • Exposes frequency-isolated StateFlows:                                             │
 │      1. uiState / jsonPlaylistState / v24 states (low frequency)                      │
@@ -45,7 +45,8 @@ CineStream uses **MVVM with Unidirectional Data Flow (UDF)**, **constructor depe
 │ • StreamingNetworkEngine │  │ • M3uPlaylistParser       │  │   - media_history        │
 │ • ParallelPrefetchEngine │  │ • XmltvEpgParser          │  │   - favorites            │
 │ • NordLynxEngine         │  │ • ImdbMetadataClient      │  │   - offline_downloads    │
-│ • PrivateDnsAndVpnEngine │  │ • OpenSubtitlesClient     │  │   - network_servers      │
+│ • NordVpnApiClient       │  │ • SubtitleMediaSourceBld  │  │   - offline_downloads    │
+│ • PrivateDnsAndVpnEngine │  │ • SecondarySubtitleEngine │  │   - network_servers      │
 │ • SmartVpnFailoverCoord. │  │ • SecondarySubtitleEngine │  │ • DataStore Prefs        │
 │ • DecoderEngine          │  │ • LocalNetworkClient      │  │   (SubtitlePrefsRepo)    │
 │ • FrameDropAnalyzer      │  │ • OfflineDownloadManager  │  │ • CredentialVault        │
@@ -112,12 +113,12 @@ User Taps Play -> CinePlayerManager.loadMedia()
 ### ViewModel Layer (`com.example.viewmodel`)
 | File | Responsibility |
 | :--- | :--- |
-| `CineStreamViewModel.kt` | Central coordinator wiring `CinePlayerManager`, Room v3 repositories, DataStore preferences, multi-JSON & M3U playlists, XMLTV EPG, OpenSubtitles search & `/api/v1/login` JWT session restore, dual subtitles, offline downloads, WebDAV/Jellyfin browser, LAN Web Remote server, local Wi-Fi/SAF sync, Sleep Timer, Up-Next countdown, A-B loop, and Smart Auto-VPN failover. |
+| `CineStreamViewModel.kt` | Central coordinator wiring `CinePlayerManager`, Room v3 repositories, DataStore preferences, multi-JSON & M3U playlists, XMLTV EPG, external/dual subtitles, offline downloads, WebDAV/Jellyfin browser, LAN Web Remote server, local Wi-Fi/SAF sync, Sleep Timer, Up-Next countdown, A-B loop, and Smart Auto-VPN failover. |
 | `MultiJsonPlaylistState.kt` | Pure `MultiJsonPlaylistReducer` handling multi-feed JSON aggregation, collision-free item ID namespacing, `"All"` vs single-playlist selection, refresh, and removal. |
 | `NetworkPrivacyState.kt` | `NetworkPrivacyUiState` modeling Private DNS mode, NordVPN login/key status, 118+ searchable locations, NordLynx WireGuard tunnel state, Smart Auto-VPN Failover, and live Cloudflare route probe results. |
-| `V24UiStates.kt` | Immutable UI states for `OnlineSubtitleUiState` (search query, language, results, `loggedInUsername`, `isLoggingIn`, `remainingDownloads`), `SecondarySubtitleUiState`, `WebRemoteUiState`, `LocalNetworkUiState`, `DownloadsUiState`, `ChannelZapBannerState`, and `SyncBackupUiState`. |
+| `V24UiStates.kt` | Immutable UI states for `SecondarySubtitleUiState`, `EpgUiState`, `ChannelZapBannerState`, `WebRemoteUiState`, `LocalNetworkUiState`, `DownloadsUiState`, and `SyncBackupUiState`. |
 
-### Playback, Network, VPN & Ecosystem Engines (`com.example.player` — 26 files)
+### Playback, Network, VPN & Ecosystem Engines (`com.example.player` — 25 files)
 | File | Responsibility |
 | :--- | :--- |
 | `CinePlayerManager.kt` | Media3 `ExoPlayer` (`1.11.1`) wrapper owning `NextRenderersFactory`, `AdaptiveHttpDataSourceFactory`, `ParallelPrefetchDataSource`, `MediaEdgeCache`, `DelayAudioProcessor`, `AudioVolumeBooster`, `FrameDropAnalyzer`, `QuicThroughputWatchdog`, multi-tier HW↔FFmpeg recovery, Multi-CDN failover, and `AnalyticsListener` telemetry. |
@@ -134,9 +135,8 @@ User Taps Play -> CinePlayerManager.loadMedia()
 | `AudioVolumeBooster.kt` | `AudioBoostMath` (`0%–200%`, `+20 dB`), `LoudnessEnhancer`, and API 28+ `DynamicsProcessing` soft-limiter + Night Mode 4-band dialogue boost Pre-EQ/MBC. |
 | `DelayAudioProcessor.kt` | Custom Media3 `BaseAudioProcessor` implementing a zero-reload PCM circular delay buffer for Bluetooth/soundbar lip-sync (`-500 ms` to `+500 ms`). |
 | `MediaPlaybackService.kt` | Play-compliant `mediaPlayback` foreground service keeping audio alive with lock-screen media controls when Background Audio is toggled on mobile. |
-| `OpenSubtitlesClient.kt` | OpenSubtitles REST API v1 client using `BuildConfig.OPENSUBTITLES_API_KEY` (from AI Studio Secrets) + optional `/api/v1/login` JWT Bearer auth, dynamic VIP/standard `base_url`, search, download to cache, and live remaining daily quota parsing. |
 | `SecondarySubtitleEngine.kt` | Parses `.srt` and `.vtt` caption files into timestamped cue lists and renders synchronized dual subtitles at the top of the player. |
-| `SubtitleHelper.kt` | Resolves local/remote `.srt`, `.vtt`, `.ass`, `.ssa`, `.ttml` URIs and Media3 MIME types. |
+| `SubtitleHelper.kt` | Resolves local/remote `.srt`, `.vtt`, `.ass`, `.ssa`, `.ttml` URIs, shifts timestamps, and exposes `SubtitleMediaSourceBuilder` (`ProgressiveMediaSource` + `SubtitleExtractor` → `application/x-media3-cues`) for HLS sidecar subtitles. |
 | `JsonPlaylistParser.kt` | Streaming 4 MB-capped JSON catalog parser supporting Movies, nested/flat Series, categories, mirrors, inherited HTTP headers, subtitles, and IMDb IDs. |
 | `M3uPlaylistParser.kt` | `#EXTM3U` / `#EXTINF` parser supporting `tvg-logo`, `tvg-id`, `group-title`, and `#EXTM3U url-tvg` EPG auto-discovery. |
 | `XmltvEpgParser.kt` | Streaming `.xml` / `.xml.gz` XMLTV parser matching channel IDs/names to compute live Now/Next programs and progress fractions. |
@@ -162,15 +162,15 @@ User Taps Play -> CinePlayerManager.loadMedia()
 | `FavoriteAndSearch.kt` | `FavoriteRepository` and `GlobalSearchEngine` unifying instant search across Watchlist, JSON Catalogs, M3U Live TV, Offline Downloads, and History. |
 | `V24EntitiesAndDaos.kt` | Room entities & DAOs for `FavoriteItemEntity`, `OfflineDownloadEntity`, and `NetworkServerEntity` (NAS credentials encrypted via `CredentialVault`). |
 | `DeviceSyncSnapshot.kt` | `DeviceSyncCodec` serializing/deserializing credential-free JSON snapshots for Phone ↔ TV Wi-Fi sync and SAF backup/restore (explicitly excluding VPN keys and NAS passwords). |
-| `SubtitlePrefsRepository.kt` | Jetpack DataStore (`Preferences`) storing subtitle appearance, multi-JSON URLs, volume boost, aspect ratio, Stats toggle, decoder/transport modes, DNS/VPN settings, preferred languages, skip interval, Night Mode, and Keystore-encrypted OpenSubtitles credentials. |
+| `SubtitlePrefsRepository.kt` | Jetpack DataStore (`Preferences`) storing subtitle appearance, multi-JSON URLs, volume boost, aspect ratio, Stats toggle, decoder/transport modes, DNS/VPN settings (Keystore-encrypted), preferred languages, skip interval, and Night Mode. |
 
 ### UI & Editorial Design System (`com.example.ui`)
 - **Theme (`ui/theme/`):**
   - `Color.kt`: Warm carbon surfaces (`#09090B`, `#121215`, `#1A1A1F`, `#24242A`), hairline outlines (`#2C2C34`, `#1F1F26`), warm ivory ink (`#F4F1EA`), stone secondary (`#A09D96`), projector tungsten gold (`#E8A435`), steel cyan (`#7CB7E8`), sage emerald (`#47B881`), and vermilion (`#E05252`).
   - `Type.kt`: Local bundled **Fraunces** (`R.font.fraunces`) for display/headlines, **DM Sans** (`R.font.dm_sans`) for titles/body/actions, and **JetBrains Mono** (`R.font.jetbrains_mono`) for telemetry/tags/timestamps.
   - `Theme.kt`: Material 3 `CineStreamDarkColorScheme` + crisp editorial `CineStreamShapes` (`4dp` / `8dp` / `12dp` / `16dp` / `22dp`).
-- **Home (`ui/home/`):** `HomeScreen.kt` (editorial hero, unified hairline-divided Stream Dock, adaptive 2-column TV vs single-column phone layout), `ContinueWatchingRow.kt` (16:9 cinema stills), `HomeV24Sections.kt` (Quick Tools, Global Search, poster-backed Watchlist), `JsonPlaylistUi.kt`.
-- **Player (`ui/player/` — 15 files):** `PlayerScreen.kt`, `PlayerControlsOverlay.kt`, `PlayerOverlaysV24.kt` (Up-Next, Skip Intro, Hold-2×, Dual Subtitles, Channel Zap EPG banner), `PlayerStatsOverlay.kt`, `CinemaSeekBar.kt` (with chapter ticks & A-B loop range), `PlayerGestures.kt`, `VolumeBoostUi.kt`, `TracksSheet.kt`, `SubtitleSheet.kt` (with OpenSubtitles Search, Account Sign-In & Dual Subtitles), `SeriesDetailSheet.kt`, `JsonPlaylistSheet.kt`, `M3uPlaylistSheet.kt`, `NetworkPrivacySheet.kt`, `DownloadsSheet.kt`, `LocalNetworkSheet.kt`.
+- **Home (`ui/home/`):** `HomeScreen.kt` (editorial hero reading `BuildConfig.VERSION_NAME`, unified hairline-divided Stream Dock, adaptive 2-column TV vs single-column phone layout), `ContinueWatchingRow.kt` (16:9 cinema stills), `HomeV24Sections.kt` (Quick Tools, Global Search, poster-backed Watchlist), `JsonPlaylistUi.kt`.
+- **Player (`ui/player/` — 15 files):** `PlayerScreen.kt`, `PlayerControlsOverlay.kt`, `PlayerOverlaysV24.kt` (Up-Next, Skip Intro, Hold-2×, Dual Subtitles, Channel Zap EPG banner), `PlayerStatsOverlay.kt`, `CinemaSeekBar.kt` (with chapter ticks & A-B loop range), `PlayerGestures.kt`, `VolumeBoostUi.kt`, `TracksSheet.kt`, `SubtitleSheet.kt` (File/URL loader, track switcher, sync delay, appearance customizer, and Dual Subtitles), `SeriesDetailSheet.kt`, `JsonPlaylistSheet.kt`, `M3uPlaylistSheet.kt`, `NetworkPrivacySheet.kt`, `DownloadsSheet.kt`, `LocalNetworkSheet.kt`.
 - **Remote & Shared (`ui/remote/`, `ui/components/`, `ui/icons/`):** `WebRemoteSheet.kt`, `PosterMediaCard.kt`, `FormatBadge.kt`, `LocalFilePicker.kt`, `TvUtils.kt`, and compact local vector icons (`ExtendedRoundedIcons.kt` replacing the ~15 MB `material-icons-extended` DEX).
 
 ---

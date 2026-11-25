@@ -31,7 +31,6 @@ import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
-import androidx.media3.exoplayer.source.SingleSampleMediaSource
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultAllocator
@@ -264,7 +263,10 @@ class CinePlayerManager(context: Context) {
         .setTsExtractorFlags(tolerantTsFlags)
 
     private val hlsMediaSourceFactory = HlsMediaSource.Factory(smartEdgeDataSourceFactory)
-        .setExtractorFactory(DefaultHlsExtractorFactory(tolerantTsFlags, true))
+        .setExtractorFactory(
+            DefaultHlsExtractorFactory(tolerantTsFlags, true)
+                .experimentalParseSubtitlesDuringExtraction(true)
+        )
         .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
         .setAllowChunklessPreparation(true)
 
@@ -1210,8 +1212,11 @@ class CinePlayerManager(context: Context) {
                 hlsSource
             } else {
                 val subSources = subtitleConfigs.map { subConfig ->
-                    SingleSampleMediaSource.Factory(directDataSourceFactory)
-                        .createMediaSource(subConfig, C.TIME_UNSET)
+                    SubtitleMediaSourceBuilder.buildMediaSource(
+                        subConfig = subConfig,
+                        dataSourceFactory = directDataSourceFactory,
+                        loadErrorHandlingPolicy = loadErrorHandlingPolicy
+                    )
                 }
                 MergingMediaSource(hlsSource, *subSources.toTypedArray())
             }
@@ -1709,7 +1714,7 @@ class CinePlayerManager(context: Context) {
                         val detail = if (isExternal) {
                             "Loaded External Subtitle"
                         } else {
-                            "Embedded · ${format.sampleMimeType?.substringAfter('/')?.uppercase(Locale.US) ?: "TEXT"}"
+                            "Embedded · ${SubtitleMediaSourceBuilder.formatSubtitleCodecLabel(format.sampleMimeType, format.codecs)}"
                         }
                         subList.add(
                             TrackOption(

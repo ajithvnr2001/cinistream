@@ -57,17 +57,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material3.CircularProgressIndicator
 import com.example.R
-import com.example.model.OnlineSubtitleCandidate
 import com.example.model.SubtitleAppearance
 import com.example.model.SubtitleBgPreset
 import com.example.model.SubtitleColorPreset
@@ -81,9 +76,7 @@ import com.example.ui.theme.ObsidianCanvas
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
-import com.example.ui.theme.StreamCyan
 import com.example.ui.theme.SubtitleEmerald
-import com.example.viewmodel.OnlineSubtitleUiState
 import com.example.viewmodel.SecondarySubtitleUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -104,13 +97,6 @@ fun SubtitleSheet(
     onUpdateTextSize: (SubtitleTextSize) -> Unit,
     onUpdateColor: (SubtitleColorPreset) -> Unit,
     onUpdateBg: (SubtitleBgPreset) -> Unit,
-    onlineSubtitleState: OnlineSubtitleUiState = OnlineSubtitleUiState(),
-    onUpdateOnlineQuery: (String) -> Unit = {},
-    onUpdateOnlineLanguage: (String) -> Unit = {},
-    onSearchOnlineSubtitles: () -> Unit = {},
-    onApplyOnlineSubtitle: (OnlineSubtitleCandidate, Boolean) -> Unit = { _, _ -> },
-    onLoginOpenSubtitles: (String, String) -> Unit = { _, _ -> },
-    onLogoutOpenSubtitles: () -> Unit = {},
     secondarySubtitleState: SecondarySubtitleUiState = SecondarySubtitleUiState(),
     onPickSecondarySubtitleFile: () -> Unit = {},
     onLoadSecondarySubtitleUrl: (String) -> Unit = {},
@@ -611,214 +597,6 @@ fun SubtitleSheet(
                                 modifier = Modifier.testTag("dual_subtitle_url_apply")
                             ) {
                                 Text("Load")
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Online Subtitle Search (OpenSubtitles REST API v1)
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("online_subtitles_section"),
-                shape = RoundedCornerShape(14.dp),
-                color = ObsidianSurfaceHigh,
-                border = BorderStroke(1.dp, ObsidianOutline.copy(alpha = 0.6f))
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Search,
-                            contentDescription = null,
-                            tint = StreamCyan,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = stringResource(R.string.online_subtitles_title),
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                    }
-
-                    if (!onlineSubtitleState.isConfigured) {
-                        Text(
-                            text = "Add OPENSUBTITLES_API_KEY in the AI Studio Secrets panel and rebuild to search and download OpenSubtitles captions directly.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        var showAccountLogin by rememberSaveable { mutableStateOf(false) }
-                        var osUsername by rememberSaveable { mutableStateOf("") }
-                        var osPassword by rememberSaveable { mutableStateOf("") }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            val accountLabel = if (!onlineSubtitleState.loggedInUsername.isNullOrBlank()) {
-                                buildString {
-                                    append("Account: ${onlineSubtitleState.loggedInUsername}")
-                                    onlineSubtitleState.remainingDownloads?.let { append(" · $it left today") }
-                                }
-                            } else {
-                                "Guest mode (sign in for 20/day downloads)"
-                            }
-                            Text(
-                                text = accountLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (!onlineSubtitleState.loggedInUsername.isNullOrBlank()) SubtitleEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (!onlineSubtitleState.loggedInUsername.isNullOrBlank()) {
-                                TextButton(
-                                    onClick = onLogoutOpenSubtitles,
-                                    modifier = Modifier.testTag("online_sub_logout_button")
-                                ) {
-                                    Text("Sign Out")
-                                }
-                            } else {
-                                TextButton(
-                                    onClick = { showAccountLogin = !showAccountLogin },
-                                    modifier = Modifier.testTag("online_sub_login_toggle")
-                                ) {
-                                    Text(if (showAccountLogin) "Hide Login" else "Account Sign-In")
-                                }
-                            }
-                        }
-
-                        AnimatedVisibility(visible = showAccountLogin && onlineSubtitleState.loggedInUsername.isNullOrBlank()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(
-                                    value = osUsername,
-                                    onValueChange = { osUsername = it },
-                                    placeholder = { Text("OpenSubtitles username") },
-                                    singleLine = true,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("online_sub_username_input")
-                                )
-                                OutlinedTextField(
-                                    value = osPassword,
-                                    onValueChange = { osPassword = it },
-                                    placeholder = { Text("OpenSubtitles password") },
-                                    singleLine = true,
-                                    visualTransformation = PasswordVisualTransformation(),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("online_sub_password_input")
-                                )
-                                Button(
-                                    onClick = {
-                                        onLoginOpenSubtitles(osUsername, osPassword)
-                                        osPassword = ""
-                                        showAccountLogin = false
-                                    },
-                                    enabled = osUsername.isNotBlank() && osPassword.isNotBlank() && !onlineSubtitleState.isLoggingIn,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("online_sub_login_submit")
-                                ) {
-                                    Text(if (onlineSubtitleState.isLoggingIn) "Signing in…" else "Sign In to OpenSubtitles")
-                                }
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("en" to "EN", "ta" to "TA", "hi" to "HI", "es" to "ES", "fr" to "FR", "ja" to "JA", "ko" to "KO").forEach { (code, label) ->
-                                FilterChip(
-                                    selected = onlineSubtitleState.language == code,
-                                    onClick = { onUpdateOnlineLanguage(code) },
-                                    label = { Text(label) },
-                                    modifier = Modifier.testTag("online_sub_lang_$code")
-                                )
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = onlineSubtitleState.query,
-                                onValueChange = onUpdateOnlineQuery,
-                                placeholder = { Text("Movie or episode title…") },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("online_sub_query_input")
-                            )
-                            Button(
-                                onClick = onSearchOnlineSubtitles,
-                                enabled = !onlineSubtitleState.isSearching,
-                                modifier = Modifier.testTag("online_sub_search_button")
-                            ) {
-                                if (onlineSubtitleState.isSearching) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                } else {
-                                    Text("Search")
-                                }
-                            }
-                        }
-                        onlineSubtitleState.errorMessage?.let { err ->
-                            Text(
-                                text = err,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                        onlineSubtitleState.results.take(6).forEach { cand ->
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = ObsidianCanvas,
-                                border = BorderStroke(1.dp, ObsidianOutline.copy(alpha = 0.5f))
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = cand.releaseName.ifBlank { cand.fileName },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${cand.language.uppercase()} · ${cand.downloadCount} DLs",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    TextButton(
-                                        onClick = { onApplyOnlineSubtitle(cand, false) },
-                                        enabled = onlineSubtitleState.isDownloadingId == null
-                                    ) {
-                                        Text("Primary")
-                                    }
-                                    TextButton(
-                                        onClick = { onApplyOnlineSubtitle(cand, true) },
-                                        enabled = onlineSubtitleState.isDownloadingId == null
-                                    ) {
-                                        Text("Dual")
-                                    }
-                                }
                             }
                         }
                     }

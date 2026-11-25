@@ -1,8 +1,8 @@
 # CineStream — Universal Cinema Media Player for Android Mobile & Android TV
 
-**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.25 / versionCode 25**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, **NextLib native FFmpeg (`1.11.1-0.16.0`)**, and **embedded WireGuard (`com.wireguard.android:tunnel`, `GoBackend`)**.
+**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.28 / versionCode 28**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, **NextLib native FFmpeg (`1.11.1-0.16.0`)**, and **embedded WireGuard (`com.wireguard.android:tunnel`, `GoBackend`)**.
 
-It ships as a single 36 MB universal APK (**`cinistream-v25.apk`** and **`CineStream-universal.apk`**) covering modern 64-bit phones and tablets (`arm64-v8a`), 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs), and `x86_64` emulators.
+It ships as a single **25 MB** R8-shrunk universal APK (**`cinistream-v28.apk`** and **`CineStream-universal.apk`**) covering modern 64-bit phones and tablets (`arm64-v8a`), 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs), and `x86_64` emulators.
 
 ---
 
@@ -43,7 +43,7 @@ It ships as a single 36 MB universal APK (**`cinistream-v25.apk`** and **`CineSt
 ### Multi-JSON Catalogs, Live TV EPG, Subtitles & Local Ecosystem
 - **Unified Multi-JSON Movie & Series Catalogs (`MultiJsonPlaylistReducer`):** Persist multiple JSON playlist URLs + local files simultaneously, switch via `"All"` or per-playlist chips, auto-fetch IMDb posters/ratings/years, and fail over across per-item `mirrors` and path-preserving `cdnMirrors` with inherited HTTP headers.
 - **Continue Watching, Watchlist & Global Search (Room v3):** Deduplicated per-series Continue Watching rail, per-episode resume + `Watched` badges, poster-backed Watchlist, and instant search across Watchlist, Catalogs, Live TV, Downloads, and History.
-- **OpenSubtitles REST API v1 (with `/api/v1/login` JWT Auth) & Dual Subtitles:** Search and download OpenSubtitles captions directly (using `OPENSUBTITLES_API_KEY` from AI Studio Secrets + optional encrypted account sign-in unlocking 20/day free or 1,000/day VIP quotas with live remaining-quota tracking), plus simultaneous top-screen secondary `.srt`/`.vtt` rendering (`SecondarySubtitleEngine`).
+- **Local, URL & Dual Subtitles (`SubtitleMediaSourceBuilder`, `SecondarySubtitleEngine`):** Load `.srt`, `.vtt`, `.ass`, `.ssa`, and `.ttml` sidecar captions from device storage or URLs—with Media3 `1.11.1` extraction-time transcoding (`ProgressiveMediaSource` + `SubtitleExtractor` → `application/x-media3-cues`) preventing HLS `Legacy decoding is disabled` crashes—plus simultaneous top-screen secondary `.srt`/`.vtt` rendering (`SecondarySubtitleEngine`), sync offset (`-5s..+5s`), and appearance customization.
 - **Audio Precision & Playback Comfort:** `0%–200%` (+20 dB) Volume Boost, Night Mode dialogue boost DSP, zero-reload PCM Audio Delay (`-500 ms..+500 ms` via `DelayAudioProcessor`), `±100ms`/`±500ms` Subtitle Sync, Sleep Timer (`15m/30m/45m/60m/End of Ep` with 5s fade-out), Up-Next 10s countdown, Skip Intro (`+85s`), Hold-to-2× speed, Configurable Skip Interval (`5s/10s/15s/30s`), Chapter Markers & A-B Loop, Mobile PiP & Background Audio (`MediaPlaybackService`), and touch brightness/volume/pinch-to-zoom (`1.0×–2.5×`) gestures.
 - **Live TV XMLTV EPG & Channel Zapping:** Streams `.xml`/`.xml.gz` XMLTV guides (auto-detected from `#EXTM3U url-tvg`), renders Now/Next progress bars, and supports `CH-`/`CH+` and TV remote `ChannelUp`/`ChannelDown` zapping.
 - **Phone-to-TV Web Remote, Local Wi-Fi Sync, Offline Downloads & NAS/Jellyfin:** Built-in LAN HTTP server with pure-Kotlin QR code + 6-digit PIN (`LocalWebRemoteServer`), credential-free Wi-Fi & SAF JSON sync (`DeviceSyncCodec`), mobile offline MP4/MKV/HLS downloads (`OfflineDownloadManager`), and LAN **WebDAV / Jellyfin** streaming (`LocalNetworkClient`) with Keystore-encrypted credentials.
@@ -54,11 +54,11 @@ It ships as a single 36 MB universal APK (**`cinistream-v25.apk`** and **`CineSt
 
 | Document | Description |
 | :--- | :--- |
-| [**Architecture & Codebase Guide**](docs/ARCHITECTURE.md) | Complete v1.25 MVVM architecture, end-to-end streaming/prefetch/VPN pipeline, full 60+ file package inventory, Room v3 + Keystore persistence, state-frequency isolation, and UI design tokens. |
-| [**Decoder, Transport & Playback Engine**](docs/DECODER_AND_PLAYBACK_ENGINE.md) | Media3 `1.11.1`, Play Services Cronet HTTP/3 + `QuicThroughputWatchdog`, `ParallelPrefetchEngine`, `NordLynxEngine` WireGuard + DoH, NextLib FFmpeg 10-bit, `FrameDropAnalyzer`, `DelayAudioProcessor`, Night Mode DSP, and OpenSubtitles JWT client. |
+| [**Architecture & Codebase Guide**](docs/ARCHITECTURE.md) | Complete v1.28 MVVM architecture, end-to-end streaming/prefetch/VPN pipeline, full 60+ file package inventory, Room v3 + Keystore persistence, state-frequency isolation, and UI design tokens. |
+| [**Decoder, Transport & Playback Engine**](docs/DECODER_AND_PLAYBACK_ENGINE.md) | Media3 `1.11.1`, Play Services Cronet HTTP/3 + `QuicThroughputWatchdog`, `ParallelPrefetchEngine`, `NordLynxEngine` WireGuard + DoH, NextLib FFmpeg 10-bit, `FrameDropAnalyzer`, `DelayAudioProcessor`, Night Mode DSP, and HLS extraction-time subtitle transcoding. |
 | [**Playlists, Live TV EPG, NAS & CDN Guide**](docs/PLAYLIST_AND_CDN_GUIDE.md) | Multi-JSON Movies & Series schema, field aliases, IMDb enrichment, 5-layer in-app CDN, M3U + XMLTV EPG format, WebDAV/Jellyfin streaming, and Phone-to-TV Web Remote / Wi-Fi Sync API. |
-| [**Memory Management & Android TV Optimization**](docs/MEMORY_AND_TV_OPTIMIZATION.md) | Zero-OOM engineering for 32-bit Android 9 TVs, bounded prefetch & heap budgets, TV RAM-Direct mode, APK compression (36 MB universal), and v1.25 10-foot TV ergonomics. |
-| [**Testing & Troubleshooting Playbook**](docs/TESTING_AND_TROUBLESHOOTING.md) | Running all **90 unit & Robolectric tests across 14 suites**, interpreting every Stats for Nerds indicator, and troubleshooting Wi-Fi buffering, QUIC throttling, frame drops, HEVC 10-bit, VPN, OpenSubtitles auth, and audio lip-sync. |
+| [**Memory Management & Android TV Optimization**](docs/MEMORY_AND_TV_OPTIMIZATION.md) | Zero-OOM engineering for 32-bit Android 9 TVs, bounded prefetch & heap budgets, TV RAM-Direct mode, R8 APK compression (**25 MB** universal), and 10-foot TV ergonomics. |
+| [**Testing & Troubleshooting Playbook**](docs/TESTING_AND_TROUBLESHOOTING.md) | Running all **94 unit & Robolectric tests across 15 suites**, interpreting every Stats for Nerds indicator, and troubleshooting Wi-Fi buffering, QUIC throttling, frame drops, HEVC 10-bit, HLS subtitles, VPN, and audio lip-sync. |
 
 ---
 
@@ -72,7 +72,7 @@ It ships as a single 36 MB universal APK (**`cinistream-v25.apk`** and **`CineSt
 | **Video (Hardware)** | H.264/AVC, HEVC/H.265 (8-bit & 10-bit HDR10), VP8, VP9, AV1, Dolby Vision (HEVC fallback) | Android `MediaCodec` (Selective Async/Sync) |
 | **Video (Software Fallback)** | **HEVC/H.265 8-bit & 10-bit Main 10**, H.264, VP8, VP9, **AV1 (`dav1d`)** | **NextLib Native FFmpeg (`FfmpegVideoRenderer`)** |
 | **Audio** | AAC, MP3, Opus, Vorbis, FLAC, PCM, **AC-3, E-AC-3, DTS, TrueHD, ALAC** | Platform `MediaCodec` + **NextLib FFmpeg (`FfmpegAudioRenderer`)** |
-| **Subtitles** | SRT, WebVTT (`.vtt`), ASS/SSA, TTML, Embedded CC, Dual Subtitles, OpenSubtitles REST v1 | Media3 `SubtitleView` + `SecondarySubtitleEngine` |
+| **Subtitles** | SRT, WebVTT (`.vtt`), ASS/SSA, TTML, Embedded CC, Dual Subtitles | `SubtitleMediaSourceBuilder` (`x-media3-cues`) + `SecondarySubtitleEngine` |
 | **Playlists & Guides** | Multi-JSON (Movies + Multi-Season Series), M3U / M3U8 IPTV, XMLTV EPG (`.xml`/`.xml.gz`) | `JsonPlaylistParser`, `M3uPlaylistParser`, `XmltvEpgParser` |
 
 ---
@@ -86,22 +86,21 @@ It ships as a single 36 MB universal APK (**`cinistream-v25.apk`** and **`CineSt
 
 ### Build & Verify
 ```bash
-# Run all 90 unit & Robolectric Compose UI tests across 14 suites
+# Run all 94 unit & Robolectric Compose UI tests across 15 suites
 gradle :app:testDebugUnitTest
 
-# Build universal debug APK (arm64-v8a + armeabi-v7a + x86_64)
+# Build universal R8-shrunk debug APK (arm64-v8a + armeabi-v7a + x86_64)
 gradle :app:assembleDebug
 
-# Pre-packaged root APKs (v1.25 / 36 MB):
-#   ./cinistream-v25.apk
+# Pre-packaged root APKs (v1.28 / 25 MB):
+#   ./cinistream-v28.apk
 #   ./CineStream-universal.apk
 ```
 
 ### Installing on Phone or Android TV
-1. Use AI Studio's **Settings → Generate APK** (recommended if you configured `OPENSUBTITLES_API_KEY` or `NORDVPN_ACCESS_TOKEN` in the AI Studio Secrets panel so your keys are injected) or sideload **`cinistream-v25.apk`**.
+1. Sideload **`cinistream-v28.apk`** (or **`CineStream-universal.apk`**), or build via AI Studio **Settings → Generate APK** if injecting `NORDVPN_ACCESS_TOKEN` via the AI Studio Secrets panel.
 2. Enable **Install Unknown Apps** for your file manager or sideloader and install.
-3. **Optional — OpenSubtitles Sign-In:** In **Player → CC (Subtitles) → OpenSubtitles Search**, sign in once with your OpenSubtitles username & password to unlock authenticated free (20/day) or VIP (1,000/day) downloads.
-4. **Optional — DNS & NordVPN:** Open **DNS & VPN** from the Home header to enable Cloudflare `1.1.1.1` DoH, connect any of **118+ NordVPN countries/cities** via embedded WireGuard NordLynx, or enable **Auto-VPN Failover**.
+3. **Optional — DNS & NordVPN:** Open **DNS & VPN** from the Home header to enable Cloudflare `1.1.1.1` DoH, connect any of **118+ NordVPN countries/cities** via embedded WireGuard NordLynx, or enable **Auto-VPN Failover**.
 
 ---
 
@@ -117,7 +116,7 @@ gradle :app:assembleDebug
 | **Brightness / Volume / Zoom** | Left swipe (brightness), Right swipe (0–200% volume), Pinch (`1.0×–2.5×`) | Focus Volume button → `DPAD_LEFT` / `DPAD_RIGHT` |
 | **Live TV Channel Zap** | `CH-` / `CH+` buttons in top bar | Remote `CHANNEL_UP` / `CHANNEL_DOWN` keys |
 | **Playback, Tracks & Audio DSP** | Tap **Tracks** icon | Focus **Tracks** → Quality, Audio, Decoder, Transport, Delay, Night Mode, Sleep Timer, A-B Loop, Stats |
-| **Subtitles & OpenSubtitles** | Tap **CC** icon | Focus **CC** → Tracks, OpenSubtitles Search/Sign-In, Dual Subtitles, Sync, Style |
+| **Subtitles & Dual Captions** | Tap **CC** icon | Focus **CC** → Load File/URL, Tracks, Dual Subtitles, Sync Delay, Caption Style |
 | **Exit Player Safely** | Back button / gesture | `BACK` key (saves position, clears surface & trims buffers) |
 
 ---
@@ -127,16 +126,16 @@ gradle :app:assembleDebug
 ```text
 .
 ├── README.md                          # Project overview, quick start & complete version history
-├── cinistream-v25.apk                 # Universal Phone + Android TV APK (v1.25 / 36 MB)
-├── CineStream-universal.apk           # Latest universal APK alias (v1.25 / 36 MB)
+├── cinistream-v28.apk                 # Universal Phone + Android TV APK (v1.28 / 25 MB)
+├── CineStream-universal.apk           # Latest universal APK alias (v1.28 / 25 MB)
 ├── eg-playlist.json                   # Sample unified Movie + Multi-Season Series + CDN playlist
-├── .env.example                       # Optional secret placeholders (OPENSUBTITLES_API_KEY, NORDVPN_ACCESS_TOKEN)
+├── .env.example                       # Optional secret placeholder (NORDVPN_ACCESS_TOKEN)
 ├── docs/
-│   ├── ARCHITECTURE.md                # Full v1.25 MVVM architecture, pipeline & complete module inventory
+│   ├── ARCHITECTURE.md                # Full v1.28 MVVM architecture, pipeline & complete module inventory
 │   ├── DECODER_AND_PLAYBACK_ENGINE.md # Cronet HTTP/3, ParallelPrefetch, NordLynx, FFmpeg 10-bit, FrameDropAnalyzer & Audio DSP
 │   ├── PLAYLIST_AND_CDN_GUIDE.md      # Multi-JSON/M3U/XMLTV schemas, NAS/Jellyfin, Web Remote & 5-layer CDN
-│   ├── MEMORY_AND_TV_OPTIMIZATION.md  # Zero-OOM Android 9 TV engineering, APK sizing & v1.25 10-foot UI
-│   └── TESTING_AND_TROUBLESHOOTING.md # 90-test suite (14 files), Stats for Nerds reference & issue playbooks
+│   ├── MEMORY_AND_TV_OPTIMIZATION.md  # Zero-OOM Android 9 TV engineering, 25 MB R8 APK sizing & 10-foot UI
+│   └── TESTING_AND_TROUBLESHOOTING.md # 94-test suite (15 files), Stats for Nerds reference & issue playbooks
 ├── gradle/libs.versions.toml          # Version catalog (Media3 1.11.1, Cronet 18.1.1, NextLib, WireGuard, Room)
 └── app/src/
     ├── main/
@@ -146,26 +145,25 @@ gradle :app:assembleDebug
     │       ├── CineStreamApplication.kt   # Async Cronet HTTP/3, FastDns/DoH + OkHttp pool, RGB_565 Coil, onTrimMemory
     │       ├── MainActivity.kt            # Edge-to-edge host, Navigation Compose, PiP, VPN consent & VIEW intents
     │       ├── data/                      # Room v3 DB (History, Favorites, Downloads, NAS), DataStore & DeviceSyncCodec
-    │       ├── model/                     # MediaModels & V24Models (EPG, SleepTimer, AbLoop, Chapters, OpenSubtitles)
-    │       ├── player/                    # 26 playback, transport, prefetch, VPN, decoder, DSP, subtitle & NAS engines
+    │       ├── model/                     # MediaModels & V24Models (EPG, SleepTimer, AbLoop, Chapters, GlobalSearch)
+    │       ├── player/                    # 25 playback, transport, prefetch, VPN, decoder, DSP, subtitle & NAS engines
     │       ├── remote/                    # LocalWebRemoteServer (LAN HTTP + Sync) & QrCodeMatrixGenerator
     │       ├── ui/                        # 35mm Screening Room theme, Home, Player, 15 sheets/overlays & TV utilities
     │       └── viewmodel/                 # CineStreamViewModel, MultiJsonPlaylistState, NetworkPrivacyState, V24UiStates
-    └── test/java/com/example/             # 14 JVM unit & Robolectric Compose UI test suites (90 tests)
+    └── test/java/com/example/             # 15 JVM unit & Robolectric Compose UI test suites (94 tests)
 ```
 
 ---
 
 ## Version History Highlights
 
-- **v1.25 (`cinistream-v25.apk`, 36 MB):** Complete **"No-AI-Slop" Editorial Cinema UI Revamp (35mm Screening Room)** + **OpenSubtitles Account Sign-In (`/api/v1/login` JWT Auth)**.
-  - Replaced generic Tailwind-slate dark SaaS colors with warm film-black carbon surfaces (`#09090B`/`#121215`/`#1A1A1F`), archival warm ivory ink (`#F4F1EA`), projector tungsten gold (`#E8A435`), and `0.75dp` hairlines.
-  - Upgraded bundled typography to **Fraunces** (editorial display), **DM Sans** (UI/body), and **JetBrains Mono** (technical telemetry).
-  - Applied `petergyang/no-ai-slop` writing rules across `strings.xml` and composables—cutting filler, passive phrasing, and marketing clichés.
-  - Unboxed the Home Stream Dock (hairline-separated Subtitle & JSON rows instead of nested cards), upgraded Watchlist cards with 2:3 poster artwork thumbnails, refined 2:3 poster cards and 16:9 Continue Watching cinema stills with flush bottom progress rails, and harmonized player seekbar & HUD overlays into warm smoked-glass chrome.
-  - Added full OpenSubtitles `/api/v1/login` JWT Bearer authentication, VIP/standard dynamic base URL routing, live remaining daily download quota display, and Android Keystore AES-256-GCM encrypted account persistence.
-  - Verified with **90/90** passing unit & Robolectric Compose UI tests across 14 suites.
-- **v1.24:** Shipped 13 end-to-end features across Phone and Android TV: Phone-to-TV Web Remote & QR Link Sender, Local Wi-Fi Sync & SAF JSON Backup, Up-Next 10s Episode Countdown + Skip Intro (`+85s`), Sleep Timer with 5s fade-out, Night Mode / Dialogue Boost DSP, Preferred Audio & Subtitle Language Defaults, Hold-to-2× Fast Forward & Configurable Skip Interval, Chapter Markers & A-B Loop, Global Search & Unified Watchlist (Room v3), Live TV XMLTV EPG Guide & Channel Zapping, Online OpenSubtitles Search & Dual Subtitles, Mobile Offline Downloads (MP4/MKV & HLS), and Local Network Browser (WebDAV + Jellyfin).
+- **v1.28 (`cinistream-v28.apk`, 25 MB):** **Complete OpenSubtitles Removal**, **Media3 1.11.1 HLS External Subtitle Transcoding Fix**, & **R8 APK Size Optimization (36 MB → 25 MB)**.
+  - Removed the OpenSubtitles integration cleanly across networking (`OpenSubtitlesClient.kt` deleted), `.env.example` (`OPENSUBTITLES_API_KEY`), encrypted DataStore keys, `V24Models` / `V24UiStates`, `CineStreamViewModel`, `MainActivity`, `PlayerScreen`, `SubtitleSheet`, strings, and tests—while preserving full local file, URL, sync delay, appearance styling, and Dual Subtitles (`SecondarySubtitleEngine`) workflows.
+  - Fixed Media3 `1.11.1` `Legacy decoding is disabled, can't handle application/x-subrip samples` crash when loading external `.srt`/`.vtt`/`.ass`/`.ttml` subtitles on HLS streams (`MergingMediaSource`) via `SubtitleMediaSourceBuilder` (`ProgressiveMediaSource` + `SubtitleExtractor` extraction-time transcoding to `application/x-media3-cues`) and enabled `.experimentalParseSubtitlesDuringExtraction(true)` on `DefaultHlsExtractorFactory`.
+  - Enabled R8 code and resource shrinking (`isMinifyEnabled = true`, `isShrinkResources = true`, tuned `app/proguard-rules.pro`), shrinking the universal signed APK from 36 MB to a compact **25 MB** for fast sideloading and workspace persistence.
+  - Dynamically renders `BuildConfig.VERSION_NAME` in `HomeScreen` and adds `HlsSubtitleTranscodingTest.kt` (**94/94** tests passing across 15 suites).
+- **v1.25:** Complete **"No-AI-Slop" Editorial Cinema UI Revamp (35mm Screening Room)**—replaced cold slate colors with `#09090B`/`#121215`/`#1A1A1F` warm carbon matte surfaces, warm ivory ink (`#F4F1EA`), projector tungsten gold (`#E8A435`), bundled Fraunces + DM Sans + JetBrains Mono typography, unboxed Home Stream Dock, poster-backed Watchlist, and smoked-glass player HUD overlays.
+- **v1.24:** Shipped end-to-end features across Phone and Android TV: Phone-to-TV Web Remote & QR Link Sender, Local Wi-Fi Sync & SAF JSON Backup, Up-Next 10s Episode Countdown + Skip Intro (`+85s`), Sleep Timer with 5s fade-out, Night Mode / Dialogue Boost DSP, Preferred Audio & Subtitle Language Defaults, Hold-to-2× Fast Forward & Configurable Skip Interval, Chapter Markers & A-B Loop, Global Search & Unified Watchlist (Room v3), Live TV XMLTV EPG Guide & Channel Zapping, Dual Subtitles, Mobile Offline Downloads (MP4/MKV & HLS), and Local Network Browser (WebDAV + Jellyfin).
 - **v1.23:** Added Frame-Drop Root-Cause Diagnostics (`FrameDropAnalyzer` + selective Android 12+ Async MediaCodec queueing + seamless display refresh-rate matching + SW-decode prefetch CPU throttling), Continue Watching & Per-Episode Resume (Room v2), Mobile PiP & Background Audio Playback, Real-Time Audio Delay (`DelayAudioProcessor`) & Subtitle Sync, Left-Side Brightness Swipe & Pinch-to-Zoom (`1.0×–2.5×`), and Smart Auto-VPN Failover.
 - **v1.22:** Embedded native in-app WireGuard (`GoBackend`) NordLynx engine supporting all 118+ NordVPN countries & cities directly inside CineStream with searchable location picker and per-app `1.1.1.1` DNS.
 - **v1.21:** Added 1-tap Direct ISP disable button in Privacy sheet and separated the Home `Resume` banner cleanly below the header on compact phones and Android TV.

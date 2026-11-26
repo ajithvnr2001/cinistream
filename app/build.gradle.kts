@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.cinestream.vqxkpm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 28
-    versionName = "1.28"
+    versionCode = 31
+    versionName = "1.31"
 
     ndk {
       // Keep 64-bit phones (arm64-v8a), 32-bit Android TVs (armeabi-v7a), and 64-bit emulators (x86_64)
@@ -60,6 +60,11 @@ android {
       // (avoids AGP debuggable+minify warnings and :app:reportDebugComposeMappingErrors)
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
+      signingConfig = signingConfigs.getByName("debugConfig")
+    }
+    create("sideload") {
+      initWith(getByName("release"))
+      matchingFallbacks += listOf("release")
       signingConfig = signingConfigs.getByName("debugConfig")
     }
   }

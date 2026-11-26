@@ -167,6 +167,7 @@ fun PlayerScreen(
     onSelectSubtitleTrack: (TrackOption) -> Unit,
     onDisableSubtitles: () -> Unit,
     onAdjustSubtitleOffset: (Long) -> Unit,
+    onSetSubtitleOffset: ((Long) -> Unit)? = null,
     onResetSubtitleOffset: () -> Unit,
     onUpdateSubtitleSize: (SubtitleTextSize) -> Unit,
     onUpdateSubtitleColor: (SubtitleColorPreset) -> Unit,
@@ -197,6 +198,7 @@ fun PlayerScreen(
     onEnterPip: (() -> Unit)? = null,
     onToggleBackgroundAudio: (Boolean) -> Unit = {},
     onAdjustAudioDelay: (Long) -> Unit = {},
+    onSetAudioDelay: ((Long) -> Unit)? = null,
     onResetAudioDelay: () -> Unit = {},
     onPersistProgressOnly: () -> Unit = {},
     seekIntervalSeconds: Int = 10,
@@ -248,6 +250,7 @@ fun PlayerScreen(
     val playPauseFocusRequester = remember { FocusRequester() }
     val seekBarFocusRequester = remember { FocusRequester() }
     val subButtonFocusRequester = remember { FocusRequester() }
+    val brightnessButtonFocusRequester = remember { FocusRequester() }
     val statsButtonFocusRequester = remember { FocusRequester() }
     val episodesButtonFocusRequester = remember { FocusRequester() }
     val speedButtonFocusRequester = remember { FocusRequester() }
@@ -269,14 +272,21 @@ fun PlayerScreen(
     var showSeriesSheet by remember { mutableStateOf(false) }
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showVolumeBoostDialog by remember { mutableStateOf(false) }
+    var showBrightnessPanel by remember { mutableStateOf(false) }
     var interactionNonce by remember { mutableIntStateOf(0) }
 
     // Seek, Volume, Brightness & Pinch-Zoom visual feedback HUD state
     var seekBadgeText by remember { mutableStateOf<String?>(null) }
     var isVolumeHudVisible by remember { mutableStateOf(false) }
     var volumeHudNonce by remember { mutableIntStateOf(0) }
-    var brightnessPercent by remember {
-        mutableIntStateOf(PlayerGestureMath.readWindowBrightnessPercent(activity))
+    var brightnessPercent by remember(isTv) {
+        mutableIntStateOf(
+            if (isTv) {
+                PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT
+            } else {
+                PlayerGestureMath.readWindowBrightnessPercent(activity)
+            }
+        )
     }
     var isBrightnessHudVisible by remember { mutableStateOf(false) }
     var brightnessHudNonce by remember { mutableIntStateOf(0) }
@@ -322,9 +332,13 @@ fun PlayerScreen(
         onBack()
     }
 
-    // On TV / D-Pad, pressing Back while controls are visible first dismisses controls cleanly
+    // On TV / D-Pad, pressing Back first closes Brightness panel, then dismisses controls cleanly
     BackHandler {
-        if ((isTv || lastInputWasKey) && controlsVisible && playbackState.errorMessage == null && !isLocked) {
+        if (showBrightnessPanel) {
+            showBrightnessPanel = false
+            returnFocusTarget = brightnessButtonFocusRequester
+            interactionNonce++
+        } else if ((isTv || lastInputWasKey) && controlsVisible && playbackState.errorMessage == null && !isLocked) {
             controlsVisible = false
             runCatching { rootFocusRequester.requestFocus() }
         } else {
@@ -345,11 +359,12 @@ fun PlayerScreen(
         showJsonSheet,
         showSeriesSheet,
         showSpeedMenu,
-        showVolumeBoostDialog
+        showVolumeBoostDialog,
+        showBrightnessPanel
     ) {
         val noModalOpen = !showSubtitleSheet && !showTracksSheet && !showM3uSheet &&
             !showJsonSheet && !showSeriesSheet && !showSpeedMenu && !showVolumeBoostDialog &&
-            playbackState.errorMessage == null
+            !showBrightnessPanel && playbackState.errorMessage == null
         if (noModalOpen) {
             if (controlsVisible && !isLocked && (isTv || lastInputWasKey)) {
                 delay(60L)
@@ -421,6 +436,7 @@ fun PlayerScreen(
             showSeriesSheet = false
             showSpeedMenu = false
             showVolumeBoostDialog = false
+            showBrightnessPanel = false
         }
     }
 
@@ -435,11 +451,12 @@ fun PlayerScreen(
         showSeriesSheet,
         showSpeedMenu,
         showVolumeBoostDialog,
+        showBrightnessPanel,
         interactionNonce
     ) {
         val canAutoHide = controlsVisible && playbackState.isPlaying && !isScrubbing &&
             !showSubtitleSheet && !showTracksSheet && !showM3uSheet && !showJsonSheet &&
-            !showSeriesSheet && !showSpeedMenu && !showVolumeBoostDialog
+            !showSeriesSheet && !showSpeedMenu && !showVolumeBoostDialog && !showBrightnessPanel
         if (canAutoHide) {
             delay(if (isTv) 5000L else 4000L)
             controlsVisible = false
@@ -512,7 +529,7 @@ fun PlayerScreen(
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 if (showSubtitleSheet || showTracksSheet || showM3uSheet || showJsonSheet ||
-                    showSeriesSheet || showSpeedMenu || showVolumeBoostDialog
+                    showSeriesSheet || showSpeedMenu || showVolumeBoostDialog || showBrightnessPanel
                 ) {
                     return@onPreviewKeyEvent false
                 }
@@ -654,6 +671,28 @@ fun PlayerScreen(
                     playerView.player = null
                 }
             )
+        }
+
+        // Android TV Live Video Brightness Filter (software dim/boost over video surface so
+        // HDMI TV boxes and all TV panels reflect brightness changes even if window backlight is ignored)
+        if (isTv && !isInPipMode) {
+            val dimAlpha = PlayerGestureMath.computeTvDimOverlayAlpha(brightnessPercent)
+            val boostAlpha = PlayerGestureMath.computeTvBoostOverlayAlpha(brightnessPercent)
+            if (dimAlpha > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = dimAlpha))
+                        .testTag("tv_brightness_dim_overlay")
+                )
+            } else if (boostAlpha > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.White.copy(alpha = boostAlpha))
+                        .testTag("tv_brightness_boost_overlay")
+                )
+            }
         }
 
         // Touch Tap, Double-Tap Seek, Left Brightness Swipe, Right 0-200% Sound Swipe & 2-Finger Pinch Zoom
@@ -858,9 +897,9 @@ fun PlayerScreen(
             VerticalVolumeBoostHud(volumePercent = playbackState.volumePercent)
         }
 
-        // Brightness Swipe HUD (right side so left thumb doesn't occlude it)
+        // Vertical Brightness Swipe HUD (right side so left thumb doesn't occlude it)
         AnimatedVisibility(
-            visible = isBrightnessHudVisible && !isInPipMode,
+            visible = isBrightnessHudVisible && !showBrightnessPanel && !isInPipMode,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -868,7 +907,14 @@ fun PlayerScreen(
                 .windowInsetsPadding(safeInsets)
                 .padding(end = tvOverscanHorizontal)
         ) {
-            BrightnessHudOverlay(brightnessPercent = brightnessPercent)
+            BrightnessHudOverlay(
+                brightnessPercent = brightnessPercent,
+                maxPercent = if (isTv) {
+                    PlayerGestureMath.TV_MAX_BRIGHTNESS_PERCENT
+                } else {
+                    PlayerGestureMath.MAX_BRIGHTNESS_PERCENT
+                }
+            )
         }
 
         // Hold-to-2x Fast Forward Pill
@@ -1066,6 +1112,20 @@ fun PlayerScreen(
                         hasM3uZapping = m3uEntries.size >= 2,
                         onChannelPrev = if (m3uEntries.size >= 2) { { onZapChannel(-1) } } else null,
                         onChannelNext = if (m3uEntries.size >= 2) { { onZapChannel(1) } } else null,
+                        brightnessPercent = brightnessPercent,
+                        showBrightnessPanel = showBrightnessPanel,
+                        brightnessButtonFocusRequester = brightnessButtonFocusRequester,
+                        onToggleBrightnessPanel = if (isTv) {
+                            {
+                                showBrightnessPanel = !showBrightnessPanel
+                                if (!showBrightnessPanel) {
+                                    returnFocusTarget = brightnessButtonFocusRequester
+                                }
+                                interactionNonce++
+                            }
+                        } else {
+                            null
+                        },
                         modifier = Modifier.align(Alignment.TopCenter)
                     )
 
@@ -1148,6 +1208,32 @@ fun PlayerScreen(
             }
         }
 
+        // Android TV Inline Non-Dimming Brightness Control Popover (below top bar)
+        AnimatedVisibility(
+            visible = isTv && showBrightnessPanel && !isInPipMode && playbackState.errorMessage == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
+                .padding(top = 74.dp, end = tvOverscanHorizontal)
+        ) {
+            TvBrightnessControlPanel(
+                brightnessPercent = brightnessPercent,
+                onSetBrightnessPercent = { targetPct ->
+                    val clamped = PlayerGestureMath.clampTvBrightnessPercent(targetPct)
+                    brightnessPercent = clamped
+                    PlayerGestureMath.applyTvBrightnessPercent(activity, clamped)
+                    interactionNonce++
+                },
+                onDismiss = {
+                    showBrightnessPanel = false
+                    returnFocusTarget = brightnessButtonFocusRequester
+                    interactionNonce++
+                }
+            )
+        }
+
         // Player Snackbar Host
         if (!isInPipMode) {
             SnackbarHost(
@@ -1176,6 +1262,10 @@ fun PlayerScreen(
             onSelectTrack = onSelectSubtitleTrack,
             onDisableSubtitles = onDisableSubtitles,
             onAdjustOffset = onAdjustSubtitleOffset,
+            onSetOffset = onSetSubtitleOffset ?: { target ->
+                val current = session?.subtitleOffsetMs ?: 0L
+                onAdjustSubtitleOffset(target - current)
+            },
             onResetOffset = onResetSubtitleOffset,
             onUpdateTextSize = onUpdateSubtitleSize,
             onUpdateColor = onUpdateSubtitleColor,
@@ -1210,6 +1300,14 @@ fun PlayerScreen(
             audioDelayMs = playbackState.audioDelayMs,
             onAdjustAudioDelay = { delta ->
                 onAdjustAudioDelay(delta)
+                interactionNonce++
+            },
+            onSetAudioDelay = { targetMs ->
+                if (onSetAudioDelay != null) {
+                    onSetAudioDelay(targetMs)
+                } else {
+                    onAdjustAudioDelay(targetMs - playbackState.audioDelayMs)
+                }
                 interactionNonce++
             },
             onResetAudioDelay = {

@@ -2044,9 +2044,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        val restoredSubOffset = (existingRecord?.subtitleOffsetMs ?: 0L).coerceIn(-5_000L, 5_000L)
+        val restoredSubOffset = AudioDelayMath.clampDelayMs(existingRecord?.subtitleOffsetMs ?: 0L)
         val restoredAudioDelay = AudioDelayMath.clampDelayMs(existingRecord?.audioDelayMs ?: 0L)
-        playerManager.setAudioDelayMs(restoredAudioDelay)
+        playerManager.setAudioDelayMs(restoredAudioDelay, realignPlayback = false)
 
         val session = ActiveMediaSession(
             title = title,
@@ -2189,8 +2189,14 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     fun adjustSubtitleOffset(deltaMs: Long) {
         val currentSession = _uiState.value.activeSession ?: return
         if (currentSession.externalSubtitles.isEmpty()) return
-        val newOffset = (currentSession.subtitleOffsetMs + deltaMs).coerceIn(-5_000L, 5_000L)
+        val newOffset = AudioDelayMath.clampDelayMs(currentSession.subtitleOffsetMs + deltaMs)
         applySubtitleOffset(currentSession, newOffset)
+    }
+
+    fun setSubtitleOffset(offsetMs: Long) {
+        val currentSession = _uiState.value.activeSession ?: return
+        if (currentSession.externalSubtitles.isEmpty()) return
+        applySubtitleOffset(currentSession, AudioDelayMath.clampDelayMs(offsetMs))
     }
 
     fun resetSubtitleOffset() {
@@ -2229,12 +2235,22 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
     fun adjustAudioDelay(deltaMs: Long) {
         val next = playerManager.adjustAudioDelayMs(deltaMs)
+        persistAudioDelay(next)
+    }
+
+    fun setAudioDelay(delayMs: Long) {
+        val clamped = AudioDelayMath.clampDelayMs(delayMs)
+        playerManager.setAudioDelayMs(clamped)
+        persistAudioDelay(clamped)
+    }
+
+    private fun persistAudioDelay(delayMs: Long) {
         val session = _uiState.value.activeSession ?: return
         viewModelScope.launch {
             historyRepo.saveSyncOffsets(
                 sourceUri = session.sourceUri,
                 subtitleOffsetMs = session.subtitleOffsetMs,
-                audioDelayMs = next
+                audioDelayMs = delayMs
             )
         }
     }

@@ -132,8 +132,8 @@ class CineStreamV23FeaturesTest {
 
     @Test
     fun audioDelayMath_clampsAndFormatsCleanly() {
-        assertEquals(-500L, AudioDelayMath.clampDelayMs(-1_200L))
-        assertEquals(500L, AudioDelayMath.clampDelayMs(900L))
+        assertEquals(-10_000L, AudioDelayMath.clampDelayMs(-15_000L))
+        assertEquals(10_000L, AudioDelayMath.clampDelayMs(15_000L))
         assertEquals("0 ms", AudioDelayMath.formatDelayLabel(0L))
         assertEquals("+75 ms", AudioDelayMath.formatDelayLabel(75L))
         assertEquals("-50 ms", AudioDelayMath.formatDelayLabel(-50L))

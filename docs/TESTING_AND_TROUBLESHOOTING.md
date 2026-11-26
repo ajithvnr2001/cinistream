@@ -1,22 +1,31 @@
-# Testing & Troubleshooting Playbook (v1.28)
+# Testing & Troubleshooting Playbook (v1.31)
 
-This document covers CineStream v1.28's **94-test automated JVM & Robolectric test suite (15 suites)**, how to read every indicator in **Stats for Nerds**, and actionable troubleshooting playbooks.
+This document covers CineStream v1.31's **108-test automated JVM & Robolectric test suite (18 suites)**, how to read every indicator in **Stats for Nerds**, and actionable troubleshooting playbooks.
 
 ---
 
-## 1. Automated Test Suite (94 Tests Across 15 Suites)
+## 1. Automated Test Suite (108 Tests Across 18 Suites)
 
 CineStream uses **JUnit 4**, **Robolectric (`4.16.1`)**, and **Jetpack Compose UI Test (`createComposeRule`)** so pure engines, HTTP/API flows, Room/DataStore logic, and Compose UI/TV focus interactions verify rapidly on the JVM without an emulator.
 
 ### Running Tests
 ```bash
-# Run all 94 unit & Robolectric UI tests
+# Run all 108 unit & Robolectric UI tests
 gradle :app:testDebugUnitTest
+
+# Run HLS-segment AudioSyncMediaSource & SampleStream tests (4 tests)
+gradle :app:testDebugUnitTest --tests "com.example.HlsAudioSyncSampleStreamTest"
+
+# Run Direct ms/s Audio & Subtitle Sync Input UI + Math tests (5 tests)
+gradle :app:testDebugUnitTest --tests "com.example.AudioSyncNumericInputTest"
+
+# Run Mobile Vertical Brightness HUD & Android TV Brightness Control tests (5 tests)
+gradle :app:testDebugUnitTest --tests "com.example.BrightnessControlTest"
 
 # Run Media3 1.11.1 HLS external subtitle transcoding tests (6 tests)
 gradle :app:testDebugUnitTest --tests "com.example.HlsSubtitleTranscodingTest"
 
-# Run v1.24–v1.28 Ecosystem & Dual Subtitle tests (15 tests)
+# Run v1.24–v1.31 Ecosystem & Dual Subtitle tests (15 tests)
 gradle :app:testDebugUnitTest --tests "com.example.CineStreamV24FeaturesTest"
 
 # Run v1.23 Frame-Drop, Continue Watching, Audio Delay & Auto-VPN tests (11 tests)
@@ -36,7 +45,10 @@ gradle :app:testDebugUnitTest --tests "com.example.PrivateDnsAndNordVpnTest"
 | `AudioBoostAndOptimizationTest.kt` | 11 | `AudioBoostMath` (0–200% / +20 dB), heap-capped `LoadControl`, `largeHeap`, HTTP/2 pool, `FastDnsResolver`, `FastStreamingLoadErrorHandlingPolicy`, `MediaEdgeCache` TV RAM-Direct, `ParallelPrefetchEngine` (HLS live handoff, audio lane, byte-range), `QuicThroughputWatchdog`, and `TracksSheet` UI. |
 | `JsonPlaylistAndImdbTest.kt` | 11 | Unified Movie + Series JSON parsing, flat episodes, header inheritance, `CdnMirrorResolver` swaps & cache rules, `ImdbMetadataClient`, `SeriesDetailSheet`, `JsonPlaylistSheet`, and `TracksSheet` CDN controls. |
 | `DecoderFallbackTest.kt` | 6 | Qualcomm HEVC detection, `.low_latency` exclusion, `SmartMediaCodecSelector` FFmpeg delegation, H.264/lower-res track fallback, `PlayerErrorCard` actions, and `PlayerStatsCard` decoder telemetry. |
-| `HlsSubtitleTranscodingTest.kt` | 6 | `SubtitleMediaSourceBuilder` `ProgressiveMediaSource` + `SubtitleExtractor` wrapping for SRT/VTT/ASS/TTML, CEA-608 fallback, `application/x-media3-cues` cue sample verification, local sidecar file merging, `formatSubtitleCodecLabel()`, and v1.28 `BuildConfig`. |
+| `HlsSubtitleTranscodingTest.kt` | 6 | `SubtitleMediaSourceBuilder` `ProgressiveMediaSource` + `SubtitleExtractor` wrapping for SRT/VTT/ASS/TTML, CEA-608 fallback, `application/x-media3-cues` cue sample verification, local sidecar file merging, `formatSubtitleCodecLabel()`, and v1.31 `BuildConfig`. |
+| `BrightnessControlTest.kt` | 5 | `PlayerGestureMath` TV brightness clamping (`10%–150%`) + dim/boost overlay alphas, mobile vertical `BrightnessHudOverlay` gauge geometry (`height > width`), Android TV `PlayerTopBar` brightness pill placement immediately next to `Sub`, `TvBrightnessControlPanel` (`−`/`+`/presets/reset/done), and v1.31 `BuildConfig`. |
+| `AudioSyncNumericInputTest.kt` | 5 | `AudioDelayMath.parseDelayInputMs` (`ms`/`s` units, decimals, inline suffixes, clamping `-10s..+10s`, invalid rejection), `TracksSheet` & `SubtitleSheet` numeric input + `±` sign toggle UI, and v1.31 `BuildConfig`. |
+| `HlsAudioSyncSampleStreamTest.kt` | 4 | `AudioOffsetSampleStream` bidirectional PTS shifting & sub-zero drop, `skipData` reverse translation, `AudioSyncMediaPeriod` audio-only wrapping + unwrap/rewrap on track switch, `discardBuffer` protection, negative-delay `getBufferedPositionUs` prefetch preservation, and `computeRealignSeekPositionMs`. |
 | `LocalFilePickerTest.kt` | 4 | Zero-permission SAF local video, M3U, JSON, and subtitle picker URI handling. |
 | `SeekBarScrubEngineTest.kt` | 4 | Precision scrub step calculation and progressive D-pad hold acceleration (`±1m` to `±10m`). |
 | `HlsAndAppCheckTest.kt` | 3 | `MediaFormatDetector` format/MIME detection and `PlayerStatsCard` rendering & close action. |
@@ -45,7 +57,7 @@ gradle :app:testDebugUnitTest --tests "com.example.PrivateDnsAndNordVpnTest"
 | `FocusHighlightRobolectricTest.kt` | 2 | Android TV `tvFocusHighlight` focus ring and scale behavior. |
 | `ExampleRobolectricTest.kt` | 1 | App name resource verification (`CineStream`). |
 | `ExampleUnitTest.kt` | 1 | Baseline JVM sanity check. |
-| **Total** | **94** | **100% passing on local JVM (`gradle :app:testDebugUnitTest`).** |
+| **Total** | **108** | **100% passing on local JVM (`gradle :app:testDebugUnitTest`).** |
 
 ---
 
@@ -83,8 +95,8 @@ Toggle **Stats for Nerds** from **Tracks → Stats for Nerds** during playback (
 - **Symptom on older builds:** Loading a `.srt` or `.vtt` subtitle onto an `.m3u8` stream failed with `Legacy decoding is disabled, can't handle application/x-subrip samples`.
 - **v1.28 Resolution:** `CinePlayerManager` now builds sidecar subtitle sources through `SubtitleMediaSourceBuilder` (`ProgressiveMediaSource` + `SubtitleExtractor` → `application/x-media3-cues`) and sets `experimentalParseSubtitlesDuringExtraction(true)` on `DefaultHlsExtractorFactory`, supporting `.srt`, `.vtt`, `.ass`/`.ssa`, `.ttml`, and Dual Subtitles seamlessly across HLS, MKV, and MP4 streams.
 
-### 4. Bluetooth / Soundbar Audio Out of Sync
-- Open **Tracks → Audio Delay** and tap `-25ms` / `-50ms` / `+25ms` / `+50ms` (range `-500ms` to `+500ms`). `DelayAudioProcessor` applies the lip-sync shift instantaneously with zero video reload and remembers it per video.
+### 4. Bluetooth / Soundbar / HLS Audio Out of Sync
+- Open **Tracks → Audio Delay** and either tap `-50ms` / `-25ms` / `+25ms` / `+50ms` or type an exact value in **`ms`** or **`s`** (use **`±`** for negative values, range `-10s` to `+10s`) and tap **Apply**. `AudioSyncMediaSource` shifts `C.TRACK_TYPE_AUDIO` sample timestamps before decoding across muxed/demuxed HLS segments, DASH, MKV, MP4, PCM, FFmpeg, and HDMI passthrough, realigns immediately in-buffer, and remembers the offset per video.
 
 ### 5. `c2.qti.hevc.decoder` Crash on 4K 10-Bit HDR10
 - CineStream automatically excludes `.low_latency` codecs and fails over to **NextLib native FFmpeg (`FfmpegVideoRenderer`)** with a clean `surfaceResetToken` surface reset. You can also choose **Tracks → Video Decoder → Software (FFmpeg)** directly.

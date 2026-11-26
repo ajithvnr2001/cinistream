@@ -69,6 +69,7 @@ import com.example.model.SubtitleColorPreset
 import com.example.model.SubtitleTextSize
 import com.example.model.TrackOption
 import com.example.player.AudioDelayMath
+import com.example.player.SyncTimeUnit
 import com.example.ui.components.SubtitlePillBadge
 import com.example.ui.components.tvFocusHighlight
 import com.example.ui.theme.CinemaAmber
@@ -93,6 +94,7 @@ fun SubtitleSheet(
     onSelectTrack: (TrackOption) -> Unit,
     onDisableSubtitles: () -> Unit,
     onAdjustOffset: (Long) -> Unit,
+    onSetOffset: ((Long) -> Unit)? = null,
     onResetOffset: () -> Unit,
     onUpdateTextSize: (SubtitleTextSize) -> Unit,
     onUpdateColor: (SubtitleColorPreset) -> Unit,
@@ -318,7 +320,7 @@ fun SubtitleSheet(
                                     modifier = Modifier.testTag("subtitle_offset_value")
                                 )
                                 Text(
-                                    text = "±100ms / ±500ms (-5s..+5s) · Saved per video",
+                                    text = "±100ms / ±500ms (-10s..+10s) · Enter ms or s",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -382,6 +384,20 @@ fun SubtitleSheet(
                                     Text("+0.5s", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                                 }
                             }
+
+                            SyncOffsetNumericInputRow(
+                                currentOffsetMs = subtitleOffsetMs,
+                                testTagPrefix = "subtitle_offset",
+                                defaultUnit = SyncTimeUnit.SECONDS,
+                                hintDirection = "− earlier · + later",
+                                onApplyOffsetMs = { targetMs ->
+                                    if (onSetOffset != null) {
+                                        onSetOffset(targetMs)
+                                    } else {
+                                        onAdjustOffset(targetMs - subtitleOffsetMs)
+                                    }
+                                }
+                            )
                         }
                     }
                 }

@@ -1,6 +1,6 @@
-# Decoder, Transport, VPN & Playback Engine Deep Dive (v1.28)
+# Decoder, Transport, VPN & Playback Engine Deep Dive (v1.31)
 
-CineStream v1.28 combines a self-healing **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp + Live-Streaming Parallel Prefetch + Embedded WireGuard NordLynx** networking stack with a hybrid **Hardware MediaCodec + NextLib Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Play Services Cronet (`18.1.1`)**, **NextLib (`1.11.1-0.16.0`)**, and **`com.wireguard.android:tunnel` (`GoBackend`)**.
+CineStream v1.31 combines a self-healing **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp + Live-Streaming Parallel Prefetch + Embedded WireGuard NordLynx** networking stack with a hybrid **Hardware MediaCodec + NextLib Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Play Services Cronet (`18.1.1`)**, **NextLib (`1.11.1-0.16.0`)**, and **`com.wireguard.android:tunnel` (`GoBackend`)**.
 
 ---
 
@@ -59,7 +59,7 @@ private val renderersFactory = NextRenderersFactory(context)
 ### Renderer Chain
 1. **`MediaCodecVideoRenderer` (GPU Hardware):** Primary path for battery-efficient 1080p/4K60 playback.
 2. **`FfmpegVideoRenderer` (NextLib Native FFmpeg):** Native ARM64 / ARMv7a NEON software decoder supporting **10-bit HEVC (`Main 10`, HDR10)**, 8-bit HEVC, H.264, VP8/VP9, and **AV1 (`dav1d`)**.
-3. **`MediaCodecAudioRenderer` + `FfmpegAudioRenderer`:** Decodes platform AAC/Opus/MP3 plus native FFmpeg **DTS (`dca`), AC-3, E-AC-3, TrueHD, FLAC, ALAC, Vorbis, and Opus**—all routed through `DelayAudioProcessor` before output.
+3. **`MediaCodecAudioRenderer` + `FfmpegAudioRenderer`:** Decodes platform AAC/Opus/MP3 plus native FFmpeg **DTS (`dca`), AC-3, E-AC-3, TrueHD, FLAC, ALAC, Vorbis, and Opus**—with bidirectional audio sync applied upstream at the `SampleStream` boundary (`AudioSyncMediaSource`) so both PCM and HDMI passthrough stay locked.
 
 ### Zero-Recreation FFmpeg Handoff (`SmartMediaCodecSelector`)
 - **Explicit Software Mode (`VideoDecoderMode.SOFTWARE`):** Returns an empty platform list when `FfmpegLibrary.isAvailable()` is true so `MediaCodecVideoRenderer` yields directly to `FfmpegVideoRenderer` at the exact timestamp without recreating `ExoPlayer`.
@@ -98,8 +98,10 @@ private val renderersFactory = NextRenderersFactory(context)
 - **101%–200%:** `LoudnessEnhancer` (`+0` to `+2000 mB` / `+20 dB`) paired with an API 28+ `DynamicsProcessing` soft-limiter (`-1.0 dB` ceiling, `6:1` ratio) to prevent clipping.
 - **Night Mode (Dialogue Boost):** API 28+ 4-band `DynamicsProcessing` Pre-EQ + multi-band compressor lifting `1–4 kHz` speech frequencies while compressing loud bass/explosions.
 
-### B. Real-Time PCM Audio Delay (`DelayAudioProcessor.kt`)
-- Circular PCM ring buffer inserted directly into `NextRenderersFactory.buildAudioSink()` for instant zero-reload Bluetooth/soundbar lip-sync (`-500 ms` to `+500 ms` in `±25 ms` / `±50 ms` steps), persisted per video in Room.
+### B. Container- & Codec-Agnostic Bidirectional Audio Sync (`AudioSyncMediaSource.kt`, `DelayAudioProcessor.kt`)
+- **`AudioSyncMediaSource` / `AudioSyncMediaPeriod` / `AudioOffsetSampleStream`:** Wraps every `MediaSource` (muxed `.ts` HLS, demuxed `#EXT-X-MEDIA:TYPE=AUDIO` `.ts`/`.aac`/`.m4s` HLS segments, DASH, MKV, MP4, and `MergingMediaSource`) and shifts `C.TRACK_TYPE_AUDIO` sample timestamps (`buffer.timeUs`) directly before decoding (`-10 s` to `+10 s`), leaving video, subtitles, and seekbar locked together.
+- Works identically across PCM, AAC, Opus, AC-3, E-AC-3, DTS, TrueHD, HDMI/Bluetooth passthrough, hardware `MediaCodec`, and `FfmpegAudioRenderer` with zero PCM ring-buffer RAM overhead and zero silence injection.
+- Applies exact in-buffer realignment (`SeekParameters.EXACT` + anchor-locking + 180 ms debounce for rapid step taps, immediate on direct numeric `ms`/`s` Apply), protects delayed audio buffers in `discardBuffer()`, adjusts `getBufferedPositionUs()` for negative delays so `LoadControl` fetches ahead on demuxed HLS segments, and drops sub-zero leading samples cleanly. Persisted per video in Room.
 
 ### C. HLS Extraction-Time Subtitle Transcoding & Dual Subtitles (`SubtitleHelper.kt`, `SecondarySubtitleEngine.kt`)
 - **Media3 `1.11.1` Sidecar Transcoding (`SubtitleMediaSourceBuilder`):** Media3 `1.11.1` disables legacy subtitle decoding in `TextRenderer` (`expected application/x-media3-cues`). Rather than feeding raw `SingleSampleMediaSource` bytes into `MergingMediaSource` for HLS streams, `SubtitleMediaSourceBuilder.buildMediaSource()` wraps `.srt`, `.vtt`, `.ass`/`.ssa`, and `.ttml` sidecar files in `ProgressiveMediaSource` + `SubtitleExtractor(DefaultSubtitleParserFactory().create(format), format)` so captions are transcoded to `application/x-media3-cues` during extraction.

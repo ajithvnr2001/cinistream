@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Forward10
@@ -186,6 +187,10 @@ internal fun PlayerTopBar(
     hasM3uZapping: Boolean = false,
     onChannelPrev: (() -> Unit)? = null,
     onChannelNext: (() -> Unit)? = null,
+    brightnessPercent: Int = PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT,
+    showBrightnessPanel: Boolean = false,
+    brightnessButtonFocusRequester: FocusRequester = remember { FocusRequester() },
+    onToggleBrightnessPanel: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -304,6 +309,49 @@ internal fun PlayerTopBar(
                         style = MaterialTheme.typography.labelMedium,
                         color = subTint
                     )
+                }
+            }
+
+            if (isTv && onToggleBrightnessPanel != null) {
+                val isAdjusted = brightnessPercent != PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT
+                val isBrightBoosted = brightnessPercent > PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT
+                val brightTint = when {
+                    isBrightBoosted -> CinemaAmberBright
+                    isAdjusted || showBrightnessPanel -> StreamCyan
+                    else -> Color.White
+                }
+                val brightActive = isAdjusted || showBrightnessPanel
+                Surface(
+                    onClick = onToggleBrightnessPanel,
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (brightActive) brightTint.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (brightActive) brightTint else Color.White.copy(alpha = 0.22f)
+                    ),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .focusRequester(brightnessButtonFocusRequester)
+                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                        .testTag("player_brightness_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Brightness6,
+                            contentDescription = stringResource(R.string.cd_brightness),
+                            tint = brightTint,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "${brightnessPercent}%",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = brightTint
+                        )
+                    }
                 }
             }
 

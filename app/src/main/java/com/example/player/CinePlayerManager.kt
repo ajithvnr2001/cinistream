@@ -4,6 +4,8 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
@@ -22,8 +24,6 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.analytics.AnalyticsListener
-import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -336,7 +336,11 @@ class CinePlayerManager(context: Context) {
     }
 
     private val volumeBooster = AudioVolumeBooster()
-    private val delayAudioProcessor = DelayAudioProcessor()
+    private val audioDelayUs = AtomicLong(0L)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingAudioDelayRealign: Runnable? = null
+    private var pendingAudioRealignAnchorMs: Long? = null
+    private var pendingAudioRealignSetAtMs: Long = 0L
     private val frameDropAnalyzer = FrameDropAnalyzer()
     private val asyncQueueingEnabled: Boolean = MediaCodecQueueingPolicy.shouldUseAsyncQueueing(
         isConstrainedOrTv = isTelevisionDevice || isConstrainedDevice
@@ -365,20 +369,9 @@ class CinePlayerManager(context: Context) {
 
     // NextRenderersFactory injects native FFmpeg software video (10-bit HEVC Main10, AV1, H.264, VP9)
     // and audio (DTS, AC-3, E-AC-3, TrueHD, FLAC) renderers right behind platform HW MediaCodec.
-    // Selective MediaCodec async queueing enabled on API 31+ modern devices; synchronous on API < 31 / TV.
-    private val renderersFactory = object : NextRenderersFactory(context) {
-        override fun buildAudioSink(
-            context: Context,
-            enableFloatOutput: Boolean,
-            enableAudioTrackPlaybackParams: Boolean
-        ): AudioSink {
-            return DefaultAudioSink.Builder(context)
-                .setEnableFloatOutput(enableFloatOutput)
-                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                .setAudioProcessors(arrayOf(delayAudioProcessor))
-                .build()
-        }
-    }.apply {
+    // Audio sync is handled upstream at the SampleStream layer via AudioSyncMediaSource so it works
+    // identically on HLS muxed/demuxed segments, PCM, FFmpeg, and HDMI AC-3/E-AC-3 passthrough.
+    private val renderersFactory = NextRenderersFactory(context).apply {
         setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         setEnableDecoderFallback(true)
         if (asyncQueueingEnabled) {
@@ -468,6 +461,9 @@ class CinePlayerManager(context: Context) {
                     if (rebufferStartedAtElapsedMs > 0L) {
                         totalRebufferMs += (nowElapsed - rebufferStartedAtElapsedMs).coerceAtLeast(0L)
                         rebufferStartedAtElapsedMs = 0L
+                    }
+                    if (pendingAudioDelayRealign == null) {
+                        pendingAudioRealignAnchorMs = null
                     }
                     hasReachedReadyOnce = true
                 }
@@ -1202,13 +1198,13 @@ class CinePlayerManager(context: Context) {
             format == StreamFormat.M3U8 ||
             targetUrl.contains(".m3u8", ignoreCase = true)
 
-        if (isHlsSource) {
+        val baseMediaSource: MediaSource = if (isHlsSource) {
             val baseItem = MediaItem.Builder()
                 .setUri(Uri.parse(targetUrl))
                 .setMimeType(MimeTypes.APPLICATION_M3U8)
                 .build()
             val hlsSource: MediaSource = hlsMediaSourceFactory.createMediaSource(baseItem)
-            val finalSource: MediaSource = if (subtitleConfigs.isEmpty()) {
+            if (subtitleConfigs.isEmpty()) {
                 hlsSource
             } else {
                 val subSources = subtitleConfigs.map { subConfig ->
@@ -1220,10 +1216,20 @@ class CinePlayerManager(context: Context) {
                 }
                 MergingMediaSource(hlsSource, *subSources.toTypedArray())
             }
-            player.setMediaSource(finalSource, safeStart)
         } else {
-            player.setMediaItem(mediaItemBuilder.build(), safeStart)
+            mediaSourceFactory.createMediaSource(mediaItemBuilder.build())
         }
+
+        val syncMediaSource = AudioSyncMediaSource(
+            mediaSource = baseMediaSource,
+            audioDelayUsProvider = { audioDelayUs.get() }
+        )
+        val effectiveStartMs = AudioDelayMath.computeRealignSeekPositionMs(
+            currentPositionMs = safeStart,
+            audioDelayMs = _state.value.audioDelayMs
+        )
+        cancelPendingAudioDelayRealign()
+        player.setMediaSource(syncMediaSource, effectiveStartMs)
         player.prepare()
         setVolumePercent(_state.value.volumePercent)
         player.playWhenReady = autoPlay
@@ -1438,6 +1444,7 @@ class CinePlayerManager(context: Context) {
      * and releases native audio DSP effects before navigating back to HomeScreen.
      */
     fun stopAndTrimBuffers() {
+        cancelPendingAudioDelayRealign()
         syncPlaybackProgress()
         parallelPrefetchManager.resetSession()
         player.playWhenReady = false
@@ -1473,9 +1480,16 @@ class CinePlayerManager(context: Context) {
     }
 
     fun seekTo(positionMs: Long) {
+        cancelPendingAudioDelayRealign()
         val clamped = positionMs.coerceAtLeast(0L)
+        val effectiveSeekMs = AudioDelayMath.computeRealignSeekPositionMs(
+            currentPositionMs = clamped,
+            audioDelayMs = _state.value.audioDelayMs,
+            durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+        )
         frameDropAnalyzer.markSeekOrTransition(SystemClock.elapsedRealtime())
-        player.seekTo(clamped)
+        player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+        player.seekTo(effectiveSeekMs)
         _progressState.update { it.copy(currentPositionMs = clamped) }
     }
 
@@ -1559,20 +1573,86 @@ class CinePlayerManager(context: Context) {
         _state.update { it.copy(subtitlesDisabled = subtitleLangCode.equals("off", ignoreCase = true)) }
     }
 
-    fun setAudioDelayMs(delayMs: Long) {
+    fun setAudioDelayMs(
+        delayMs: Long,
+        realignPlayback: Boolean = true,
+        debounceMs: Long = 0L
+    ) {
         val clamped = AudioDelayMath.clampDelayMs(delayMs)
-        delayAudioProcessor.setDelayMs(clamped)
+        val previous = _state.value.audioDelayMs
+        audioDelayUs.set(clamped * 1_000L)
         _state.update { it.copy(audioDelayMs = clamped) }
+        if (realignPlayback && clamped != previous) {
+            scheduleAudioDelayRealign(targetDelayMs = clamped, debounceMs = debounceMs)
+        }
     }
 
     fun adjustAudioDelayMs(deltaMs: Long): Long {
         val next = AudioDelayMath.clampDelayMs(_state.value.audioDelayMs + deltaMs)
-        setAudioDelayMs(next)
+        setAudioDelayMs(next, realignPlayback = true, debounceMs = 180L)
         return next
     }
 
     fun resetAudioDelayMs() {
-        setAudioDelayMs(0L)
+        setAudioDelayMs(0L, realignPlayback = true, debounceMs = 0L)
+    }
+
+    private fun cancelPendingAudioDelayRealign() {
+        pendingAudioDelayRealign?.let { mainHandler.removeCallbacks(it) }
+        pendingAudioDelayRealign = null
+        pendingAudioRealignAnchorMs = null
+    }
+
+    /**
+     * Performs an in-buffer exact micro-seek so [AudioSyncMediaSource] flushes `AudioSink` and
+     * applies the updated audio timestamp offset immediately (even for fine ±25ms/±50ms changes
+     * below DefaultAudioSink's 200ms discontinuity threshold) across HLS muxed/demuxed segments,
+     * DASH, MKV, MP4, PCM, FFmpeg, and HDMI passthrough without reloading the stream.
+     */
+    private fun scheduleAudioDelayRealign(targetDelayMs: Long, debounceMs: Long) {
+        pendingAudioDelayRealign?.let { mainHandler.removeCallbacks(it) }
+        pendingAudioDelayRealign = null
+
+        if (!hasLoadedMedia() ||
+            player.playbackState == Player.STATE_IDLE ||
+            player.playbackState == Player.STATE_ENDED
+        ) {
+            return
+        }
+
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val anchorMs = if (pendingAudioRealignAnchorMs != null &&
+            (nowElapsed - pendingAudioRealignSetAtMs) < 2_500L
+        ) {
+            pendingAudioRealignAnchorMs!!
+        } else {
+            player.currentPosition.coerceAtLeast(0L).also {
+                pendingAudioRealignAnchorMs = it
+                pendingAudioRealignSetAtMs = nowElapsed
+            }
+        }
+
+        val realignAction = Runnable {
+            pendingAudioDelayRealign = null
+            if (!hasLoadedMedia()) return@Runnable
+            if (player.isCurrentMediaItemLive && !player.isCurrentMediaItemSeekable) return@Runnable
+            val seekTargetMs = AudioDelayMath.computeRealignSeekPositionMs(
+                currentPositionMs = anchorMs,
+                audioDelayMs = targetDelayMs,
+                durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+            )
+            frameDropAnalyzer.markSeekOrTransition(SystemClock.elapsedRealtime())
+            player.setSeekParameters(SeekParameters.EXACT)
+            player.seekTo(seekTargetMs)
+            player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+        }
+
+        if (debounceMs > 0L) {
+            pendingAudioDelayRealign = realignAction
+            mainHandler.postDelayed(realignAction, debounceMs)
+        } else {
+            realignAction.run()
+        }
     }
 
     fun selectSubtitleTrack(option: TrackOption) {
@@ -1623,6 +1703,7 @@ class CinePlayerManager(context: Context) {
     }
 
     fun release() {
+        cancelPendingAudioDelayRealign()
         parallelPrefetchManager.release()
         volumeBooster.release()
         player.removeAnalyticsListener(analyticsListener)

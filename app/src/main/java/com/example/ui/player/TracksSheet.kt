@@ -61,6 +61,16 @@ import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import com.example.R
 import com.example.model.AbLoopState
 import com.example.model.ChapterMarker
@@ -72,6 +82,7 @@ import com.example.player.AudioDelayMath
 import com.example.player.DecoderFallbackHelper
 import com.example.player.NetworkTransportMode
 import com.example.player.PlayerStatsFormatter
+import com.example.player.SyncTimeUnit
 import com.example.player.VideoDecoderMode
 import com.example.ui.components.formatDuration
 import com.example.ui.components.tvFocusHighlight
@@ -93,6 +104,7 @@ fun TracksSheet(
     onSetVolumePercent: (Int) -> Unit = {},
     audioDelayMs: Long = 0L,
     onAdjustAudioDelay: (Long) -> Unit = {},
+    onSetAudioDelay: ((Long) -> Unit)? = null,
     onResetAudioDelay: () -> Unit = {},
     isTv: Boolean = false,
     backgroundAudioEnabled: Boolean = false,
@@ -361,6 +373,20 @@ fun TracksSheet(
                             Text("+50ms", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                     }
+
+                    SyncOffsetNumericInputRow(
+                        currentOffsetMs = audioDelayMs,
+                        testTagPrefix = "tracks_audio_delay",
+                        defaultUnit = SyncTimeUnit.MILLISECONDS,
+                        hintDirection = "− earlier · + later",
+                        onApplyOffsetMs = { targetMs ->
+                            if (onSetAudioDelay != null) {
+                                onSetAudioDelay(targetMs)
+                            } else {
+                                onAdjustAudioDelay(targetMs - audioDelayMs)
+                            }
+                        }
+                    )
                 }
             }
 
@@ -1184,3 +1210,207 @@ private fun TrackSelectionRow(
         }
     }
 }
+
+/**
+ * Reusable direct numeric input control for Audio Sync and Subtitle Sync supporting both
+ * milliseconds (ms) and seconds (s), with an explicit ± sign toggle so negative delays are
+ * effortless on every phone and Android TV keyboard.
+ */
+@Composable
+internal fun SyncOffsetNumericInputRow(
+    currentOffsetMs: Long,
+    testTagPrefix: String,
+    defaultUnit: SyncTimeUnit,
+    hintDirection: String,
+    onApplyOffsetMs: (Long) -> Unit
+) {
+    var selectedUnit by remember { mutableStateOf(defaultUnit) }
+    var inputText by remember {
+        mutableStateOf(
+            if (currentOffsetMs == 0L) "" else AudioDelayMath.formatNumericInput(currentOffsetMs, defaultUnit)
+        )
+    }
+    var showInvalidError by remember { mutableStateOf(false) }
+
+    LaunchedEffect(currentOffsetMs) {
+        inputText = if (currentOffsetMs == 0L) {
+            ""
+        } else {
+            AudioDelayMath.formatNumericInput(currentOffsetMs, selectedUnit)
+        }
+        showInvalidError = false
+    }
+
+    val submitValue = {
+        val parsed = AudioDelayMath.parseDelayInputMs(inputText, selectedUnit)
+        if (parsed != null) {
+            showInvalidError = false
+            onApplyOffsetMs(parsed)
+        } else {
+            showInvalidError = true
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SyncTimeUnit.entries.forEach { unit ->
+                    val isSelected = selectedUnit == unit
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = {
+                            if (selectedUnit != unit) {
+                                val parsedCurrent = AudioDelayMath.parseDelayInputMs(inputText, selectedUnit)
+                                selectedUnit = unit
+                                if (parsedCurrent != null) {
+                                    inputText = AudioDelayMath.formatNumericInput(parsedCurrent, unit)
+                                }
+                                showInvalidError = false
+                            }
+                        },
+                        label = {
+                            Text(
+                                text = unit.label,
+                                fontFamily = JetBrainsMonoFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        },
+                        modifier = Modifier
+                            .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
+                            .testTag("${testTagPrefix}_unit_${unit.label}"),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CinemaAmber.copy(alpha = 0.22f),
+                            selectedLabelColor = CinemaAmber
+                        )
+                    )
+                }
+            }
+            Text(
+                text = hintDirection,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OutlinedButton(
+                onClick = {
+                    val trimmed = inputText.trim()
+                    inputText = when {
+                        trimmed.startsWith("-") -> trimmed.removePrefix("-")
+                        trimmed.startsWith("+") -> "-${trimmed.removePrefix("+")}"
+                        trimmed.isEmpty() -> "-"
+                        else -> "-$trimmed"
+                    }
+                    showInvalidError = false
+                },
+                modifier = Modifier
+                    .width(48.dp)
+                    .height(52.dp)
+                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                    .testTag("${testTagPrefix}_sign_toggle"),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, ObsidianOutline),
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Text(
+                    text = "±",
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+
+            OutlinedTextField(
+                value = inputText,
+                onValueChange = {
+                    inputText = it
+                    showInvalidError = false
+                },
+                placeholder = {
+                    Text(
+                        text = if (selectedUnit == SyncTimeUnit.MILLISECONDS) {
+                            "e.g. 250 or -150"
+                        } else {
+                            "e.g. 1.5 or -0.5"
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                suffix = {
+                    Text(
+                        text = selectedUnit.label,
+                        fontFamily = JetBrainsMonoFamily,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = CinemaAmber
+                    )
+                },
+                singleLine = true,
+                isError = showInvalidError,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Decimal,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(onDone = { submitValue() }),
+                modifier = Modifier
+                    .weight(1f)
+                    .tvFocusHighlight(
+                        shape = RoundedCornerShape(12.dp),
+                        focusedScale = 1.01f,
+                        glowAlpha = 0.12f,
+                        includeChildFocus = true
+                    )
+                    .testTag("${testTagPrefix}_input"),
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Button(
+                onClick = submitValue,
+                enabled = inputText.isNotBlank(),
+                modifier = Modifier
+                    .height(52.dp)
+                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                    .testTag("${testTagPrefix}_apply"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CinemaAmber,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.sync_apply_label),
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        }
+
+        if (showInvalidError) {
+            Text(
+                text = stringResource(R.string.sync_invalid_number),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag("${testTagPrefix}_error")
+            )
+        }
+    }
+}
+

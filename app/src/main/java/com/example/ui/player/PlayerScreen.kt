@@ -84,6 +84,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import com.example.data.OfflineDownloadEntity
 import com.example.model.AbLoopState
 import com.example.model.AspectRatioMode
 import com.example.model.ChapterMarker
@@ -224,7 +225,13 @@ fun PlayerScreen(
     onSkipIntro: () -> Unit = {},
     isFavorited: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
+    activeDownload: OfflineDownloadEntity? = null,
+    activeDownloadSpeedBps: Long = 0L,
     onDownloadStream: (() -> Unit)? = null,
+    onPauseDownload: ((Long) -> Unit)? = null,
+    onResumeDownload: ((Long) -> Unit)? = null,
+    onCancelDownload: ((Long) -> Unit)? = null,
+    onOpenDownloads: (() -> Unit)? = null,
     secondarySubtitleState: SecondarySubtitleUiState = SecondarySubtitleUiState(),
     onLoadSecondarySubtitleFile: (Uri) -> Unit = {},
     onLoadSecondarySubtitleUrl: (String) -> Unit = {},
@@ -834,7 +841,7 @@ fun PlayerScreen(
                         start = tvOverscanHorizontal,
                         end = tvOverscanHorizontal,
                         top = if (controlsVisible && !isLocked) {
-                            if (isTv) 64.dp else 62.dp
+                            if (isTv) 64.dp else 108.dp
                         } else {
                             tvOverscanVertical
                         }
@@ -938,7 +945,7 @@ fun PlayerScreen(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
-                    .padding(top = if (controlsVisible && !isLocked) 66.dp else 18.dp)
+                    .padding(top = if (controlsVisible && !isLocked) { if (isTv) 66.dp else 108.dp } else 18.dp)
             )
         }
 
@@ -949,7 +956,7 @@ fun PlayerScreen(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
-                    .padding(end = tvOverscanHorizontal, top = 66.dp)
+                    .padding(end = tvOverscanHorizontal, top = if (isTv) 66.dp else 108.dp)
             )
         }
 
@@ -1107,7 +1114,9 @@ fun PlayerScreen(
                         isFavorited = isFavorited,
                         onToggleFavorite = onToggleFavorite,
                         canDownload = !isTv && session != null && !session.isLocalFile,
+                        activeDownload = activeDownload,
                         onDownloadStream = onDownloadStream,
+                        onOpenDownloads = onOpenDownloads,
                         sleepTimerBadge = sleepTimerState.compactBadge(),
                         hasM3uZapping = m3uEntries.size >= 2,
                         onChannelPrev = if (m3uEntries.size >= 2) { { onZapChannel(-1) } } else null,
@@ -1377,6 +1386,19 @@ fun PlayerScreen(
             onJumpToChapter = { ch ->
                 showTracksSheet = false
                 onJumpToChapter(ch)
+            },
+            canDownload = !isTv && session != null && !session.isLocalFile,
+            activeDownload = activeDownload,
+            activeDownloadSpeedBps = activeDownloadSpeedBps,
+            onDownloadStream = onDownloadStream,
+            onPauseDownload = onPauseDownload,
+            onResumeDownload = onResumeDownload,
+            onCancelDownload = onCancelDownload,
+            onOpenDownloads = onOpenDownloads?.let { openDownloads ->
+                {
+                    showTracksSheet = false
+                    openDownloads()
+                }
             },
             onDismiss = { showTracksSheet = false },
             onSelectVideoTrack = onSelectVideoTrack,

@@ -1,12 +1,12 @@
-# Memory Management, APK Sizing & Android TV Optimization (v1.31)
+# Memory Management, APK Sizing & Android TV Optimization (v1.32)
 
-CineStream v1.31 is engineered to run stall-free with **zero `OutOfMemoryError` crashes** on **32-bit Android 9 TVs** (1 GB RAM, `80 MB` default heap / `384 MB` `largeHeap`) while supporting **37+ Mbps 4K 10-bit HDR10 playback** on modern 64-bit smartphones—all from one compact R8-shrunk universal APK (`cinistream-v31.apk`).
+CineStream v1.32 is engineered to run stall-free with **zero `OutOfMemoryError` crashes** on **32-bit Android 9 TVs** (1 GB RAM, `80 MB` default heap / `384 MB` `largeHeap`) while supporting **37+ Mbps 4K 10-bit HDR10 playback** on modern 64-bit smartphones—all from one compact R8-shrunk universal APK (`cinistream-v32.apk`).
 
 ---
 
-## 1. Root Causes of TV Buffering & OOMs (and How v1.31 Solves Them)
+## 1. Root Causes of TV Buffering & OOMs (and How v1.32 Solves Them)
 
-| Bottleneck | Stock Default Behavior | CineStream v1.31 Fix |
+| Bottleneck | Stock Default Behavior | CineStream v1.32 Fix |
 | :--- | :--- | :--- |
 | **1. Unbounded ExoPlayer Heap Buffers** | `DefaultLoadControl` buffers 50s up to **137.5 MB** on Java Heap—guaranteed OOM on 80 MB heaps. | Dynamic heap-capped `LoadControl` (`20%` of `maxMemory`, clamped **12–40 MB**), 20–45s window, `prioritizeTimeOverSizeThresholds = false`, `DefaultAllocator(trimOnReset = true)` + explicit `allocator.trim()`. |
 | **2. `largeHeap` Disabled** | 32-bit Android 9 TVs cap apps at `80 MB` by default. | Enabled `android:largeHeap="true"` in `AndroidManifest.xml` (`384 MB` ceiling). |
@@ -39,8 +39,8 @@ CineStream v1.31 is engineered to run stall-free with **zero `OutOfMemoryError` 
 
 ## 3. Universal APK Size Engineering (20 MB — `app/build.gradle.kts` & `app/proguard-rules.pro`)
 
-CineStream packs Media3 `1.11.1`, NextLib FFmpeg (`libffmpeg`), embedded WireGuard (`libwg-go.so`), Room v3, Compose M3, and bundled **Fraunces + DM Sans + JetBrains Mono** fonts into a single **20 MB** universal APK via six deliberate optimizations:
-1. **R8 Code & Resource Shrinking (`isMinifyEnabled = true`, `isShrinkResources = true` on `release` & `sideload`):** Removes dead DEX classes and unused resources for compact release/sideload APKs while `app/proguard-rules.pro` preserves NextLib JNI symbols, WireGuard `GoBackend` callbacks, Media3 reflection factories, Play Services Cronet, Room v3, and `com.example.model.**`. The `debug` buildType remains unminified for fast incremental preview builds and clean Compose tooling.
+CineStream packs Media3 `1.11.1`, NextLib FFmpeg (`libffmpeg`), embedded WireGuard (`libwg-go.so`), Room v4, Compose M3, and bundled **Fraunces + DM Sans + JetBrains Mono** fonts into a single **19 MB** universal APK via six deliberate optimizations:
+1. **R8 Code & Resource Shrinking (`isMinifyEnabled = true`, `isShrinkResources = true` on `release` & `sideload`):** Removes dead DEX classes and unused resources for compact release/sideload APKs while `app/proguard-rules.pro` preserves NextLib JNI symbols, WireGuard `GoBackend` callbacks, Media3 reflection factories, Play Services Cronet, Room v4, and `com.example.model.**`. The `debug` buildType remains unminified for fast incremental preview builds and clean Compose tooling.
 2. **Targeted ABIs (`ndk.abiFilters`):** Includes `arm64-v8a` (modern phones), `armeabi-v7a` (32-bit Android TVs), and `x86_64` (emulators), excluding obsolete 32-bit `x86`.
 3. **Compressed Native Libraries (`packaging.jniLibs.useLegacyPackaging = true`):** Compresses `.so` binaries inside the APK, saving ~21 MB.
 4. **WireGuard CLI Stripping (`excludes += setOf("**/libwg-quick.so", "**/libwg.so")`):** CineStream uses `GoBackend` (`libwg-go.so`), so root-only CLI binaries are stripped cleanly.

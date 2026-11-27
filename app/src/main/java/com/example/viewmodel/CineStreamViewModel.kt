@@ -67,6 +67,7 @@ import com.example.model.SleepTimerMode
 import com.example.model.SleepTimerUiState
 import com.example.model.UpNextCountdownState
 import com.example.player.CredentialVault
+import com.example.player.DownloadQualityOption
 import com.example.player.LocalNetworkClient
 import com.example.player.NetworkBrowserItem
 import com.example.player.OfflineDownloadManager
@@ -139,6 +140,17 @@ sealed class CineNavigationEvent {
     data object OpenM3uSheet : CineNavigationEvent()
     data object OpenJsonSheet : CineNavigationEvent()
 }
+
+data class DownloadQualityPickerState(
+    val isOpen: Boolean = false,
+    val isLoading: Boolean = false,
+    val title: String = "",
+    val sourceUrl: String = "",
+    val format: StreamFormat = StreamFormat.AUTO,
+    val posterUrl: String? = null,
+    val headers: Map<String, String> = emptyMap(),
+    val options: List<DownloadQualityOption> = emptyList()
+)
 
 class CineStreamViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -290,6 +302,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         initialValue = emptyList()
     )
 
+    val downloadSpeeds: StateFlow<Map<Long, Long>> = offlineDownloadManager.downloadSpeeds
+
     val networkServers: StateFlow<List<NetworkServerEntity>> = networkServerDao.observeServers().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -356,6 +370,11 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _webRemoteState = MutableStateFlow(WebRemoteUiState())
     val webRemoteState: StateFlow<WebRemoteUiState> = _webRemoteState.asStateFlow()
+
+    private val _downloadQualityPickerState = MutableStateFlow(DownloadQualityPickerState())
+    val downloadQualityPickerState: StateFlow<DownloadQualityPickerState> = _downloadQualityPickerState.asStateFlow()
+
+    private var qualityProbeJob: Job? = null
 
     private val _navEvents = MutableSharedFlow<CineNavigationEvent>(extraBufferCapacity = 4)
     val navEvents: SharedFlow<CineNavigationEvent> = _navEvents.asSharedFlow()
@@ -3012,24 +3031,188 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.update { it.copy(toastMessage = "Already playing from local storage") }
             return
         }
-        offlineDownloadManager.enqueueDownload(
+        val existing = offlineDownloads.value.firstOrNull {
+            it.sourceUrl.equals(session.sourceUri.trim(), ignoreCase = true)
+        }
+        if (existing != null) {
+            if (existing.status == OfflineDownloadManager.STATUS_DOWNLOADING ||
+                existing.status == OfflineDownloadManager.STATUS_QUEUED
+            ) {
+                _uiState.update {
+                    it.copy(toastMessage = "Downloading \"${session.title}\" (${existing.progressPercent}%)")
+                }
+                return
+            }
+            if (existing.status == OfflineDownloadManager.STATUS_PAUSED ||
+                existing.status == OfflineDownloadManager.STATUS_FAILED
+            ) {
+                resumeOfflineDownload(existing.id, session.headers)
+                return
+            }
+            if (existing.status == OfflineDownloadManager.STATUS_COMPLETED &&
+                existing.localFilePath.isNotBlank() && File(existing.localFilePath).exists()
+            ) {
+                _uiState.update { it.copy(toastMessage = "Already saved for offline playback") }
+                return
+            }
+        }
+        val durationMs = runCatching { playerManager.player.duration.takeIf { it > 0L } ?: 0L }.getOrDefault(0L)
+        requestDownloadWithOptionalQualityCheck(
             title = session.title,
-            sourceUrl = session.sourceUri,
+            url = session.sourceUri,
             format = session.format,
             posterUrl = session.posterUrl,
-            headers = session.headers
+            headers = session.headers,
+            durationMs = durationMs
         )
-        _uiState.update { it.copy(toastMessage = "Downloading \"${session.title}\" for offline playback") }
     }
 
     fun startOfflineDownload(
         title: String,
         url: String,
         format: StreamFormat = StreamFormat.AUTO,
-        posterUrl: String? = null
+        posterUrl: String? = null,
+        headers: Map<String, String> = emptyMap()
     ) {
-        offlineDownloadManager.enqueueDownload(title, url, format, posterUrl)
-        _uiState.update { it.copy(toastMessage = "Queued offline download: $title") }
+        val existing = offlineDownloads.value.firstOrNull {
+            it.sourceUrl.equals(url.trim(), ignoreCase = true)
+        }
+        if (existing != null &&
+            (existing.status == OfflineDownloadManager.STATUS_PAUSED ||
+                existing.status == OfflineDownloadManager.STATUS_FAILED)
+        ) {
+            resumeOfflineDownload(existing.id, headers)
+            return
+        }
+        requestDownloadWithOptionalQualityCheck(
+            title = title,
+            url = url,
+            format = format,
+            posterUrl = posterUrl,
+            headers = headers,
+            durationMs = 0L
+        )
+    }
+
+    private fun requestDownloadWithOptionalQualityCheck(
+        title: String,
+        url: String,
+        format: StreamFormat,
+        posterUrl: String?,
+        headers: Map<String, String>,
+        durationMs: Long
+    ) {
+        val trimmedUrl = url.trim()
+        val pathLower = trimmedUrl.substringBefore('?').substringBefore('#').lowercase()
+        val isKnownProgressiveExt = pathLower.endsWith(".mp4") ||
+            pathLower.endsWith(".mkv") ||
+            pathLower.endsWith(".webm") ||
+            pathLower.endsWith(".avi") ||
+            pathLower.endsWith(".mov") ||
+            pathLower.endsWith(".m4v") ||
+            pathLower.endsWith(".ts") ||
+            pathLower.endsWith(".mp3") ||
+            pathLower.endsWith(".flac") ||
+            pathLower.endsWith(".m4a") ||
+            pathLower.endsWith(".ogg") ||
+            pathLower.endsWith(".wav")
+        val activeSessionMatches = _uiState.value.activeSession?.sourceUri?.trim()
+            .equals(trimmedUrl, ignoreCase = true)
+        val pState = playerManager.state.value
+        val activeHasMultipleTracks = activeSessionMatches &&
+            (pState.videoTracks.size >= 2 || pState.audioTracks.size >= 2)
+        val isHlsCandidate = format == StreamFormat.HLS ||
+            format == StreamFormat.M3U8 ||
+            trimmedUrl.contains(".m3u8", ignoreCase = true) ||
+            (format == StreamFormat.AUTO && !isKnownProgressiveExt) ||
+            activeHasMultipleTracks
+
+        if (!isHlsCandidate) {
+            offlineDownloadManager.enqueueDownload(title, trimmedUrl, format, posterUrl, headers)
+            _uiState.update { it.copy(toastMessage = "Downloading \"$title\" for offline playback") }
+            return
+        }
+
+        qualityProbeJob?.cancel()
+        _downloadQualityPickerState.value = DownloadQualityPickerState(
+            isOpen = true,
+            isLoading = true,
+            title = title,
+            sourceUrl = trimmedUrl,
+            format = format,
+            posterUrl = posterUrl,
+            headers = headers,
+            options = emptyList()
+        )
+        qualityProbeJob = viewModelScope.launch {
+            val options = offlineDownloadManager.inspectHlsQualities(
+                sourceUrl = trimmedUrl,
+                headers = headers,
+                durationMs = durationMs
+            )
+            // Only proceed if user hasn't dismissed the sheet while probing
+            if (!_downloadQualityPickerState.value.isOpen) return@launch
+            if (options.size >= 2) {
+                _downloadQualityPickerState.update {
+                    it.copy(isLoading = false, options = options)
+                }
+            } else {
+                _downloadQualityPickerState.value = DownloadQualityPickerState()
+                offlineDownloadManager.enqueueDownload(
+                    title = title,
+                    sourceUrl = trimmedUrl,
+                    format = format,
+                    posterUrl = posterUrl,
+                    headers = headers,
+                    selectedQuality = options.firstOrNull()
+                )
+                _uiState.update { it.copy(toastMessage = "Downloading \"$title\" for offline playback") }
+            }
+        }
+    }
+
+    fun confirmDownloadQuality(option: DownloadQualityOption) {
+        val state = _downloadQualityPickerState.value
+        if (!state.isOpen || state.sourceUrl.isBlank()) return
+        qualityProbeJob?.cancel()
+        _downloadQualityPickerState.value = DownloadQualityPickerState()
+        offlineDownloadManager.enqueueDownload(
+            title = state.title,
+            sourceUrl = state.sourceUrl,
+            format = state.format,
+            posterUrl = state.posterUrl,
+            headers = state.headers,
+            selectedQuality = option
+        )
+        _uiState.update {
+            it.copy(toastMessage = "Downloading \"${state.title}\" (${option.label})")
+        }
+    }
+
+    fun dismissDownloadQualityPicker() {
+        qualityProbeJob?.cancel()
+        _downloadQualityPickerState.value = DownloadQualityPickerState()
+    }
+
+    fun pauseOfflineDownload(downloadId: Long) {
+        offlineDownloadManager.pauseDownload(downloadId)
+        _uiState.update { it.copy(toastMessage = "Download paused — progress saved") }
+    }
+
+    fun resumeOfflineDownload(downloadId: Long, headers: Map<String, String> = emptyMap()) {
+        offlineDownloadManager.resumeDownload(downloadId, headers)
+        _uiState.update { it.copy(toastMessage = "Resuming download from saved progress") }
+    }
+
+    fun downloadNetworkBrowserItem(item: NetworkBrowserItem) {
+        if (item.isFolder || item.playbackUrl.isBlank()) return
+        startOfflineDownload(
+            title = item.name,
+            url = item.playbackUrl,
+            format = item.format,
+            posterUrl = item.posterUrl,
+            headers = item.requestHeaders
+        )
     }
 
     fun cancelOfflineDownload(downloadId: Long) {
@@ -3069,7 +3252,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // ==================== V1.24: LOCAL NETWORK (WEBDAV / JELLYFIN) ====================
+    // ==================== V1.24–V1.32: MULTI-ACCOUNT WEBDAV & JELLYFIN ====================
 
     fun addNetworkServer(
         name: String,
@@ -3079,22 +3262,112 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         secret: String
     ) {
         val cleanUrl = LocalNetworkClient.normalizeBaseUrl(baseUrl)
-        if (!cleanUrl.startsWith("http://", true) && !cleanUrl.startsWith("https://", true)) {
-            _localNetworkState.update { it.copy(errorMessage = "Enter a valid server URL (e.g. http://192.168.1.10:8096)") }
+        if (cleanUrl.isBlank()) {
+            _localNetworkState.update {
+                it.copy(errorMessage = "Enter a valid http:// or https:// server URL (e.g. https://webdav.torbox.app/)")
+            }
             return
         }
-        val displayName = name.trim().ifBlank { cleanUrl.substringAfter("://").substringBefore("/") }
+        val cleanUser = username.trim()
+        val hostFallback = cleanUrl.substringAfter("://").substringBefore("/")
+        val displayName = name.trim().ifBlank {
+            if (cleanUser.isNotBlank()) "$hostFallback ($cleanUser)" else hostFallback
+        }
         viewModelScope.launch {
             val entity = NetworkServerEntity(
                 name = displayName,
                 serverType = serverType.uppercase(),
                 baseUrl = cleanUrl,
-                usernameEnc = CredentialVault.encrypt(username.trim()),
-                secretEnc = CredentialVault.encrypt(secret.trim())
+                usernameEnc = CredentialVault.encrypt(cleanUser),
+                // Preserve password byte-for-byte without trimming special chars or edge spaces
+                secretEnc = CredentialVault.encrypt(secret)
             )
             val id = networkServerDao.upsert(entity)
             _uiState.update { it.copy(toastMessage = "Saved $displayName (${serverType.uppercase()})") }
             openNetworkServer(entity.copy(id = id))
+        }
+    }
+
+    fun updateNetworkServer(
+        serverId: Long,
+        name: String,
+        serverType: String,
+        baseUrl: String,
+        username: String,
+        secret: String,
+        keepExistingSecretIfBlank: Boolean = true
+    ) {
+        val cleanUrl = LocalNetworkClient.normalizeBaseUrl(baseUrl)
+        if (cleanUrl.isBlank()) {
+            _localNetworkState.update {
+                it.copy(errorMessage = "Enter a valid http:// or https:// server URL (e.g. https://webdav.torbox.app/)")
+            }
+            return
+        }
+        val existing = networkServers.value.firstOrNull { it.id == serverId } ?: return
+        val cleanUser = username.trim()
+        val hostFallback = cleanUrl.substringAfter("://").substringBefore("/")
+        val displayName = name.trim().ifBlank {
+            if (cleanUser.isNotBlank()) "$hostFallback ($cleanUser)" else hostFallback
+        }
+        val encryptedSecret = if (secret.isEmpty() && keepExistingSecretIfBlank) {
+            existing.secretEnc
+        } else {
+            CredentialVault.encrypt(secret)
+        }
+        viewModelScope.launch {
+            val updated = existing.copy(
+                name = displayName,
+                serverType = serverType.uppercase(),
+                baseUrl = cleanUrl,
+                usernameEnc = CredentialVault.encrypt(cleanUser),
+                secretEnc = encryptedSecret
+            )
+            networkServerDao.update(updated)
+            _uiState.update { it.copy(toastMessage = "Updated $displayName") }
+            openNetworkServer(updated)
+        }
+    }
+
+    fun testNetworkServerConnection(
+        serverType: String,
+        baseUrl: String,
+        username: String,
+        secret: String
+    ) {
+        viewModelScope.launch {
+            _localNetworkState.update {
+                it.copy(
+                    isTestingConnection = true,
+                    connectionTestMessage = null,
+                    connectionTestSuccess = null,
+                    errorMessage = null
+                )
+            }
+            val result = localNetworkClient.testConnection(
+                baseUrl = baseUrl,
+                serverType = serverType,
+                username = username.trim(),
+                secret = secret
+            )
+            _localNetworkState.update {
+                it.copy(
+                    isTestingConnection = false,
+                    connectionTestMessage = result.message,
+                    connectionTestSuccess = result.isSuccess
+                )
+            }
+        }
+    }
+
+    fun clearNetworkConnectionTest() {
+        _localNetworkState.update {
+            it.copy(
+                isTestingConnection = false,
+                connectionTestMessage = null,
+                connectionTestSuccess = null,
+                errorMessage = null
+            )
         }
     }
 
@@ -3104,7 +3377,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             if (_localNetworkState.value.activeServer?.id == serverId) {
                 _localNetworkState.value = LocalNetworkUiState()
             }
-            _uiState.update { it.copy(toastMessage = "Removed network server") }
+            _uiState.update { it.copy(toastMessage = "Removed network account") }
         }
     }
 
@@ -3124,6 +3397,23 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 )
             }
         }
+    }
+
+    fun refreshNetworkFolder() {
+        val state = _localNetworkState.value
+        val server = state.activeServer ?: return
+        val currentTarget = state.breadcrumbPath.lastOrNull()?.second?.ifBlank { null }
+        viewModelScope.launch {
+            _localNetworkState.update { it.copy(isLoading = true, errorMessage = null) }
+            val res = localNetworkClient.browse(server, folderPathOrId = currentTarget)
+            _localNetworkState.update {
+                it.copy(items = res.items, isLoading = false, errorMessage = res.errorMessage)
+            }
+        }
+    }
+
+    fun closeActiveNetworkServer() {
+        _localNetworkState.value = LocalNetworkUiState()
     }
 
     fun browseNetworkFolder(item: NetworkBrowserItem) {
@@ -3172,7 +3462,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 sourceUri = item.playbackUrl,
                 format = item.format,
                 isLocalFile = false,
-                initialSubtitles = emptyList(),
+                initialSubtitles = item.siblingSubtitles,
                 posterUrl = item.posterUrl,
                 headers = item.requestHeaders
             )

@@ -212,9 +212,9 @@ class AudioSyncNumericInputTest {
     }
 
     @Test
-    fun buildConfig_matchesVersion31() {
-        assertEquals(31, BuildConfig.VERSION_CODE)
-        assertEquals("1.31", BuildConfig.VERSION_NAME)
+    fun buildConfig_matchesVersion35() {
+        assertEquals(35, BuildConfig.VERSION_CODE)
+        assertEquals("1.35", BuildConfig.VERSION_NAME)
     }
 
     private fun createStubAudioSink(positionUsProvider: () -> Long): AudioSink =

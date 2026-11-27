@@ -170,8 +170,8 @@ class BrightnessControlTest {
     }
 
     @Test
-    fun buildConfig_matchesVersion30() {
-        assertEquals(31, BuildConfig.VERSION_CODE)
-        assertEquals("1.31", BuildConfig.VERSION_NAME)
+    fun buildConfig_matchesVersion35() {
+        assertEquals(35, BuildConfig.VERSION_CODE)
+        assertEquals("1.35", BuildConfig.VERSION_NAME)
     }
 }

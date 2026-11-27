@@ -7,6 +7,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Entity(
@@ -72,6 +73,9 @@ interface OfflineDownloadDao {
     @Query("SELECT * FROM offline_downloads ORDER BY createdAt DESC")
     fun observeDownloads(): Flow<List<OfflineDownloadEntity>>
 
+    @Query("SELECT * FROM offline_downloads")
+    suspend fun getAllOnce(): List<OfflineDownloadEntity>
+
     @Query("SELECT * FROM offline_downloads WHERE sourceUrl = :sourceUrl LIMIT 1")
     suspend fun getBySourceUrl(sourceUrl: String): OfflineDownloadEntity?
 
@@ -101,7 +105,7 @@ interface OfflineDownloadDao {
 
 @Entity(
     tableName = "network_servers",
-    indices = [Index(value = ["baseUrl", "serverType"], unique = true)]
+    indices = [Index(value = ["baseUrl", "serverType"], unique = false)]
 )
 data class NetworkServerEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0L,
@@ -120,6 +124,9 @@ interface NetworkServerDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: NetworkServerEntity): Long
+
+    @Update
+    suspend fun update(entity: NetworkServerEntity)
 
     @Query("DELETE FROM network_servers WHERE id = :id")
     suspend fun deleteById(id: Long)

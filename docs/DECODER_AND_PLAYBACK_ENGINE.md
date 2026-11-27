@@ -1,6 +1,6 @@
-# Decoder, Transport, VPN & Playback Engine Deep Dive (v1.31)
+# Decoder, Transport, VPN & Playback Engine Deep Dive (v1.32)
 
-CineStream v1.31 combines a self-healing **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp + Live-Streaming Parallel Prefetch + Embedded WireGuard NordLynx** networking stack with a hybrid **Hardware MediaCodec + NextLib Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Play Services Cronet (`18.1.1`)**, **NextLib (`1.11.1-0.16.0`)**, and **`com.wireguard.android:tunnel` (`GoBackend`)**.
+CineStream v1.32 combines a self-healing **HTTP/3 (QUIC) Cronet + HTTP/2 OkHttp + Live-Streaming Parallel Prefetch + Embedded WireGuard NordLynx** networking stack with a hybrid **Hardware MediaCodec + NextLib Native FFmpeg** playback pipeline built on **AndroidX Media3 (`1.11.1`)**, **Play Services Cronet (`18.1.1`)**, **NextLib (`1.11.1-0.16.0`)**, and **`com.wireguard.android:tunnel` (`GoBackend`)**. Authenticated WebDAV streams automatically route through `OkHttpDataSource` (stripping `Authorization` on cross-origin CDN redirects) and bypass unencrypted disk cache.
 
 ---
 

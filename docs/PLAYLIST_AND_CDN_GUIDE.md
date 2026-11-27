@@ -1,6 +1,6 @@
-# Playlists, Live TV EPG, NAS & Hybrid In-App CDN Guide (v1.31)
+# Playlists, Live TV EPG, WebDAV & Hybrid In-App CDN Guide (v1.32)
 
-CineStream v1.31 supports **Multi-JSON Movie & Multi-Season Series catalogs**, **M3U / M3U8 Live TV + XMLTV EPG guides**, **WebDAV & Jellyfin LAN streaming**, **Phone-to-TV Web Remote & Local Wi-Fi Sync**, automatic **IMDb metadata enrichment**, and a **5-Layer Hybrid In-App CDN & Transport Acceleration Engine**.
+CineStream v1.32 supports **Multi-JSON Movie & Multi-Season Series catalogs**, **M3U / M3U8 Live TV + XMLTV EPG guides**, **Multi-Account Cloud/LAN WebDAV (TorBox, Nextcloud, NAS) & Jellyfin streaming**, **Phone-to-TV Web Remote & Local Wi-Fi Sync**, automatic **IMDb metadata enrichment**, and a **5-Layer Hybrid In-App CDN & Transport Acceleration Engine**.
 
 ---
 
@@ -130,11 +130,12 @@ https://stream.example.com/news/master.m3u8
 
 ---
 
-## 4. Local Network Streaming (WebDAV & Jellyfin) (`LocalNetworkClient`)
+## 4. Multi-Account Cloud & LAN WebDAV / Jellyfin (`LocalNetworkClient`)
 
-- Add home NAS (**WebDAV** via `PROPFIND`) or **Jellyfin** servers from Home → **NAS · Jellyfin** (`LocalNetworkSheet`).
-- Credentials (passwords / Jellyfin API tokens) are encrypted via **Android Keystore AES-256-GCM** (`CredentialVault`) before persistence in Room v3 `network_servers`.
-- Supports directory drill-down, back navigation, and direct playback with inherited Basic Auth / Jellyfin token headers.
+- Open **WebDAV · NAS** from the Home screen (`LocalNetworkSheet`) to add, test, edit, delete, and switch between **unlimited WebDAV & Jellyfin accounts**—including multiple accounts sharing the exact same server URL (such as multiple TorBox accounts on `https://webdav.torbox.app/`, available via the 1-tap **TorBox WebDAV** preset chip).
+- All usernames, passwords, and Jellyfin API tokens are encrypted at rest via **Android Keystore AES-256-GCM** (`CredentialVault`) in **Room v4** (`network_servers`, non-unique `(baseUrl, serverType)` index) and are **never** hardcoded in the app or included in Wi-Fi/SAF sync snapshots.
+- **Special-Character & Redirect Safety:** Passwords are encoded byte-for-byte in UTF-8 HTTP Basic Auth (no trimming). `PROPFIND` follows same-origin `301`/`302`/`307`/`308` redirects while preserving `Depth: 1` and XML body, and automatically strips `Authorization` on cross-origin redirects—both during folder browsing and during ExoPlayer playback redirects to signed storage CDNs (via `OkHttpDataSource`). Authenticated WebDAV streams also bypass unencrypted `MediaEdgeCache` disk storage.
+- **Direct Playback & Sibling Subtitles:** Lists folders and all Media3 + NextLib FFmpeg playable formats (`.mp4`, `.mkv`, `.webm`, `.m3u8`, `.mpd`, `.ts`, `.mov`, `.avi`, `.flac`, `.mp3`, `.opus`, plus `video/*` & `audio/*` MIME types), shows file sizes, supports in-folder search + refresh + 1-tap account switching, and automatically attaches sibling `.srt`/`.vtt`/`.ass`/`.ssa`/`.ttml` subtitle files from the same WebDAV folder when playback starts.
 
 ---
 

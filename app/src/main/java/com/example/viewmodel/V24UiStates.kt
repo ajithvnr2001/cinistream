@@ -34,7 +34,10 @@ data class LocalNetworkUiState(
     val breadcrumbPath: List<Pair<String, String>> = emptyList(), // (label, pathOrParentId)
     val items: List<NetworkBrowserItem> = emptyList(),
     val isLoading: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isTestingConnection: Boolean = false,
+    val connectionTestMessage: String? = null,
+    val connectionTestSuccess: Boolean? = null
 )
 
 data class WebRemoteUiState(

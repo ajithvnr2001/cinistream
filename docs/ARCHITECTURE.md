@@ -1,6 +1,6 @@
-# CineStream Architecture & Codebase Guide (v1.31)
+# CineStream Architecture & Codebase Guide (v1.32)
 
-This document provides an end-to-end architectural reference for **CineStream v1.31** (`com.aistudio.cinestream.vqxkpm`), detailing how the app coordinates Jetpack Compose Material 3 UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp + WireGuard NordLynx networking, parallel HLS/range prefetching, Media3 + NextLib FFmpeg playback, `AudioSyncMediaSource` HLS-segment bidirectional audio sync, extraction-time HLS subtitle transcoding, Room v3 + Android Keystore persistence, and zero-OOM memory engineering across both phones and 32-bit Android TVs.
+This document provides an end-to-end architectural reference for **CineStream v1.32** (`com.aistudio.cinestream.vqxkpm`), detailing how the app coordinates Jetpack Compose Material 3 UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp + WireGuard NordLynx networking, parallel HLS/range prefetching, Media3 + NextLib FFmpeg playback, `AudioSyncMediaSource` HLS-segment bidirectional audio sync, extraction-time HLS subtitle transcoding, multi-account cloud/LAN WebDAV, Room v4 + Android Keystore persistence, and zero-OOM memory engineering across both phones and 32-bit Android TVs.
 
 ---
 
@@ -28,10 +28,10 @@ CineStream uses **MVVM with Unidirectional Data Flow (UDF)**, **constructor depe
                                            │
 ┌──────────────────────────────────────────▼────────────────────────────────────────────┐
 │                               CineStreamViewModel                                     │
-│  • Coordinates CinePlayerManager, Room v3 repos, DataStore prefs, Parsers & Engines   │
+│  • Coordinates CinePlayerManager, Room v4 repos, DataStore prefs, Parsers & Engines   │
 │  • Drives MultiJsonPlaylistReducer, GlobalSearchEngine, SmartVpnFailoverCoordinator   │
 │  • Manages SubtitleMediaSourceBuilder (HLS cue transcoding) & SecondarySubtitleEngine │
-│  • Hosts LocalWebRemoteServer (LAN HTTP + QR + Sync), OfflineDownloadManager, NAS     │
+│  • Hosts LocalWebRemoteServer (LAN HTTP + QR + Sync), OfflineDownloadManager, WebDAV  │
 │  • Exposes frequency-isolated StateFlows:                                             │
 │      1. uiState / jsonPlaylistState / v24 states (low frequency)                      │
 │      2. playbackState               (medium frequency: play/pause, tracks, decoder)   │
@@ -41,14 +41,13 @@ CineStream uses **MVVM with Unidirectional Data Flow (UDF)**, **constructor depe
             │                              │                             │
 ┌───────────▼──────────────┐  ┌────────────▼──────────────┐  ┌───────────▼──────────────┐
 │  Playback & Net Engines  │  │  Ecosystem & Parsers      │  │   Persistence & Crypto   │
-│ • CinePlayerManager      │  │ • JsonPlaylistParser      │  │ • Room v3 (AppDatabase)  │
+│ • CinePlayerManager      │  │ • JsonPlaylistParser      │  │ • Room v4 (AppDatabase)  │
 │ • StreamingNetworkEngine │  │ • M3uPlaylistParser       │  │   - media_history        │
 │ • ParallelPrefetchEngine │  │ • XmltvEpgParser          │  │   - favorites            │
 │ • NordLynxEngine         │  │ • ImdbMetadataClient      │  │   - offline_downloads    │
-│ • NordVpnApiClient       │  │ • SubtitleMediaSourceBld  │  │   - offline_downloads    │
-│ • PrivateDnsAndVpnEngine │  │ • SecondarySubtitleEngine │  │   - network_servers      │
-│ • SmartVpnFailoverCoord. │  │ • SecondarySubtitleEngine │  │ • DataStore Prefs        │
-│ • DecoderEngine          │  │ • LocalNetworkClient      │  │   (SubtitlePrefsRepo)    │
+│ • NordVpnApiClient       │  │ • SubtitleMediaSourceBld  │  │   - network_servers      │
+│ • PrivateDnsAndVpnEngine │  │ • SecondarySubtitleEngine │  │ • DataStore Prefs        │
+│ • SmartVpnFailoverCoord. │  │ • LocalNetworkClient      │  │   (SubtitlePrefsRepo)    │
 │ • FrameDropAnalyzer      │  │ • OfflineDownloadManager  │  │ • CredentialVault        │
 │ • AudioSyncMediaSource   │  │ • LocalWebRemoteServer    │  │   (Keystore AES-256-GCM) │
 │ • AudioVolumeBooster     │  │ • QrCodeMatrixGenerator   │  │ • DeviceSyncCodec        │
@@ -116,7 +115,7 @@ User Taps Play -> CinePlayerManager.loadMedia()
 ### ViewModel Layer (`com.example.viewmodel`)
 | File | Responsibility |
 | :--- | :--- |
-| `CineStreamViewModel.kt` | Central coordinator wiring `CinePlayerManager`, Room v3 repositories, DataStore preferences, multi-JSON & M3U playlists, XMLTV EPG, external/dual subtitles, offline downloads, WebDAV/Jellyfin browser, LAN Web Remote server, local Wi-Fi/SAF sync, Sleep Timer, Up-Next countdown, A-B loop, and Smart Auto-VPN failover. |
+| `CineStreamViewModel.kt` | Central coordinator wiring `CinePlayerManager`, Room v4 repositories, DataStore preferences, multi-JSON & M3U playlists, XMLTV EPG, external/dual subtitles, offline downloads, multi-account WebDAV/Jellyfin browser, LAN Web Remote server, local Wi-Fi/SAF sync, Sleep Timer, Up-Next countdown, A-B loop, and Smart Auto-VPN failover. |
 | `MultiJsonPlaylistState.kt` | Pure `MultiJsonPlaylistReducer` handling multi-feed JSON aggregation, collision-free item ID namespacing, `"All"` vs single-playlist selection, refresh, and removal. |
 | `NetworkPrivacyState.kt` | `NetworkPrivacyUiState` modeling Private DNS mode, NordVPN login/key status, 118+ searchable locations, NordLynx WireGuard tunnel state, Smart Auto-VPN Failover, and live Cloudflare route probe results. |
 | `V24UiStates.kt` | Immutable UI states for `SecondarySubtitleUiState`, `EpgUiState`, `ChannelZapBannerState`, `WebRemoteUiState`, `LocalNetworkUiState`, `DownloadsUiState`, and `SyncBackupUiState`. |
@@ -145,7 +144,7 @@ User Taps Play -> CinePlayerManager.loadMedia()
 | `M3uPlaylistParser.kt` | `#EXTM3U` / `#EXTINF` parser supporting `tvg-logo`, `tvg-id`, `group-title`, and `#EXTM3U url-tvg` EPG auto-discovery. |
 | `XmltvEpgParser.kt` | Streaming `.xml` / `.xml.gz` XMLTV parser matching channel IDs/names to compute live Now/Next programs and progress fractions. |
 | `ImdbMetadataClient.kt` | Extracts `tt\d+` IMDb IDs and hydrates poster artwork, ratings, and release years asynchronously. |
-| `LocalNetworkClient.kt` | LAN media browser implementing WebDAV `PROPFIND` XML parsing and Jellyfin REST API authentication/item browsing. |
+| `LocalNetworkClient.kt` | Multi-account cloud/LAN media browser implementing RFC 4918 WebDAV `PROPFIND` (with same-origin redirect preservation, cross-origin `Authorization` stripping, XXE-disabled multi-`propstat` XML parsing, byte-for-byte UTF-8 Basic Auth, sibling subtitle auto-discovery, and connection testing) plus Jellyfin REST API browsing. |
 | `OfflineDownloadManager.kt` | Zero-permission app-private downloader (`filesDir/offline_downloads/`) for progressive MP4/MKV and HLS `.m3u8` (segment download + local playlist rewrite). |
 | `MediaFormatDetector.kt` | Format detection, URL validation, title inference, and Media3 MIME mapping. |
 | `PlayerNetworkStats.kt` | Immutable telemetry snapshot (`PlayerNetworkStats`) and human-readable formatters (`PlayerStatsFormatter`). |
@@ -160,7 +159,7 @@ User Taps Play -> CinePlayerManager.loadMedia()
 ### Data Persistence (`com.example.data` — 9 files)
 | File | Responsibility |
 | :--- | :--- |
-| `AppDatabase.kt` | **Room v3** SQLite database with automatic migrations (`MIGRATION_1_2`, `MIGRATION_2_3`) containing `media_history`, `favorites`, `offline_downloads`, and `network_servers`. |
+| `AppDatabase.kt` | **Room v4** SQLite database with automatic migrations (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`) containing `media_history`, `favorites`, `offline_downloads`, and multi-account `network_servers` (non-unique `(baseUrl, serverType)` index). |
 | `MediaHistoryEntity.kt` / `MediaHistoryDao.kt` / `MediaHistoryRepository.kt` | Stores watch history, exact resume timestamps, series/season/episode keys, audio/subtitle delay offsets per video, and pinned streams. |
 | `ContinueWatchingHelper.kt` | Deduplicates in-progress items per series, filters finished/unstarted entries, formats `S1 E3` codes, remaining minutes, and `Watched` status. |
 | `FavoriteAndSearch.kt` | `FavoriteRepository` and `GlobalSearchEngine` unifying instant search across Watchlist, JSON Catalogs, M3U Live TV, Offline Downloads, and History. |
@@ -191,7 +190,7 @@ To keep Compose frame times under 4 ms on low-RAM Android TVs:
 ## 5. Deterministic Resource Lifecycle
 
 When exiting `PlayerScreen` (or switching decoders):
-1. Persist exact playback position + per-video audio/subtitle delay to Room v3.
+1. Persist exact playback position + per-video audio/subtitle delay to Room v4.
 2. Execute `CinePlayerManager.stopAndTrimBuffers()`:
    - `player.playWhenReady = false`
    - `player.clearVideoSurface()` (releases 24–40 MB 4K GPU/ION surfaces)

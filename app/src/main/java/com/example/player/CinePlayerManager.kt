@@ -223,7 +223,8 @@ class CinePlayerManager(context: Context) {
             cronetDemotedProvider = { quicWatchdog.isDemoted },
             forceOkHttpProvider = {
                 fastDnsResolver.privateDnsMode != PrivateDnsMode.SYSTEM ||
-                    socksProxyManager.isProxyActive
+                    socksProxyManager.isProxyActive ||
+                    hasAuthorizationHeader()
             }
         )
 
@@ -248,7 +249,7 @@ class CinePlayerManager(context: Context) {
     private val smartEdgeDataSourceFactory = MediaEdgeCache.createSmartDataSourceFactory(
         context = context,
         directDataSourceFactory = prefetchedDataSourceFactory,
-        bypassCacheProvider = { bypassEdgeCacheForSession }
+        bypassCacheProvider = { bypassEdgeCacheForSession || hasAuthorizationHeader() }
     )
 
     private val loadErrorHandlingPolicy = FastStreamingLoadErrorHandlingPolicy()
@@ -423,7 +424,10 @@ class CinePlayerManager(context: Context) {
     private var candidateUrls: List<String> = emptyList()
     private var activeMirrorIndex: Int = 0
     private var cdnFailoverCount: Int = 0
-    private var activeHeaders: Map<String, String> = emptyMap()
+    @Volatile private var activeHeaders: Map<String, String> = emptyMap()
+
+    private fun hasAuthorizationHeader(): Boolean =
+        activeHeaders.keys.any { it.equals("Authorization", ignoreCase = true) }
     private var lastLoadedSubtitles: List<Pair<ExternalSubtitle, Uri>> = emptyList()
     private var lastAutoSelectSubtitleId: String? = null
     private var lastRequestedStartPosMs: Long = 0L

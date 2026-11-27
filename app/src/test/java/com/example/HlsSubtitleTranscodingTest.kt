@@ -190,9 +190,9 @@ class HlsSubtitleTranscodingTest {
     }
 
     @Test
-    fun appVersionConfig_matchesV30Release() {
-        assertEquals(31, BuildConfig.VERSION_CODE)
-        assertEquals("1.31", BuildConfig.VERSION_NAME)
+    fun appVersionConfig_matchesV35Release() {
+        assertEquals(35, BuildConfig.VERSION_CODE)
+        assertEquals("1.35", BuildConfig.VERSION_NAME)
     }
 
     private data class ExtractedSubResult(

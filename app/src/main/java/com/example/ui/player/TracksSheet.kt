@@ -17,12 +17,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.NetworkCheck
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
@@ -72,6 +76,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import com.example.R
+import com.example.data.OfflineDownloadEntity
 import com.example.model.AbLoopState
 import com.example.model.ChapterMarker
 import com.example.model.PreferredLanguageCatalog
@@ -81,6 +86,7 @@ import com.example.model.TrackOption
 import com.example.player.AudioDelayMath
 import com.example.player.DecoderFallbackHelper
 import com.example.player.NetworkTransportMode
+import com.example.player.OfflineDownloadManager
 import com.example.player.PlayerStatsFormatter
 import com.example.player.SyncTimeUnit
 import com.example.player.VideoDecoderMode
@@ -91,6 +97,7 @@ import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
+import com.example.ui.theme.SignalRose
 import com.example.ui.theme.StreamCyan
 import com.example.ui.theme.SubtitleEmerald
 import kotlinx.coroutines.delay
@@ -144,6 +151,14 @@ fun TracksSheet(
     onClearAbLoop: () -> Unit = {},
     chapters: List<ChapterMarker> = emptyList(),
     onJumpToChapter: (ChapterMarker) -> Unit = {},
+    canDownload: Boolean = false,
+    activeDownload: OfflineDownloadEntity? = null,
+    activeDownloadSpeedBps: Long = 0L,
+    onDownloadStream: (() -> Unit)? = null,
+    onPauseDownload: ((Long) -> Unit)? = null,
+    onResumeDownload: ((Long) -> Unit)? = null,
+    onCancelDownload: ((Long) -> Unit)? = null,
+    onOpenDownloads: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onSelectVideoTrack: (TrackOption?) -> Unit,
     onSelectAudioTrack: (TrackOption) -> Unit
@@ -179,6 +194,159 @@ fun TracksSheet(
                 volumePercent = volumePercent,
                 onSetVolumePercent = onSetVolumePercent
             )
+
+            // Mobile-only Offline Download Card (also accessible from the player top action strip)
+            if (!isTv && canDownload && onDownloadStream != null) {
+                val dlStatus = activeDownload?.status
+                val isDownloading = dlStatus == OfflineDownloadManager.STATUS_DOWNLOADING ||
+                    dlStatus == OfflineDownloadManager.STATUS_QUEUED
+                val isPaused = dlStatus == OfflineDownloadManager.STATUS_PAUSED
+                val isCompleted = dlStatus == OfflineDownloadManager.STATUS_COMPLETED
+                val isFailed = dlStatus == OfflineDownloadManager.STATUS_FAILED
+                val accentColor = when {
+                    isCompleted -> SubtitleEmerald
+                    isDownloading -> CinemaAmber
+                    isPaused -> CinemaAmber
+                    isFailed -> SignalRose
+                    else -> StreamCyan
+                }
+                val titleText = when {
+                    isCompleted -> "Saved for Offline Playback"
+                    dlStatus == OfflineDownloadManager.STATUS_DOWNLOADING -> "Downloading (${activeDownload.progressPercent}%)"
+                    dlStatus == OfflineDownloadManager.STATUS_QUEUED -> "Download Queued"
+                    isPaused -> "Download Paused (${activeDownload.progressPercent}%)"
+                    isFailed -> "Download Interrupted"
+                    else -> "Save for Offline Playback"
+                }
+                val subtitleText = when {
+                    isCompleted -> {
+                        val sizeStr = PlayerStatsFormatter.formatBytes(activeDownload.bytesDownloaded)
+                        if (sizeStr.isNotBlank()) "Available offline ($sizeStr)" else "Available in Offline Downloads"
+                    }
+                    isDownloading -> {
+                        val sizeStr = PlayerStatsFormatter.formatBytes(activeDownload.bytesDownloaded)
+                        val speedStr = OfflineDownloadManager.formatSpeed(activeDownloadSpeedBps)
+                        buildList {
+                            if (sizeStr.isNotBlank()) add(sizeStr)
+                            if (speedStr.isNotBlank()) add(speedStr)
+                            add("Tap to view queue")
+                        }.joinToString(" · ")
+                    }
+                    isPaused -> {
+                        val sizeStr = PlayerStatsFormatter.formatBytes(activeDownload.bytesDownloaded)
+                        val note = activeDownload.errorMessage?.takeIf { it.isNotBlank() } ?: "Progress saved"
+                        if (sizeStr.isNotBlank()) "$sizeStr saved · $note" else note
+                    }
+                    isFailed -> activeDownload.errorMessage?.takeIf { it.isNotBlank() } ?: "Tap Resume to continue from saved progress"
+                    else -> "Download this stream to watch without internet"
+                }
+                val actionLabel = when {
+                    isCompleted -> "Open"
+                    isDownloading -> "Queue"
+                    isPaused -> "Resume"
+                    isFailed -> "Resume"
+                    else -> "Download"
+                }
+
+                Surface(
+                    onClick = {
+                        when {
+                            (isCompleted || isDownloading) && onOpenDownloads != null -> onOpenDownloads()
+                            (isPaused || isFailed) && activeDownload != null && onResumeDownload != null ->
+                                onResumeDownload(activeDownload.id)
+                            else -> onDownloadStream()
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tvFocusHighlight(shape = RoundedCornerShape(14.dp), focusedScale = 1.02f)
+                        .testTag("tracks_offline_download_section"),
+                    shape = RoundedCornerShape(14.dp),
+                    color = accentColor.copy(alpha = 0.13f),
+                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.6f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = when {
+                                isCompleted -> Icons.Rounded.CheckCircle
+                                isPaused -> Icons.Rounded.PlayArrow
+                                else -> Icons.Rounded.Download
+                            },
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = titleText,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = subtitleText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (isDownloading && onPauseDownload != null) {
+                            OutlinedButton(
+                                onClick = { onPauseDownload(activeDownload.id) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("tracks_download_pause_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Pause,
+                                    contentDescription = "Pause download",
+                                    tint = CinemaAmber,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        if ((isDownloading || isPaused) && onCancelDownload != null) {
+                            OutlinedButton(
+                                onClick = { onCancelDownload(activeDownload.id) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, SignalRose.copy(alpha = 0.7f)),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("tracks_download_cancel_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Cancel download",
+                                    tint = SignalRose,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = accentColor,
+                            modifier = Modifier.testTag("tracks_download_action_button")
+                        ) {
+                            Text(
+                                text = actionLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color(0xFF0A0A0D),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             // YouTube-style Stats for Nerds Toggle
             Surface(

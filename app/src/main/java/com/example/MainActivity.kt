@@ -41,6 +41,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.compose.runtime.rememberCoroutineScope
 import com.example.player.PlayerPlaybackState
 import com.example.ui.home.HomeScreen
+import com.example.ui.player.DownloadQualitySheet
 import com.example.ui.player.DownloadsSheet
 import com.example.ui.player.JsonPlaylistSheet
 import com.example.ui.player.LocalNetworkSheet
@@ -481,6 +482,8 @@ private fun CineStreamApp(
             val secondarySubtitleState by viewModel.secondarySubtitleState.collectAsStateWithLifecycle()
             val epgState by viewModel.epgState.collectAsStateWithLifecycle()
             val channelZapBanner by viewModel.channelZapBanner.collectAsStateWithLifecycle()
+            val offlineDownloads by viewModel.offlineDownloads.collectAsStateWithLifecycle()
+            val downloadSpeeds by viewModel.downloadSpeeds.collectAsStateWithLifecycle()
 
             LaunchedEffect(isInPipMode, playbackState.isPlaying, playbackState.videoWidth, playbackState.videoHeight) {
                 if (isInPipMode) {
@@ -491,6 +494,10 @@ private fun CineStreamApp(
             val favoriteMediaKeys = remember(favorites) { favorites.map { it.mediaKey }.toSet() }
             val activeSessionKey = uiState.activeSession?.let { it.seriesItemId ?: it.sourceUri }
             val isActiveFavorited = activeSessionKey != null && activeSessionKey in favoriteMediaKeys
+            val activeDownload = remember(offlineDownloads, uiState.activeSession?.sourceUri) {
+                val uri = uiState.activeSession?.sourceUri ?: return@remember null
+                offlineDownloads.firstOrNull { it.sourceUrl == uri }
+            }
 
             val activeSeries = remember(jsonPlaylistState.playlists, jsonPlaylistState.items, uiState.activeSession?.seriesItemId) {
                 val seriesId = uiState.activeSession?.seriesItemId ?: return@remember null
@@ -597,7 +604,13 @@ private fun CineStreamApp(
                 onSkipIntro = viewModel::skipIntro,
                 isFavorited = isActiveFavorited,
                 onToggleFavorite = viewModel::toggleFavoriteActiveSession,
+                activeDownload = activeDownload,
+                activeDownloadSpeedBps = activeDownload?.let { downloadSpeeds[it.id] } ?: 0L,
                 onDownloadStream = if (!isTvDevice) viewModel::startOfflineDownloadForActiveSession else null,
+                onPauseDownload = if (!isTvDevice) viewModel::pauseOfflineDownload else null,
+                onResumeDownload = if (!isTvDevice) { id -> viewModel.resumeOfflineDownload(id) } else null,
+                onCancelDownload = if (!isTvDevice) viewModel::cancelOfflineDownload else null,
+                onOpenDownloads = if (!isTvDevice) { { showDownloadsSheet = true } } else null,
                 secondarySubtitleState = secondarySubtitleState,
                 onLoadSecondarySubtitleFile = viewModel::loadSecondarySubtitleFromUri,
                 onLoadSecondarySubtitleUrl = viewModel::loadSecondarySubtitleFromUrl,
@@ -705,15 +718,30 @@ private fun CineStreamApp(
 
     if (showDownloadsSheet) {
         val downloads by viewModel.offlineDownloads.collectAsStateWithLifecycle()
+        val downloadSpeeds by viewModel.downloadSpeeds.collectAsStateWithLifecycle()
         DownloadsSheet(
             downloads = downloads,
+            downloadSpeeds = downloadSpeeds,
             onPlayDownload = { entity ->
                 showDownloadsSheet = false
                 viewModel.playOfflineDownload(entity)
             },
+            onPauseDownload = viewModel::pauseOfflineDownload,
+            onResumeDownload = { id -> viewModel.resumeOfflineDownload(id) },
             onCancelDownload = viewModel::cancelOfflineDownload,
             onDeleteDownload = viewModel::deleteOfflineDownload,
             onDismiss = { showDownloadsSheet = false }
+        )
+    }
+
+    val qualityPickerState by viewModel.downloadQualityPickerState.collectAsStateWithLifecycle()
+    if (qualityPickerState.isOpen) {
+        DownloadQualitySheet(
+            title = qualityPickerState.title,
+            isLoading = qualityPickerState.isLoading,
+            options = qualityPickerState.options,
+            onSelectQuality = viewModel::confirmDownloadQuality,
+            onDismiss = viewModel::dismissDownloadQualityPicker
         )
     }
 
@@ -728,7 +756,15 @@ private fun CineStreamApp(
             onOpenServer = viewModel::openNetworkServer,
             onBrowseItem = viewModel::browseNetworkFolder,
             onNavigateUp = viewModel::navigateNetworkFolderUp,
-            onDismiss = { showLocalNetworkSheet = false }
+            onDismiss = { showLocalNetworkSheet = false },
+            onUpdateServer = { id, name, type, url, user, secret ->
+                viewModel.updateNetworkServer(id, name, type, url, user, secret)
+            },
+            onTestConnection = viewModel::testNetworkServerConnection,
+            onClearConnectionTest = viewModel::clearNetworkConnectionTest,
+            onRefreshFolder = viewModel::refreshNetworkFolder,
+            onCloseActiveServer = viewModel::closeActiveNetworkServer,
+            onDownloadItem = if (!isTvDevice) viewModel::downloadNetworkBrowserItem else null
         )
     }
 }

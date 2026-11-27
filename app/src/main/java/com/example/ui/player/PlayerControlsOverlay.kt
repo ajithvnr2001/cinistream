@@ -2,10 +2,12 @@ package com.example.ui.player
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
@@ -78,16 +80,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.SkipPrevious
 import com.example.R
+import com.example.data.OfflineDownloadEntity
 import com.example.model.AbLoopState
 import com.example.model.AspectRatioMode
 import com.example.model.ChapterMarker
 import com.example.model.StreamFormat
 import com.example.player.AudioBoostMath
+import com.example.player.OfflineDownloadManager
 import com.example.player.PlaybackProgressState
 import com.example.player.VideoDecoderMode
 import com.example.ui.components.FormatBadge
@@ -182,7 +187,9 @@ internal fun PlayerTopBar(
     isFavorited: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
     canDownload: Boolean = false,
+    activeDownload: OfflineDownloadEntity? = null,
     onDownloadStream: (() -> Unit)? = null,
+    onOpenDownloads: (() -> Unit)? = null,
     sleepTimerBadge: String? = null,
     hasM3uZapping: Boolean = false,
     onChannelPrev: (() -> Unit)? = null,
@@ -206,361 +213,736 @@ internal fun PlayerTopBar(
             .windowInsetsPadding(WindowInsets.statusBars.union(WindowInsets.displayCutout))
             .padding(horizontal = tvOverscanHorizontal, vertical = tvOverscanVertical)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .tvFocusHighlight(shape = CircleShape)
-                    .testTag("player_back_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                    contentDescription = stringResource(R.string.cd_back),
-                    tint = Color.White
-                )
-            }
-
+        if (!isTv) {
             Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // Row 1 (Mobile): Back + full-width Title & stream badges + Tracks + Lock
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    FormatBadge(format = format)
-                    if (!episodeCodeBadge.isNullOrBlank()) {
-                        Text(
-                            text = "· $episodeCodeBadge",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = CinemaAmber
-                        )
-                    }
-                    if (videoHeight > 0) {
-                        Text(
-                            text = "${videoHeight}p",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.78f)
-                        )
-                    }
-                    if (hasActiveSubtitles) {
-                        Text(
-                            text = "· CC ON",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = SubtitleEmerald
-                        )
-                    }
-                    if (statsForNerdsEnabled) {
-                        Text(
-                            text = "· NET HUD",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = CinemaAmber
-                        )
-                    }
-                    if (!sleepTimerBadge.isNullOrBlank()) {
-                        Text(
-                            text = "· $sleepTimerBadge",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = StreamCyan
-                        )
-                    }
-                }
-            }
-
-            val subTint = if (hasActiveSubtitles) SubtitleEmerald else Color.White
-            Surface(
-                onClick = onOpenSubtitles,
-                shape = RoundedCornerShape(12.dp),
-                color = if (hasActiveSubtitles) SubtitleEmerald.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
-                border = BorderStroke(
-                    1.dp,
-                    if (hasActiveSubtitles) SubtitleEmerald else Color.White.copy(alpha = 0.22f)
-                ),
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .focusRequester(subButtonFocusRequester)
-                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                    .testTag("player_subtitles_button")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Subtitles,
-                        contentDescription = stringResource(R.string.cd_subtitles),
-                        tint = subTint,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Sub",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = subTint
-                    )
-                }
-            }
-
-            if (isTv && onToggleBrightnessPanel != null) {
-                val isAdjusted = brightnessPercent != PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT
-                val isBrightBoosted = brightnessPercent > PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT
-                val brightTint = when {
-                    isBrightBoosted -> CinemaAmberBright
-                    isAdjusted || showBrightnessPanel -> StreamCyan
-                    else -> Color.White
-                }
-                val brightActive = isAdjusted || showBrightnessPanel
-                Surface(
-                    onClick = onToggleBrightnessPanel,
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (brightActive) brightTint.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
-                    border = BorderStroke(
-                        1.dp,
-                        if (brightActive) brightTint else Color.White.copy(alpha = 0.22f)
-                    ),
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .focusRequester(brightnessButtonFocusRequester)
-                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                        .testTag("player_brightness_button")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_back_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Brightness6,
-                            contentDescription = stringResource(R.string.cd_brightness),
-                            tint = brightTint,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = "${brightnessPercent}%",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = brightTint
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = stringResource(R.string.cd_back),
+                            tint = Color.White
                         )
                     }
-                }
-            }
 
-            val statsTint = if (statsForNerdsEnabled) CinemaAmber else Color.White
-            Surface(
-                onClick = onToggleStatsForNerds,
-                shape = RoundedCornerShape(12.dp),
-                color = if (statsForNerdsEnabled) CinemaAmber.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
-                border = BorderStroke(
-                    1.dp,
-                    if (statsForNerdsEnabled) CinemaAmber else Color.White.copy(alpha = 0.22f)
-                ),
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .focusRequester(statsButtonFocusRequester)
-                    .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                    .testTag("player_stats_button")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.NetworkCheck,
-                        contentDescription = stringResource(R.string.cd_stats_for_nerds),
-                        tint = statsTint,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Stats",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = statsTint
-                    )
-                }
-            }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            FormatBadge(format = format)
+                            if (!episodeCodeBadge.isNullOrBlank()) {
+                                Text(
+                                    text = "· $episodeCodeBadge",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CinemaAmber
+                                )
+                            }
+                            if (videoHeight > 0) {
+                                Text(
+                                    text = "${videoHeight}p",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White.copy(alpha = 0.78f)
+                                )
+                            }
+                            if (hasActiveSubtitles) {
+                                Text(
+                                    text = "· CC ON",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SubtitleEmerald
+                                )
+                            }
+                            if (statsForNerdsEnabled) {
+                                Text(
+                                    text = "· NET HUD",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CinemaAmber
+                                )
+                            }
+                            if (!sleepTimerBadge.isNullOrBlank()) {
+                                Text(
+                                    text = "· $sleepTimerBadge",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StreamCyan
+                                )
+                            }
+                        }
+                    }
 
-            if (hasSeriesEpisodes) {
-                Surface(
-                    onClick = onOpenSeriesEpisodes,
-                    shape = RoundedCornerShape(12.dp),
-                    color = CinemaAmber.copy(alpha = 0.22f),
-                    border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .focusRequester(episodesButtonFocusRequester)
-                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
-                        .testTag("player_episodes_button")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    IconButton(
+                        onClick = onOpenTracks,
+                        modifier = Modifier
+                            .focusRequester(tracksButtonFocusRequester)
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_tracks_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Tv,
-                            contentDescription = stringResource(R.string.cd_episodes),
-                            tint = CinemaAmber,
-                            modifier = Modifier.size(18.dp)
+                            imageVector = Icons.Rounded.Tune,
+                            contentDescription = stringResource(R.string.cd_tracks),
+                            tint = Color.White
                         )
-                        Text(
-                            text = "Episodes",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = CinemaAmber
+                    }
+
+                    IconButton(
+                        onClick = onLockControls,
+                        modifier = Modifier
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_lock_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lock,
+                            contentDescription = stringResource(R.string.cd_lock_controls),
+                            tint = Color.White
                         )
                     }
                 }
-            }
 
-            if (hasJsonPlaylist) {
-                IconButton(
-                    onClick = onOpenJsonCatalog,
+                // Row 2 (Mobile): Horizontally scrollable quick-action strip so Sub, Download,
+                // Stats, Episodes, Favorite, BG Audio, and PiP never clip off-screen on portrait phones.
+                Row(
                     modifier = Modifier
-                        .focusRequester(jsonButtonFocusRequester)
-                        .tvFocusHighlight(shape = CircleShape)
-                        .testTag("player_json_catalog_button")
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .testTag("player_mobile_action_strip"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.VideoLibrary,
-                        contentDescription = stringResource(R.string.cd_json_playlist),
-                        tint = CinemaAmber
-                    )
+                    val subTint = if (hasActiveSubtitles) SubtitleEmerald else Color.White
+                    Surface(
+                        onClick = onOpenSubtitles,
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (hasActiveSubtitles) SubtitleEmerald.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (hasActiveSubtitles) SubtitleEmerald else Color.White.copy(alpha = 0.22f)
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .focusRequester(subButtonFocusRequester)
+                            .testTag("player_subtitles_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Subtitles,
+                                contentDescription = stringResource(R.string.cd_subtitles),
+                                tint = subTint,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Sub",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = subTint
+                            )
+                        }
+                    }
+
+                    if (canDownload && onDownloadStream != null) {
+                        val dlStatus = activeDownload?.status
+                        val isDownloading = dlStatus == OfflineDownloadManager.STATUS_DOWNLOADING ||
+                            dlStatus == OfflineDownloadManager.STATUS_QUEUED
+                        val isPaused = dlStatus == OfflineDownloadManager.STATUS_PAUSED
+                        val isSaved = dlStatus == OfflineDownloadManager.STATUS_COMPLETED
+                        val isFailed = dlStatus == OfflineDownloadManager.STATUS_FAILED
+                        val dlTint = when {
+                            isSaved -> SubtitleEmerald
+                            isDownloading -> StreamCyan
+                            isPaused -> CinemaAmber
+                            isFailed -> SignalRose
+                            else -> Color.White
+                        }
+                        val dlLabel = when {
+                            isSaved -> "Saved"
+                            dlStatus == OfflineDownloadManager.STATUS_DOWNLOADING -> "${activeDownload.progressPercent}%"
+                            dlStatus == OfflineDownloadManager.STATUS_QUEUED -> "Queued"
+                            isPaused -> if (activeDownload.progressPercent > 0) "Paused ${activeDownload.progressPercent}%" else "Paused"
+                            isFailed -> "Resume"
+                            else -> "Download"
+                        }
+                        val dlClick: () -> Unit = {
+                            if ((isSaved || isDownloading) && onOpenDownloads != null) {
+                                onOpenDownloads()
+                            } else {
+                                onDownloadStream()
+                            }
+                        }
+                        val highlighted = isSaved || isDownloading || isPaused || isFailed
+                        Surface(
+                            onClick = dlClick,
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (highlighted) {
+                                dlTint.copy(alpha = 0.24f)
+                            } else {
+                                Color.White.copy(alpha = 0.14f)
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (highlighted) dlTint else Color.White.copy(alpha = 0.22f)
+                            ),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("player_download_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        isSaved -> Icons.Rounded.CheckCircle
+                                        isPaused -> Icons.Rounded.PlayArrow
+                                        else -> Icons.Rounded.Download
+                                    },
+                                    contentDescription = stringResource(R.string.cd_download_stream),
+                                    tint = dlTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = dlLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = dlTint
+                                )
+                            }
+                        }
+                    }
+
+                    val statsTint = if (statsForNerdsEnabled) CinemaAmber else Color.White
+                    Surface(
+                        onClick = onToggleStatsForNerds,
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (statsForNerdsEnabled) CinemaAmber.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (statsForNerdsEnabled) CinemaAmber else Color.White.copy(alpha = 0.22f)
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .focusRequester(statsButtonFocusRequester)
+                            .testTag("player_stats_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.NetworkCheck,
+                                contentDescription = stringResource(R.string.cd_stats_for_nerds),
+                                tint = statsTint,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Stats",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = statsTint
+                            )
+                        }
+                    }
+
+                    if (hasSeriesEpisodes) {
+                        Surface(
+                            onClick = onOpenSeriesEpisodes,
+                            shape = RoundedCornerShape(12.dp),
+                            color = CinemaAmber.copy(alpha = 0.22f),
+                            border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .focusRequester(episodesButtonFocusRequester)
+                                .testTag("player_episodes_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Tv,
+                                    contentDescription = stringResource(R.string.cd_episodes),
+                                    tint = CinemaAmber,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Episodes",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = CinemaAmber
+                                )
+                            }
+                        }
+                    }
+
+                    if (onToggleFavorite != null) {
+                        val favTint = if (isFavorited) SignalRose else Color.White
+                        Surface(
+                            onClick = onToggleFavorite,
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isFavorited) SignalRose.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, if (isFavorited) SignalRose else Color.White.copy(alpha = 0.22f)),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("player_favorite_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isFavorited) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                    contentDescription = stringResource(R.string.cd_favorite_toggle),
+                                    tint = favTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = if (isFavorited) "Saved" else "Watchlist",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = favTint
+                                )
+                            }
+                        }
+                    }
+
+                    if (onToggleBackgroundAudio != null) {
+                        val bgTint = if (backgroundAudioEnabled) SubtitleEmerald else Color.White
+                        Surface(
+                            onClick = onToggleBackgroundAudio,
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (backgroundAudioEnabled) SubtitleEmerald.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, if (backgroundAudioEnabled) SubtitleEmerald else Color.White.copy(alpha = 0.22f)),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("player_bg_audio_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Headphones,
+                                    contentDescription = stringResource(R.string.cd_background_audio),
+                                    tint = bgTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "BG Audio",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = bgTint
+                                )
+                            }
+                        }
+                    }
+
+                    if (onEnterPip != null) {
+                        Surface(
+                            onClick = onEnterPip,
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.White.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("player_pip_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PictureInPictureAlt,
+                                    contentDescription = stringResource(R.string.cd_enter_pip),
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "PiP",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+
+                    if (hasJsonPlaylist) {
+                        IconButton(
+                            onClick = onOpenJsonCatalog,
+                            modifier = Modifier
+                                .focusRequester(jsonButtonFocusRequester)
+                                .testTag("player_json_catalog_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.VideoLibrary,
+                                contentDescription = stringResource(R.string.cd_json_playlist),
+                                tint = CinemaAmber
+                            )
+                        }
+                    }
+
+                    if (hasM3uPlaylist) {
+                        IconButton(
+                            onClick = onOpenM3uQueue,
+                            modifier = Modifier
+                                .focusRequester(m3uButtonFocusRequester)
+                                .testTag("player_m3u_queue_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlaylistPlay,
+                                contentDescription = stringResource(R.string.cd_playlist),
+                                tint = Color.White
+                            )
+                        }
+                    }
+
+                    if (hasM3uZapping && onChannelPrev != null && onChannelNext != null) {
+                        IconButton(
+                            onClick = onChannelPrev,
+                            modifier = Modifier.testTag("player_channel_prev_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipPrevious,
+                                contentDescription = stringResource(R.string.cd_channel_prev),
+                                tint = StreamCyan
+                            )
+                        }
+                        IconButton(
+                            onClick = onChannelNext,
+                            modifier = Modifier.testTag("player_channel_next_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipNext,
+                                contentDescription = stringResource(R.string.cd_channel_next),
+                                tint = StreamCyan
+                            )
+                        }
+                    }
                 }
             }
-
-            if (hasM3uPlaylist) {
+        } else {
+            // Android TV 10-foot single-row D-Pad header (preserves Sub -> Brightness -> Stats -> ... -> Tracks order)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 IconButton(
-                    onClick = onOpenM3uQueue,
+                    onClick = onBack,
                     modifier = Modifier
-                        .focusRequester(m3uButtonFocusRequester)
                         .tvFocusHighlight(shape = CircleShape)
-                        .testTag("player_m3u_queue_button")
+                        .testTag("player_back_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.PlaylistPlay,
-                        contentDescription = stringResource(R.string.cd_playlist),
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = stringResource(R.string.cd_back),
                         tint = Color.White
                     )
                 }
-            }
 
-            if (hasM3uZapping && onChannelPrev != null && onChannelNext != null) {
-                IconButton(
-                    onClick = onChannelPrev,
-                    modifier = Modifier
-                        .tvFocusHighlight(shape = CircleShape)
-                        .testTag("player_channel_prev_button")
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.SkipPrevious,
-                        contentDescription = stringResource(R.string.cd_channel_prev),
-                        tint = StreamCyan
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FormatBadge(format = format)
+                        if (!episodeCodeBadge.isNullOrBlank()) {
+                            Text(
+                                text = "· $episodeCodeBadge",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CinemaAmber
+                            )
+                        }
+                        if (videoHeight > 0) {
+                            Text(
+                                text = "${videoHeight}p",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.78f)
+                            )
+                        }
+                        if (hasActiveSubtitles) {
+                            Text(
+                                text = "· CC ON",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SubtitleEmerald
+                            )
+                        }
+                        if (statsForNerdsEnabled) {
+                            Text(
+                                text = "· NET HUD",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CinemaAmber
+                            )
+                        }
+                        if (!sleepTimerBadge.isNullOrBlank()) {
+                            Text(
+                                text = "· $sleepTimerBadge",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StreamCyan
+                            )
+                        }
+                    }
                 }
-                IconButton(
-                    onClick = onChannelNext,
+
+                val subTint = if (hasActiveSubtitles) SubtitleEmerald else Color.White
+                Surface(
+                    onClick = onOpenSubtitles,
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (hasActiveSubtitles) SubtitleEmerald.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (hasActiveSubtitles) SubtitleEmerald else Color.White.copy(alpha = 0.22f)
+                    ),
                     modifier = Modifier
-                        .tvFocusHighlight(shape = CircleShape)
-                        .testTag("player_channel_next_button")
+                        .minimumInteractiveComponentSize()
+                        .focusRequester(subButtonFocusRequester)
+                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                        .testTag("player_subtitles_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.SkipNext,
-                        contentDescription = stringResource(R.string.cd_channel_next),
-                        tint = StreamCyan
-                    )
-                }
-            }
-
-            if (onToggleFavorite != null) {
-                IconButton(
-                    onClick = onToggleFavorite,
-                    modifier = Modifier
-                        .tvFocusHighlight(shape = CircleShape)
-                        .testTag("player_favorite_button")
-                ) {
-                    Icon(
-                        imageVector = if (isFavorited) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        contentDescription = stringResource(R.string.cd_favorite_toggle),
-                        tint = if (isFavorited) SignalRose else Color.White
-                    )
-                }
-            }
-
-            IconButton(
-                onClick = onOpenTracks,
-                modifier = Modifier
-                    .focusRequester(tracksButtonFocusRequester)
-                    .tvFocusHighlight(shape = CircleShape)
-                    .testTag("player_tracks_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Tune,
-                    contentDescription = stringResource(R.string.cd_tracks),
-                    tint = Color.White
-                )
-            }
-
-            if (!isTv) {
-                if (canDownload && onDownloadStream != null) {
-                    IconButton(
-                        onClick = onDownloadStream,
-                        modifier = Modifier
-                            .tvFocusHighlight(shape = CircleShape)
-                            .testTag("player_download_button")
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Download,
-                            contentDescription = stringResource(R.string.cd_download_stream),
+                            imageVector = Icons.Rounded.Subtitles,
+                            contentDescription = stringResource(R.string.cd_subtitles),
+                            tint = subTint,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Sub",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = subTint
+                        )
+                    }
+                }
+
+                if (onToggleBrightnessPanel != null) {
+                    val isAdjusted = brightnessPercent != PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT
+                    val isBrightBoosted = brightnessPercent > PlayerGestureMath.TV_DEFAULT_BRIGHTNESS_PERCENT
+                    val brightTint = when {
+                        isBrightBoosted -> CinemaAmberBright
+                        isAdjusted || showBrightnessPanel -> StreamCyan
+                        else -> Color.White
+                    }
+                    val brightActive = isAdjusted || showBrightnessPanel
+                    Surface(
+                        onClick = onToggleBrightnessPanel,
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (brightActive) brightTint.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (brightActive) brightTint else Color.White.copy(alpha = 0.22f)
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .focusRequester(brightnessButtonFocusRequester)
+                            .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                            .testTag("player_brightness_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Brightness6,
+                                contentDescription = stringResource(R.string.cd_brightness),
+                                tint = brightTint,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "${brightnessPercent}%",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = brightTint
+                            )
+                        }
+                    }
+                }
+
+                val statsTint = if (statsForNerdsEnabled) CinemaAmber else Color.White
+                Surface(
+                    onClick = onToggleStatsForNerds,
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (statsForNerdsEnabled) CinemaAmber.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.14f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (statsForNerdsEnabled) CinemaAmber else Color.White.copy(alpha = 0.22f)
+                    ),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .focusRequester(statsButtonFocusRequester)
+                        .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                        .testTag("player_stats_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.NetworkCheck,
+                            contentDescription = stringResource(R.string.cd_stats_for_nerds),
+                            tint = statsTint,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Stats",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = statsTint
+                        )
+                    }
+                }
+
+                if (hasSeriesEpisodes) {
+                    Surface(
+                        onClick = onOpenSeriesEpisodes,
+                        shape = RoundedCornerShape(12.dp),
+                        color = CinemaAmber.copy(alpha = 0.22f),
+                        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .focusRequester(episodesButtonFocusRequester)
+                            .tvFocusHighlight(shape = RoundedCornerShape(12.dp))
+                            .testTag("player_episodes_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Tv,
+                                contentDescription = stringResource(R.string.cd_episodes),
+                                tint = CinemaAmber,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Episodes",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = CinemaAmber
+                            )
+                        }
+                    }
+                }
+
+                if (hasJsonPlaylist) {
+                    IconButton(
+                        onClick = onOpenJsonCatalog,
+                        modifier = Modifier
+                            .focusRequester(jsonButtonFocusRequester)
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_json_catalog_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.VideoLibrary,
+                            contentDescription = stringResource(R.string.cd_json_playlist),
+                            tint = CinemaAmber
+                        )
+                    }
+                }
+
+                if (hasM3uPlaylist) {
+                    IconButton(
+                        onClick = onOpenM3uQueue,
+                        modifier = Modifier
+                            .focusRequester(m3uButtonFocusRequester)
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_m3u_queue_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlaylistPlay,
+                            contentDescription = stringResource(R.string.cd_playlist),
                             tint = Color.White
                         )
                     }
                 }
-                if (onToggleBackgroundAudio != null) {
+
+                if (hasM3uZapping && onChannelPrev != null && onChannelNext != null) {
                     IconButton(
-                        onClick = onToggleBackgroundAudio,
+                        onClick = onChannelPrev,
                         modifier = Modifier
                             .tvFocusHighlight(shape = CircleShape)
-                            .testTag("player_bg_audio_button")
+                            .testTag("player_channel_prev_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Headphones,
-                            contentDescription = stringResource(R.string.cd_background_audio),
-                            tint = if (backgroundAudioEnabled) SubtitleEmerald else Color.White
+                            imageVector = Icons.Rounded.SkipPrevious,
+                            contentDescription = stringResource(R.string.cd_channel_prev),
+                            tint = StreamCyan
+                        )
+                    }
+                    IconButton(
+                        onClick = onChannelNext,
+                        modifier = Modifier
+                            .tvFocusHighlight(shape = CircleShape)
+                            .testTag("player_channel_next_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.SkipNext,
+                            contentDescription = stringResource(R.string.cd_channel_next),
+                            tint = StreamCyan
                         )
                     }
                 }
-                if (onEnterPip != null) {
+
+                if (onToggleFavorite != null) {
                     IconButton(
-                        onClick = onEnterPip,
+                        onClick = onToggleFavorite,
                         modifier = Modifier
                             .tvFocusHighlight(shape = CircleShape)
-                            .testTag("player_pip_button")
+                            .testTag("player_favorite_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.PictureInPictureAlt,
-                            contentDescription = stringResource(R.string.cd_enter_pip),
-                            tint = Color.White
+                            imageVector = if (isFavorited) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = stringResource(R.string.cd_favorite_toggle),
+                            tint = if (isFavorited) SignalRose else Color.White
                         )
                     }
                 }
+
                 IconButton(
-                    onClick = onLockControls,
+                    onClick = onOpenTracks,
                     modifier = Modifier
+                        .focusRequester(tracksButtonFocusRequester)
                         .tvFocusHighlight(shape = CircleShape)
-                        .testTag("player_lock_button")
+                        .testTag("player_tracks_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Lock,
-                        contentDescription = stringResource(R.string.cd_lock_controls),
+                        imageVector = Icons.Rounded.Tune,
+                        contentDescription = stringResource(R.string.cd_tracks),
                         tint = Color.White
                     )
                 }

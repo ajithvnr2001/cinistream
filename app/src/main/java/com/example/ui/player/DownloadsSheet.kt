@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -50,7 +51,10 @@ import com.example.ui.theme.SubtitleEmerald
 @Composable
 fun DownloadsSheet(
     downloads: List<OfflineDownloadEntity>,
+    downloadSpeeds: Map<Long, Long> = emptyMap(),
     onPlayDownload: (OfflineDownloadEntity) -> Unit,
+    onPauseDownload: ((Long) -> Unit)? = null,
+    onResumeDownload: ((Long) -> Unit)? = null,
     onCancelDownload: (Long) -> Unit,
     onDeleteDownload: (Long) -> Unit,
     onDismiss: () -> Unit
@@ -126,7 +130,10 @@ fun DownloadsSheet(
                     items(downloads, key = { it.id }) { item ->
                         OfflineDownloadRow(
                             item = item,
+                            speedBytesPerSec = downloadSpeeds[item.id] ?: 0L,
                             onPlay = { onPlayDownload(item) },
+                            onPause = onPauseDownload?.let { fn -> { fn(item.id) } },
+                            onResume = onResumeDownload?.let { fn -> { fn(item.id) } },
                             onCancel = { onCancelDownload(item.id) },
                             onDelete = { onDeleteDownload(item.id) }
                         )
@@ -141,20 +148,27 @@ fun DownloadsSheet(
 @Composable
 private fun OfflineDownloadRow(
     item: OfflineDownloadEntity,
+    speedBytesPerSec: Long = 0L,
     onPlay: () -> Unit,
+    onPause: (() -> Unit)? = null,
+    onResume: (() -> Unit)? = null,
     onCancel: () -> Unit,
     onDelete: () -> Unit
 ) {
     val isDownloading = item.status == OfflineDownloadManager.STATUS_DOWNLOADING ||
         item.status == OfflineDownloadManager.STATUS_QUEUED
+    val isPaused = item.status == OfflineDownloadManager.STATUS_PAUSED
+    val isFailed = item.status == OfflineDownloadManager.STATUS_FAILED
     val isCompleted = item.status == OfflineDownloadManager.STATUS_COMPLETED
     val statusColor = when (item.status) {
         OfflineDownloadManager.STATUS_COMPLETED -> SubtitleEmerald
         OfflineDownloadManager.STATUS_FAILED -> SignalRose
+        OfflineDownloadManager.STATUS_PAUSED -> CinemaAmber
         OfflineDownloadManager.STATUS_DOWNLOADING -> StreamCyan
         else -> SlateInkSecondary
     }
     val sizeLabel = formatBytesCompact(item.bytesDownloaded.coerceAtLeast(item.totalBytes))
+    val speedLabel = if (isDownloading) OfflineDownloadManager.formatSpeed(speedBytesPerSec) else ""
 
     Surface(
         shape = RoundedCornerShape(14.dp),
@@ -168,7 +182,7 @@ private fun OfflineDownloadRow(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -181,7 +195,10 @@ private fun OfflineDownloadRow(
                     Text(
                         text = buildString {
                             append(item.status)
-                            if (isDownloading && item.progressPercent > 0) append(" · ${item.progressPercent}%")
+                            if ((isDownloading || isPaused || isFailed) && item.progressPercent > 0) {
+                                append(" · ${item.progressPercent}%")
+                            }
+                            if (speedLabel.isNotBlank()) append(" · $speedLabel")
                             if (sizeLabel.isNotBlank()) append(" · $sizeLabel")
                             if (!item.errorMessage.isNullOrBlank()) append(" · ${item.errorMessage}")
                         },
@@ -204,7 +221,31 @@ private fun OfflineDownloadRow(
                         )
                     }
                 }
-                if (isDownloading) {
+                if (isDownloading && onPause != null) {
+                    IconButton(
+                        onClick = onPause,
+                        modifier = Modifier.testTag("download_pause_${item.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Pause,
+                            contentDescription = "Pause download",
+                            tint = CinemaAmber
+                        )
+                    }
+                }
+                if ((isPaused || isFailed) && onResume != null) {
+                    IconButton(
+                        onClick = onResume,
+                        modifier = Modifier.testTag("download_resume_${item.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Resume download",
+                            tint = CinemaAmber
+                        )
+                    }
+                }
+                if (isDownloading || isPaused) {
                     IconButton(
                         onClick = onCancel,
                         modifier = Modifier.testTag("download_cancel_${item.id}")
@@ -228,12 +269,12 @@ private fun OfflineDownloadRow(
                     )
                 }
             }
-            if (isDownloading) {
+            if (isDownloading || isPaused) {
                 Spacer(Modifier.height(8.dp))
                 LinearProgressIndicator(
                     progress = { (item.progressPercent / 100f).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth(),
-                    color = StreamCyan
+                    color = if (isPaused) CinemaAmber else StreamCyan
                 )
             }
         }

@@ -1,17 +1,20 @@
-# Testing & Troubleshooting Playbook (v1.31)
+# Testing & Troubleshooting Playbook (v1.32)
 
-This document covers CineStream v1.31's **108-test automated JVM & Robolectric test suite (18 suites)**, how to read every indicator in **Stats for Nerds**, and actionable troubleshooting playbooks.
+This document covers CineStream v1.32's **114-test automated JVM & Robolectric test suite (19 suites)**, how to read every indicator in **Stats for Nerds**, and actionable troubleshooting playbooks.
 
 ---
 
-## 1. Automated Test Suite (108 Tests Across 18 Suites)
+## 1. Automated Test Suite (114 Tests Across 19 Suites)
 
 CineStream uses **JUnit 4**, **Robolectric (`4.16.1`)**, and **Jetpack Compose UI Test (`createComposeRule`)** so pure engines, HTTP/API flows, Room/DataStore logic, and Compose UI/TV focus interactions verify rapidly on the JVM without an emulator.
 
 ### Running Tests
 ```bash
-# Run all 108 unit & Robolectric UI tests
+# Run all 114 unit & Robolectric UI tests
 gradle :app:testDebugUnitTest
+
+# Run Multi-Account WebDAV, Room v4, PROPFIND Redirect/Auth & UI tests (6 tests)
+gradle :app:testDebugUnitTest --tests "com.example.MultiAccountWebDavTest"
 
 # Run HLS-segment AudioSyncMediaSource & SampleStream tests (4 tests)
 gradle :app:testDebugUnitTest --tests "com.example.HlsAudioSyncSampleStreamTest"
@@ -25,7 +28,7 @@ gradle :app:testDebugUnitTest --tests "com.example.BrightnessControlTest"
 # Run Media3 1.11.1 HLS external subtitle transcoding tests (6 tests)
 gradle :app:testDebugUnitTest --tests "com.example.HlsSubtitleTranscodingTest"
 
-# Run v1.24–v1.31 Ecosystem & Dual Subtitle tests (15 tests)
+# Run v1.24–v1.32 Ecosystem & Dual Subtitle tests (15 tests)
 gradle :app:testDebugUnitTest --tests "com.example.CineStreamV24FeaturesTest"
 
 # Run v1.23 Frame-Drop, Continue Watching, Audio Delay & Auto-VPN tests (11 tests)
@@ -45,9 +48,10 @@ gradle :app:testDebugUnitTest --tests "com.example.PrivateDnsAndNordVpnTest"
 | `AudioBoostAndOptimizationTest.kt` | 11 | `AudioBoostMath` (0–200% / +20 dB), heap-capped `LoadControl`, `largeHeap`, HTTP/2 pool, `FastDnsResolver`, `FastStreamingLoadErrorHandlingPolicy`, `MediaEdgeCache` TV RAM-Direct, `ParallelPrefetchEngine` (HLS live handoff, audio lane, byte-range), `QuicThroughputWatchdog`, and `TracksSheet` UI. |
 | `JsonPlaylistAndImdbTest.kt` | 11 | Unified Movie + Series JSON parsing, flat episodes, header inheritance, `CdnMirrorResolver` swaps & cache rules, `ImdbMetadataClient`, `SeriesDetailSheet`, `JsonPlaylistSheet`, and `TracksSheet` CDN controls. |
 | `DecoderFallbackTest.kt` | 6 | Qualcomm HEVC detection, `.low_latency` exclusion, `SmartMediaCodecSelector` FFmpeg delegation, H.264/lower-res track fallback, `PlayerErrorCard` actions, and `PlayerStatsCard` decoder telemetry. |
-| `HlsSubtitleTranscodingTest.kt` | 6 | `SubtitleMediaSourceBuilder` `ProgressiveMediaSource` + `SubtitleExtractor` wrapping for SRT/VTT/ASS/TTML, CEA-608 fallback, `application/x-media3-cues` cue sample verification, local sidecar file merging, `formatSubtitleCodecLabel()`, and v1.31 `BuildConfig`. |
-| `BrightnessControlTest.kt` | 5 | `PlayerGestureMath` TV brightness clamping (`10%–150%`) + dim/boost overlay alphas, mobile vertical `BrightnessHudOverlay` gauge geometry (`height > width`), Android TV `PlayerTopBar` brightness pill placement immediately next to `Sub`, `TvBrightnessControlPanel` (`−`/`+`/presets/reset/done), and v1.31 `BuildConfig`. |
-| `AudioSyncNumericInputTest.kt` | 5 | `AudioDelayMath.parseDelayInputMs` (`ms`/`s` units, decimals, inline suffixes, clamping `-10s..+10s`, invalid rejection), `TracksSheet` & `SubtitleSheet` numeric input + `±` sign toggle UI, and v1.31 `BuildConfig`. |
+| `MultiAccountWebDavTest.kt` | 6 | Room v4 multi-account persistence on identical WebDAV URLs (`upsert`/`update`/`deleteById`), strict HTTP(S) normalization, byte-for-byte special-character UTF-8 Basic Auth, bracket/space href encoding, live local `HttpServer` `PROPFIND` `301` redirect + cross-origin `302` `Authorization` stripping + sibling `.srt` discovery + `testConnection()`, `LocalNetworkSheet` TorBox preset / edit / quick account switcher / playback UI, and v1.32 `BuildConfig`. |
+| `HlsSubtitleTranscodingTest.kt` | 6 | `SubtitleMediaSourceBuilder` `ProgressiveMediaSource` + `SubtitleExtractor` wrapping for SRT/VTT/ASS/TTML, CEA-608 fallback, `application/x-media3-cues` cue sample verification, local sidecar file merging, `formatSubtitleCodecLabel()`, and v1.32 `BuildConfig`. |
+| `BrightnessControlTest.kt` | 5 | `PlayerGestureMath` TV brightness clamping (`10%–150%`) + dim/boost overlay alphas, mobile vertical `BrightnessHudOverlay` gauge geometry (`height > width`), Android TV `PlayerTopBar` brightness pill placement immediately next to `Sub`, `TvBrightnessControlPanel` (`−`/`+`/presets/reset/done), and v1.32 `BuildConfig`. |
+| `AudioSyncNumericInputTest.kt` | 5 | `AudioDelayMath.parseDelayInputMs` (`ms`/`s` units, decimals, inline suffixes, clamping `-10s..+10s`, invalid rejection), `TracksSheet` & `SubtitleSheet` numeric input + `±` sign toggle UI, and v1.32 `BuildConfig`. |
 | `HlsAudioSyncSampleStreamTest.kt` | 4 | `AudioOffsetSampleStream` bidirectional PTS shifting & sub-zero drop, `skipData` reverse translation, `AudioSyncMediaPeriod` audio-only wrapping + unwrap/rewrap on track switch, `discardBuffer` protection, negative-delay `getBufferedPositionUs` prefetch preservation, and `computeRealignSeekPositionMs`. |
 | `LocalFilePickerTest.kt` | 4 | Zero-permission SAF local video, M3U, JSON, and subtitle picker URI handling. |
 | `SeekBarScrubEngineTest.kt` | 4 | Precision scrub step calculation and progressive D-pad hold acceleration (`±1m` to `±10m`). |
@@ -57,7 +61,7 @@ gradle :app:testDebugUnitTest --tests "com.example.PrivateDnsAndNordVpnTest"
 | `FocusHighlightRobolectricTest.kt` | 2 | Android TV `tvFocusHighlight` focus ring and scale behavior. |
 | `ExampleRobolectricTest.kt` | 1 | App name resource verification (`CineStream`). |
 | `ExampleUnitTest.kt` | 1 | Baseline JVM sanity check. |
-| **Total** | **108** | **100% passing on local JVM (`gradle :app:testDebugUnitTest`).** |
+| **Total** | **114** | **100% passing on local JVM (`gradle :app:testDebugUnitTest`).** |
 
 ---
 

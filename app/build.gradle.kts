@@ -16,13 +16,8 @@ android {
     applicationId = "com.aistudio.cinestream.vqxkpm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 31
-    versionName = "1.31"
-
-    ndk {
-      // Keep 64-bit phones (arm64-v8a), 32-bit Android TVs (armeabi-v7a), and 64-bit emulators (x86_64)
-      abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-    }
+    versionCode = 35
+    versionName = "1.35"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -51,6 +46,9 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      ndk {
+        abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+      }
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("release")
@@ -58,6 +56,9 @@ android {
     debug {
       // Keep debug unminified for fast incremental builds and clean Compose debug tooling
       // (avoids AGP debuggable+minify warnings and :app:reportDebugComposeMappingErrors)
+      ndk {
+        abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+      }
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("debugConfig")
@@ -65,6 +66,12 @@ android {
     create("sideload") {
       initWith(getByName("release"))
       matchingFallbacks += listOf("release")
+      ndk {
+        // Real phones, tablets, and Android TVs use 64-bit ARM (arm64-v8a) or 32-bit ARM (armeabi-v7a).
+        // Excluding x86_64 emulator libs shrinks the sideload APK to ~13 MB so workspace sync never truncates it.
+        abiFilters.clear()
+        abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+      }
       signingConfig = signingConfigs.getByName("debugConfig")
     }
   }

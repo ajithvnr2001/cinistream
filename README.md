@@ -1,8 +1,8 @@
 # CineStream — Universal Cinema Media Player for Android Mobile & Android TV
 
-**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.31 / versionCode 31**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, **NextLib native FFmpeg (`1.11.1-0.16.0`)**, and **embedded WireGuard (`com.wireguard.android:tunnel`, `GoBackend`)**.
+**CineStream** (`com.aistudio.cinestream.vqxkpm`, **v1.35 / versionCode 35**) is a high-performance, zero-OOM Android video streaming and local media player built with **Kotlin**, **Jetpack Compose (Material 3)**, **AndroidX Media3 (`1.11.1`)**, **Google Play Services Cronet (`18.1.1`, HTTP/3 QUIC + TLS 1.3)**, **NextLib native FFmpeg (`1.11.1-0.16.0`)**, and **embedded WireGuard (`com.wireguard.android:tunnel`, `GoBackend`)**.
 
-It ships as a single **19 MB** R8-shrunk universal APK (**`cinistream-v31.apk`** and **`CineStream-universal.apk`**) covering modern 64-bit phones and tablets (`arm64-v8a`), 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs), and `x86_64` emulators.
+It ships as a compact **13.58 MB** R8-shrunk ARM APK (**`cinistream-v35.apk`**) covering modern 64-bit phones and tablets (`arm64-v8a`) and 32-bit Android TVs (`armeabi-v7a`, including 1 GB RAM Android 9 TVs).
 
 ---
 
@@ -42,11 +42,11 @@ It ships as a single **19 MB** R8-shrunk universal APK (**`cinistream-v31.apk`**
 
 ### Multi-JSON Catalogs, Live TV EPG, Subtitles & Local Ecosystem
 - **Unified Multi-JSON Movie & Series Catalogs (`MultiJsonPlaylistReducer`):** Persist multiple JSON playlist URLs + local files simultaneously, switch via `"All"` or per-playlist chips, auto-fetch IMDb posters/ratings/years, and fail over across per-item `mirrors` and path-preserving `cdnMirrors` with inherited HTTP headers.
-- **Continue Watching, Watchlist & Global Search (Room v3):** Deduplicated per-series Continue Watching rail, per-episode resume + `Watched` badges, poster-backed Watchlist, and instant search across Watchlist, Catalogs, Live TV, Downloads, and History.
+- **Continue Watching, Watchlist & Global Search (Room v4):** Deduplicated per-series Continue Watching rail, per-episode resume + `Watched` badges, poster-backed Watchlist, and instant search across Watchlist, Catalogs, Live TV, Downloads, and History.
 - **Local, URL & Dual Subtitles (`SubtitleMediaSourceBuilder`, `SecondarySubtitleEngine`):** Load `.srt`, `.vtt`, `.ass`, `.ssa`, and `.ttml` sidecar captions from device storage or URLs—with Media3 `1.11.1` extraction-time transcoding (`ProgressiveMediaSource` + `SubtitleExtractor` → `application/x-media3-cues`) preventing HLS `Legacy decoding is disabled` crashes—plus simultaneous top-screen secondary `.srt`/`.vtt` rendering (`SecondarySubtitleEngine`), direct `ms`/`s` numeric sync offset (`-10s..+10s`), and appearance customization.
 - **Audio Precision & Playback Comfort:** `0%–200%` (+20 dB) Volume Boost, Night Mode dialogue boost DSP, container- & codec-agnostic bidirectional Audio Sync (`-10s..+10s` via `AudioSyncMediaSource` + `AudioOffsetSampleStream` with direct `ms`/`s` numeric input and `±` sign toggle—working across muxed/demuxed HLS segments, DASH, MKV, MP4, PCM, FFmpeg, and HDMI passthrough), direct `ms`/`s` Subtitle Sync (`-10s..+10s`), Sleep Timer (`15m/30m/45m/60m/End of Ep` with 5s fade-out), Up-Next 10s countdown, Skip Intro (`+85s`), Hold-to-2× speed, Configurable Skip Interval (`5s/10s/15s/30s`), Chapter Markers & A-B Loop, Mobile PiP & Background Audio (`MediaPlaybackService`), and touch brightness/volume/pinch-to-zoom (`1.0×–2.5×`) gestures.
 - **Live TV XMLTV EPG & Channel Zapping:** Streams `.xml`/`.xml.gz` XMLTV guides (auto-detected from `#EXTM3U url-tvg`), renders Now/Next progress bars, and supports `CH-`/`CH+` and TV remote `ChannelUp`/`ChannelDown` zapping.
-- **Phone-to-TV Web Remote, Local Wi-Fi Sync, Offline Downloads & NAS/Jellyfin:** Built-in LAN HTTP server with pure-Kotlin QR code + 6-digit PIN (`LocalWebRemoteServer`), credential-free Wi-Fi & SAF JSON sync (`DeviceSyncCodec`), mobile offline MP4/MKV/HLS downloads (`OfflineDownloadManager`), and LAN **WebDAV / Jellyfin** streaming (`LocalNetworkClient`) with Keystore-encrypted credentials.
+- **Multi-Account Cloud WebDAV (TorBox / Nextcloud / NAS), Jellyfin, Web Remote & Offline Downloads:** Save, test, edit, and 1-tap switch unlimited **WebDAV** accounts—even multiple accounts on the same server URL (with a 1-tap **TorBox WebDAV** `https://webdav.torbox.app/` preset)—encrypting credentials via **Android Keystore AES-256-GCM** in Room v4, preserving special-character passwords byte-for-byte, stripping `Authorization` on cross-origin CDN redirects, bypassing unencrypted disk cache for authenticated streams, and auto-attaching sibling `.srt`/`.vtt`/`.ass` subtitles during direct playback. Also includes LAN Jellyfin streaming, Phone-to-TV Web Remote (`LocalWebRemoteServer`), credential-free Wi-Fi/SAF sync (`DeviceSyncCodec`), and mobile offline MP4/MKV/HLS downloads (`OfflineDownloadManager`).
 
 ---
 
@@ -54,11 +54,11 @@ It ships as a single **19 MB** R8-shrunk universal APK (**`cinistream-v31.apk`**
 
 | Document | Description |
 | :--- | :--- |
-| [**Architecture & Codebase Guide**](docs/ARCHITECTURE.md) | Complete v1.31 MVVM architecture, end-to-end streaming/prefetch/VPN pipeline, full 60+ file package inventory, Room v3 + Keystore persistence, state-frequency isolation, and UI design tokens. |
+| [**Architecture & Codebase Guide**](docs/ARCHITECTURE.md) | Complete v1.32 MVVM architecture, end-to-end streaming/prefetch/VPN pipeline, full 60+ file package inventory, Room v4 + Keystore persistence, state-frequency isolation, and UI design tokens. |
 | [**Decoder, Transport & Playback Engine**](docs/DECODER_AND_PLAYBACK_ENGINE.md) | Media3 `1.11.1`, Play Services Cronet HTTP/3 + `QuicThroughputWatchdog`, `ParallelPrefetchEngine`, `NordLynxEngine` WireGuard + DoH, NextLib FFmpeg 10-bit, `FrameDropAnalyzer`, `AudioSyncMediaSource` (HLS/DASH/MKV bidirectional sync), Night Mode DSP, and HLS extraction-time subtitle transcoding. |
-| [**Playlists, Live TV EPG, NAS & CDN Guide**](docs/PLAYLIST_AND_CDN_GUIDE.md) | Multi-JSON Movies & Series schema, field aliases, IMDb enrichment, 5-layer in-app CDN, M3U + XMLTV EPG format, WebDAV/Jellyfin streaming, and Phone-to-TV Web Remote / Wi-Fi Sync API. |
+| [**Playlists, Live TV EPG, WebDAV & CDN Guide**](docs/PLAYLIST_AND_CDN_GUIDE.md) | Multi-JSON Movies & Series schema, field aliases, IMDb enrichment, 5-layer in-app CDN, M3U + XMLTV EPG format, Multi-Account WebDAV (TorBox/NAS) & Jellyfin streaming, and Phone-to-TV Web Remote / Wi-Fi Sync API. |
 | [**Memory Management & Android TV Optimization**](docs/MEMORY_AND_TV_OPTIMIZATION.md) | Zero-OOM engineering for 32-bit Android 9 TVs, bounded prefetch & heap budgets, TV RAM-Direct mode, R8 APK compression (**19 MB** universal), and 10-foot TV ergonomics. |
-| [**Testing & Troubleshooting Playbook**](docs/TESTING_AND_TROUBLESHOOTING.md) | Running all **108 unit & Robolectric tests across 18 suites**, interpreting every Stats for Nerds indicator, and troubleshooting Wi-Fi buffering, QUIC throttling, frame drops, HEVC 10-bit, HLS subtitles, VPN, and HLS audio lip-sync. |
+| [**Testing & Troubleshooting Playbook**](docs/TESTING_AND_TROUBLESHOOTING.md) | Running all **114 unit & Robolectric tests across 19 suites**, interpreting every Stats for Nerds indicator, and troubleshooting Wi-Fi buffering, QUIC throttling, frame drops, HEVC 10-bit, HLS subtitles, VPN, HLS audio lip-sync, and WebDAV connections. |
 
 ---
 
@@ -86,19 +86,18 @@ It ships as a single **19 MB** R8-shrunk universal APK (**`cinistream-v31.apk`**
 
 ### Build & Verify
 ```bash
-# Run all 108 unit & Robolectric Compose UI tests across 18 suites
+# Run all 114 unit & Robolectric Compose UI tests across 19 suites
 gradle :app:testDebugUnitTest
 
 # Build compact universal R8-shrunk APK (arm64-v8a + armeabi-v7a + x86_64)
 gradle :app:assembleSideload -x lintVitalSideload
 
-# Pre-packaged root APKs (v1.31 / 19 MB):
-#   ./cinistream-v31.apk
-#   ./CineStream-universal.apk
+# Pre-packaged root APK (v1.35 / 13.58 MB, arm64-v8a + armeabi-v7a):
+#   ./cinistream-v35.apk
 ```
 
 ### Installing on Phone or Android TV
-1. Sideload **`cinistream-v31.apk`** (or **`CineStream-universal.apk`**), or build via AI Studio **Settings → Generate APK** if injecting `NORDVPN_ACCESS_TOKEN` via the AI Studio Secrets panel.
+1. Sideload **`cinistream-v35.apk`**, or build via AI Studio **Settings → Generate APK** if injecting `NORDVPN_ACCESS_TOKEN` via the AI Studio Secrets panel.
 2. Enable **Install Unknown Apps** for your file manager or sideloader and install.
 3. **Optional — DNS & NordVPN:** Open **DNS & VPN** from the Home header to enable Cloudflare `1.1.1.1` DoH, connect any of **118+ NordVPN countries/cities** via embedded WireGuard NordLynx, or enable **Auto-VPN Failover**.
 
@@ -126,16 +125,15 @@ gradle :app:assembleSideload -x lintVitalSideload
 ```text
 .
 ├── README.md                          # Project overview, quick start & complete version history
-├── cinistream-v31.apk                 # Universal Phone + Android TV APK (v1.31 / 19 MB)
-├── CineStream-universal.apk           # Latest universal APK alias (v1.31 / 19 MB)
+├── cinistream-v35.apk                 # Compact ARM Phone + Android TV APK (v1.35 / 13.58 MB)
 ├── eg-playlist.json                   # Sample unified Movie + Multi-Season Series + CDN playlist
 ├── .env.example                       # Optional secret placeholder (NORDVPN_ACCESS_TOKEN)
 ├── docs/
-│   ├── ARCHITECTURE.md                # Full v1.31 MVVM architecture, pipeline & complete module inventory
+│   ├── ARCHITECTURE.md                # Full v1.32 MVVM architecture, pipeline & complete module inventory
 │   ├── DECODER_AND_PLAYBACK_ENGINE.md # Cronet HTTP/3, ParallelPrefetch, NordLynx, FFmpeg 10-bit, AudioSyncMediaSource & DSP
-│   ├── PLAYLIST_AND_CDN_GUIDE.md      # Multi-JSON/M3U/XMLTV schemas, NAS/Jellyfin, Web Remote & 5-layer CDN
+│   ├── PLAYLIST_AND_CDN_GUIDE.md      # Multi-JSON/M3U/XMLTV schemas, Multi-Account WebDAV/Jellyfin, Web Remote & 5-layer CDN
 │   ├── MEMORY_AND_TV_OPTIMIZATION.md  # Zero-OOM Android 9 TV engineering, 19 MB R8 APK sizing & 10-foot UI
-│   └── TESTING_AND_TROUBLESHOOTING.md # 108-test suite (18 files), Stats for Nerds reference & issue playbooks
+│   └── TESTING_AND_TROUBLESHOOTING.md # 114-test suite (19 files), Stats for Nerds reference & issue playbooks
 ├── gradle/libs.versions.toml          # Version catalog (Media3 1.11.1, Cronet 18.1.1, NextLib, WireGuard, Room)
 └── app/src/
     ├── main/
@@ -144,20 +142,36 @@ gradle :app:assembleSideload -x lintVitalSideload
     │   └── java/com/example/
     │       ├── CineStreamApplication.kt   # Async Cronet HTTP/3, FastDns/DoH + OkHttp pool, RGB_565 Coil, onTrimMemory
     │       ├── MainActivity.kt            # Edge-to-edge host, Navigation Compose, PiP, VPN consent & VIEW intents
-    │       ├── data/                      # Room v3 DB (History, Favorites, Downloads, NAS), DataStore & DeviceSyncCodec
+    │       ├── data/                      # Room v4 DB (History, Favorites, Downloads, Multi-Account WebDAV/NAS), DataStore & DeviceSyncCodec
     │       ├── model/                     # MediaModels & V24Models (EPG, SleepTimer, AbLoop, Chapters, GlobalSearch)
-    │       ├── player/                    # 26 playback, transport, prefetch, VPN, decoder, AudioSync, DSP, subtitle & NAS engines
+    │       ├── player/                    # 26 playback, transport, prefetch, VPN, decoder, AudioSync, DSP, subtitle & WebDAV/NAS engines
     │       ├── remote/                    # LocalWebRemoteServer (LAN HTTP + Sync) & QrCodeMatrixGenerator
     │       ├── ui/                        # 35mm Screening Room theme, Home, Player, 15 sheets/overlays & TV utilities
     │       └── viewmodel/                 # CineStreamViewModel, MultiJsonPlaylistState, NetworkPrivacyState, V24UiStates
-    └── test/java/com/example/             # 18 JVM unit & Robolectric Compose UI test suites (108 tests)
+    └── test/java/com/example/             # 19 JVM unit & Robolectric Compose UI test suites (114 tests)
 ```
 
 ---
 
 ## Version History Highlights
 
-- **v1.31 (`cinistream-v31.apk`, 19 MB):** **HLS-Segment Bidirectional Audio Sync (`AudioSyncMediaSource`) & Direct `ms`/`s` Numeric Sync Input (`-10s..+10s`)**.
+- **v1.35 (`cinistream-v35.apk`, 13.58 MB):** **Multi-Audio × Multi-Quality Offline Download Picker with Per-Combination Size Estimates**.
+  - Expands HLS master playlists (`#EXT-X-STREAM-INF` × `#EXT-X-MEDIA:TYPE=AUDIO`, including muxed and external audio tracks) into every selectable **(Video Quality × Audio Track)** combination—even for single-resolution multi-audio streams—and automatically probes `#EXTINF` duration when runtime duration is unavailable so every combination displays accurate estimated sizes (including 5.1 surround vs. 2.0 stereo audio bitrate differences).
+  - Upgraded `DownloadQualitySheet` to **"Choose Quality & Audio"** with horizontal audio track filter chips (`All`, language/channel tracks), audio pill badges, and monospace size badges; safely probes extensionless HLS URLs via bounded 512 KB peeks; persists the exact chosen audio track in `download_state.json`; and downloads only the selected video + chosen audio track.
+- **v1.34 (`cinistream-v34.apk`, 13.58 MB):** **Resumable Offline Downloads, Seamless Network-Off & Wi-Fi ↔ Mobile Recovery, and Multi-Quality Download Picker**.
+  - **True Checkpoint Resume (HLS & Multi-Chunk Progressive):** Persists per-download progress (`download_state.json`) and writes HLS segments atomically via `.part` files so completed segments and `206` progressive byte ranges are never wiped or re-downloaded from 0% after network loss, pause, or app restart.
+  - **Automatic Network-Off & Wi-Fi ↔ Mobile Switch Recovery:** Uses `ConnectivityManager.registerDefaultNetworkCallback` to evict stale sockets across Wi-Fi ↔ Cellular handovers, auto-pause cleanly into `PAUSED` (*"Paused · Waiting for network"*) when offline while preserving all saved progress, and auto-resume from the exact saved segment/byte once connectivity returns—plus manual **Pause** and **Resume** buttons in `DownloadsSheet`, `TracksSheet`, and the mobile player top bar.
+  - **Multi-Quality HLS Download Picker (`DownloadQualitySheet`):** Probes HLS master playlists for all `#EXT-X-STREAM-INF` resolutions, bitrates, audio tracks, and estimated file sizes, prompting the user to pick their preferred quality whenever 2+ variants exist while starting single-quality/progressive files immediately.
+- **v1.33 (`cinistream-v33.apk`, 13.55 MB):** **Mobile Player Download Visibility Fix & High-Speed Parallel Offline Downloader (8× HLS + 4× Multi-Chunk MP4/MKV)**.
+  - Redesigned the mobile `PlayerTopBar` into a zero-overflow 2-row header with a scrollable quick-action strip placing the **Download** pill (`Download` / `XX%` / `Queued` / `Saved` / `Retry`) right next to **Sub** so it is always visible on 360dp portrait and landscape phones without clipping off-screen, plus added an **Offline Download** card inside `TracksSheet` and 1-tap Download icons on playable files inside `LocalNetworkSheet` (WebDAV/Jellyfin).
+  - Upgraded `OfflineDownloadManager` from single-threaded sequential downloads to an **8-way parallel HLS segment engine** (supporting up to 4,000 segments, automatic per-segment retries, AES-128 keys, `#EXT-X-MAP`, `#EXT-X-BYTERANGE`, and separate `#EXT-X-MEDIA:TYPE=AUDIO` tracks) and a **4-way parallel `206 Partial Content` multi-chunk progressive engine** for MP4/MKV/WebDAV files with cross-origin `Authorization` redirect stripping and live **MB/s** speed telemetry in `DownloadsSheet` and `TracksSheet`.
+- **v1.32 (`cinistream-v32.apk`):** **Multi-Account Cloud WebDAV (TorBox, Nextcloud, NAS) & Direct Authenticated Playback**.
+  - Migrated Room to **v4 (`MIGRATION_3_4`)**, removing the unique constraint on `(baseUrl, serverType)` and adding `@Update` so unlimited WebDAV accounts can coexist on the exact same server URL (e.g. multiple TorBox accounts on `https://webdav.torbox.app/`).
+  - Hardened `LocalNetworkClient`: RFC 4918 `PROPFIND` manual same-origin redirect handling (preserving `PROPFIND` + `Depth: 1` + XML body across `301`/`302`/`307`/`308` while stripping `Authorization` on cross-origin redirects), byte-for-byte UTF-8 Basic Auth preserving special punctuation and whitespace, safe percent-encoding for spaces/brackets (`[2024]`, `#`, `{}`), XXE-disabled multi-`propstat` XML parsing, full video/audio MIME & extension filtering, sibling `.srt`/`.vtt`/`.ass`/`.ttml` subtitle auto-attachment, and live **Test Connection** diagnostics.
+  - Updated `CinePlayerManager` to route `Authorization`-bearing WebDAV streams through `OkHttpDataSource` (stripping `Authorization` cleanly on cross-origin CDN `302` redirects) and bypass unencrypted `MediaEdgeCache` disk storage for authenticated media.
+  - Upgraded `LocalNetworkSheet` with a 1-tap **TorBox WebDAV** URL preset, account username badges, inline Edit Account, password visibility toggle, live **Test** button, Quick Account Switcher bar, folder Refresh, instant search filter, and file-size + subtitle badges.
+  - Added `MultiAccountWebDavTest.kt` (**114/114** tests passing across 19 suites).
+- **v1.31:** **HLS-Segment Bidirectional Audio Sync (`AudioSyncMediaSource`) & Direct `ms`/`s` Numeric Sync Input (`-10s..+10s`)**.
   - Replaced the PCM-only `DelayAudioProcessor` sink chain with **`AudioSyncMediaSource`** (`AudioSyncMediaPeriod` + `AudioOffsetSampleStream`), shifting `C.TRACK_TYPE_AUDIO` sample timestamps directly at the `SampleStream` boundary before decoding. Works identically across **HLS muxed `.ts` segments**, **HLS demuxed `#EXT-X-MEDIA:TYPE=AUDIO` separate audio segments (`.ts`/`.aac`/`.m4s`)**, DASH, MKV, MP4, PCM, FFmpeg, and HDMI AC-3/E-AC-3 passthrough—with zero PCM ring-buffer RAM overhead, zero silence injection, and exact in-buffer seek realignment (`SeekParameters.EXACT` + anchor-locking).
   - Added direct numeric input in **milliseconds (`ms`) or seconds (`s`)** (`SyncOffsetNumericInputRow` with `ms`/`s` unit chips, dedicated `±` sign toggle for phone/TV keyboards, inline suffix parsing, and validation) to both **Audio Delay** (`TracksSheet`) and **Subtitle Delay** (`SubtitleSheet`) across `-10s..+10s`.
   - Added `AudioSyncNumericInputTest.kt` and `HlsAudioSyncSampleStreamTest.kt` (**108/108** tests passing across 18 suites).

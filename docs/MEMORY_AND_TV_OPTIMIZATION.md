@@ -1,12 +1,12 @@
-# Memory Management, APK Sizing & Android TV Optimization (v1.32)
+# Memory Management, APK Sizing & Android TV Optimization (v1.39)
 
-CineStream v1.32 is engineered to run stall-free with **zero `OutOfMemoryError` crashes** on **32-bit Android 9 TVs** (1 GB RAM, `80 MB` default heap / `384 MB` `largeHeap`) while supporting **37+ Mbps 4K 10-bit HDR10 playback** on modern 64-bit smartphones—all from one compact R8-shrunk universal APK (`cinistream-v32.apk`).
+CineStream v1.39 is engineered to run stall-free with **zero `OutOfMemoryError` crashes** on **32-bit Android 9 TVs** (1 GB RAM, `80 MB` default heap / `384 MB` `largeHeap`) while supporting **37+ Mbps 4K 10-bit HDR10 playback**, **live external audio URL merging**, and **8× HLS / 4× multi-chunk resumable offline downloads (with external audio bundling)** on modern 64-bit smartphones—all from one compact **13.62 MB** combined ARM sideload APK (`cinistream-v39.apk`).
 
 ---
 
-## 1. Root Causes of TV Buffering & OOMs (and How v1.32 Solves Them)
+## 1. Root Causes of TV Buffering & OOMs (and How v1.39 Solves Them)
 
-| Bottleneck | Stock Default Behavior | CineStream v1.32 Fix |
+| Bottleneck | Stock Default Behavior | CineStream v1.39 Fix |
 | :--- | :--- | :--- |
 | **1. Unbounded ExoPlayer Heap Buffers** | `DefaultLoadControl` buffers 50s up to **137.5 MB** on Java Heap—guaranteed OOM on 80 MB heaps. | Dynamic heap-capped `LoadControl` (`20%` of `maxMemory`, clamped **12–40 MB**), 20–45s window, `prioritizeTimeOverSizeThresholds = false`, `DefaultAllocator(trimOnReset = true)` + explicit `allocator.trim()`. |
 | **2. `largeHeap` Disabled** | 32-bit Android 9 TVs cap apps at `80 MB` by default. | Enabled `android:largeHeap="true"` in `AndroidManifest.xml` (`384 MB` ceiling). |
@@ -14,10 +14,11 @@ CineStream v1.32 is engineered to run stall-free with **zero `OutOfMemoryError` 
 | **4. Software 7.1 AAC Underruns & Slow ABR** | Auto-selecting 7.1 surround forces software AAC on Cortex-A53 CPUs (`50,000+` underruns). | Android TV `DefaultTrackSelector` prioritizes **2-channel Stereo** hardware DSP (`maxAudioChannelCount = 2`, `exceedAudioConstraintsIfNecessary = true`), caps auto video to `1080p / 9.5 Mbps`, seeds `6 Mbps` Wi-Fi cold start, and downshifts 2.5× faster (`10s`, `0.70f`). |
 | **5. Slow TV eMMC Flash Contention** | Synchronous `SimpleCache` writes & SQLite fsyncs stall ExoPlayer's loader thread on shared TV eMMC. | TV / low-RAM devices (`FEATURE_LEANBACK || isLowRamDevice || maxMemory <= 400 MB`) run **RAM-Direct** (0 eMMC writes); phones use a `128 KB`-buffered 128 MB LRU disk cache. |
 | **6. SW-Decode CPU Starvation & Retained Surfaces** | Parallel prefetch during CPU-heavy FFmpeg decode causes dropped frames; leaving player leaks 4K ION surfaces. | Prefetch automatically throttles during SW decode; `stopAndTrimBuffers()` clears video surface, trims allocator, clears prefetch RAM, and releases AudioFX before popping to Home. |
+| **7. Large Audio Sync Offsets & External Audio Contention** | PCM ring buffers scale linearly with delay (`±60 min` would consume hundreds of MB of RAM); external audio sharing video prefetch starves playback. | `AudioSyncMediaSource` & `ExternalAudioSyncMediaSource` shift compressed sample PTS timestamps at the `SampleStream` boundary (**0 extra PCM ring-buffer RAM** even at `±60 min`), and external audio URLs stream on a dedicated direct HTTP lane bypassing primary video prefetch. |
 
 ---
 
-## 2. Exact Memory Budgets
+## 2. Exact Memory & Storage Budgets
 
 ### A. Heap-Capped Media3 `LoadControl`
 - `MIN_TARGET_BUFFER_BYTES = 12 MB`, `MAX_TARGET_BUFFER_BYTES = 40 MB` (`20%` of `Runtime.getRuntime().maxMemory()`).
@@ -30,28 +31,42 @@ CineStream v1.32 is engineered to run stall-free with **zero `OutOfMemoryError` 
 - **Mobile / Tablet:** `<= 28 MB` total prefetch ceiling, `16 MB` single-segment cap, `3×` focused concurrency + dedicated audio lane.
 - Every prefetched entry is **consume-once** (freed immediately when ExoPlayer finishes reading) and evicted instantaneously on `onTrimMemory` / `onLowMemory` / `stopAndTrimBuffers()`.
 
-### C. Coil Image Loader & System Memory Pressure (`CineStreamApplication.kt`)
+### C. Zero-PCM-Buffer Audio Sync & Direct External Audio Lane (v1.37–v1.39)
+- `AudioSyncMediaSource` (primary media) and `ExternalAudioSyncMediaSource` (external audio URLs) operate on compressed encoded samples before decoding—consuming **0 bytes of extra PCM ring buffer RAM** regardless of whether the offset is `50 ms` or `±60 minutes`.
+- `AudioOnlyFilteringMediaSource` strips unneeded `VIDEO`/`TEXT` track groups from muxed external `.m3u8`/`.mp4`/`.mkv` URLs before ExoPlayer selects tracks, preventing duplicate video decoding and extra ION surface allocation.
+- External audio HTTP requests bypass `ParallelPrefetchEngine` so primary video lookahead RAM stays dedicated to video segments.
+
+### D. Bounded Parallel Resumable Offline Downloads & External Audio Sidecars (Mobile & Tablet — v1.33–v1.39)
+- `OfflineDownloadManager` streams segments and external audio sidecars (`.mp3`, `.ac3`, `.eac3`, `.flac`, `.wav`, `.m4a`, or external HLS `.m3u8` into `<download_folder>/ext_audio/`) directly to app-private atomic `.part` files on disk (`8×` concurrent HLS segment workers with a 32 KB streaming buffer per worker; `4×` concurrent `Range`-chunk workers for progressive MP4/MKV) rather than holding full media files in JVM heap.
+- Pause/resume state is persisted atomically in Room v4 (`offline_downloads`) and `download_state.json`, while completed external audio metadata (`offline_audio.json`) lives in the same download folder with canonical path-traversal validation so zero Room schema migration is needed and `deleteDownload()` cleans up all video, audio, and sidecar files atomically.
+
+### E. Coil Image Loader & System Memory Pressure (`CineStreamApplication.kt`)
 - **10% JVM heap** memory cache cap + **24 MB** disk cache (`cacheDir/imdb_poster_cache`).
 - `allowRgb565(true)` (halves bitmap RAM vs ARGB_8888), `crossfade(false)` (no double bitmap allocation), bounded `320 × 480` decode sizing with remembered `ImageRequest`.
 - `onTrimMemory` / `onLowMemory` simultaneously clears Coil bitmaps, prefetch RAM, idle OkHttp sockets, and `FastDnsResolver` entries.
 
 ---
 
-## 3. Universal APK Size Engineering (20 MB — `app/build.gradle.kts` & `app/proguard-rules.pro`)
+## 3. Combined ARM Sideload APK Size Engineering (13.62 MB — `cinistream-v39.apk`)
 
-CineStream packs Media3 `1.11.1`, NextLib FFmpeg (`libffmpeg`), embedded WireGuard (`libwg-go.so`), Room v4, Compose M3, and bundled **Fraunces + DM Sans + JetBrains Mono** fonts into a single **19 MB** universal APK via six deliberate optimizations:
-1. **R8 Code & Resource Shrinking (`isMinifyEnabled = true`, `isShrinkResources = true` on `release` & `sideload`):** Removes dead DEX classes and unused resources for compact release/sideload APKs while `app/proguard-rules.pro` preserves NextLib JNI symbols, WireGuard `GoBackend` callbacks, Media3 reflection factories, Play Services Cronet, Room v4, and `com.example.model.**`. The `debug` buildType remains unminified for fast incremental preview builds and clean Compose tooling.
-2. **Targeted ABIs (`ndk.abiFilters`):** Includes `arm64-v8a` (modern phones), `armeabi-v7a` (32-bit Android TVs), and `x86_64` (emulators), excluding obsolete 32-bit `x86`.
-3. **Compressed Native Libraries (`packaging.jniLibs.useLegacyPackaging = true`):** Compresses `.so` binaries inside the APK, saving ~21 MB.
+CineStream packs Media3 `1.11.1`, NextLib FFmpeg (`libffmpeg`), embedded WireGuard (`libwg-go.so`), Room v4, Compose M3, and bundled **Fraunces + DM Sans + JetBrains Mono** fonts into a single **13.62 MB (`14,281,102` bytes)** combined `arm64-v8a` + `armeabi-v7a` sideload APK via seven deliberate optimizations:
+1. **R8 Code & Resource Shrinking (`isMinifyEnabled = true`, `isShrinkResources = true` on `release` & `sideload`):** Removes dead DEX classes and unused resources while `app/proguard-rules.pro` preserves NextLib JNI symbols, WireGuard `GoBackend` callbacks, Media3 reflection factories, Play Services Cronet, Room v4, and `com.example.model.**`. The `debug` buildType remains unminified for fast incremental development builds.
+2. **Real-Hardware ARM ABI Targeting (`arm64-v8a` + `armeabi-v7a`):** The `sideload` distribution APK bundles **64-bit ARM** (modern Android phones/tablets/TV boxes) and **32-bit ARMv7** (older Android 9 TVs & Fire TV sticks) in one universal sideload file while excluding desktop-emulator-only `x86_64` native libraries (~6 MB saved).
+3. **Deflate-9 Compression + `zipalign -p 4` + v2 APK Signature:** Compressed native `.so` packaging (`packaging.jniLibs.useLegacyPackaging = true`), deflate-9 re-compression, 4-byte page-aligned `zipalign`, and full APK Signature Scheme v2 verification.
 4. **WireGuard CLI Stripping (`excludes += setOf("**/libwg-quick.so", "**/libwg.so")`):** CineStream uses `GoBackend` (`libwg-go.so`), so root-only CLI binaries are stripped cleanly.
 5. **Compact Local Vector Icons (`ui/icons/ExtendedRoundedIcons.kt`):** Replaces the ~15 MB `material-icons-extended` DEX dependency with lightweight local Compose `ImageVector` definitions.
 6. **Play Services Cronet:** Loads Chromium's QUIC binary dynamically from Google Play Services (~150 KB client shim instead of embedding a 12+ MB Cronet `.so`).
+7. **Zero Bundled Large Media/Model Assets:** All UI artwork and glyphs are lightweight vector/Compose primitives; posters load lazily on demand into the bounded Coil cache.
 
 ---
 
 ## 4. Android TV 10-Foot Ergonomics & 35mm Editorial UI
 
-- **Dual-Form-Factor Layout (`HomeScreen.kt`):** Switches automatically to an overscan-safe **2-Column 10-Foot Dashboard** on Android TV (`FEATURE_LEANBACK`) or wide screens (`>= 840.dp`), with brand hero + Stream Dock on the left and Quick Tools, Search, Watchlist, Continue Watching, Catalogs, Samples, and Recent on the right.
+- **Dual-Form-Factor Layout (`HomeScreen.kt`):** Switches automatically to an overscan-safe **2-Column 10-Foot Dashboard** on Android TV (`FEATURE_LEANBACK`) or wide screens (`>= 840.dp`), with brand hero + Stream Dock on the left and Quick Tools, Search, Watchlist, Continue Watching, Catalogs (Movies, Collections, Series), Samples, and Recent on the right.
 - **35mm Screening Room Palette for Living-Room Screens:** Warm carbon matte surfaces (`#09090B` / `#121215`) and warm archival ivory ink (`#F4F1EA`) eliminate cold blue backlight bloom and harsh white glare in dark rooms.
-- **Android TV Brightness Control (`PlayerControlsOverlay.kt` & `PlayerGestures.kt`):** Adds a dedicated D-Pad Brightness pill right next to `Sub` opening a non-dimming popover (`−`/`+` 10% steps, slider, and `30%–150%` presets) backed by both `WindowManager.LayoutParams.screenBrightness` and a live software dim/boost video filter so brightness visibly responds even on HDMI TV boxes.
-- **TV-Only Guardrails:** Mobile-only features (PiP button, Background Audio foreground service, Offline Downloads pill, touch swipe/pinch gestures) are automatically hidden on Android TV (`!isTvDevice`), while TV-first tools (**TV Web Remote QR**, `CH-`/`CH+` remote key zapping, `1.35×` enlarged living-room subtitles, visible `tvFocusHighlight` focus borders, and predictable `FocusRequester` modal entry) are front and center.
+- **Android TV Brightness Control (`PlayerControlsOverlay.kt` & `PlayerGestures.kt`):** Dedicated D-Pad Brightness pill right next to `Sub` opening a non-dimming popover (`−`/`+` 10% steps, slider, and `30%–150%` presets) backed by both `WindowManager.LayoutParams.screenBrightness` and a live software dim/boost video filter so brightness visibly responds even on HDMI TV boxes.
+- **TV-Friendly External Audio & Movie Collections:**
+  - `CollectionDetailSheet` and `SeriesDetailSheet` use clean D-pad focus chains (`tvFocusHighlight`), showing `CC` and cyan `AUDIO` badges and launching auto-attached JSON external audio tracks with a single OK/Select click.
+  - To attach an ad-hoc external audio URL on Android TV without typing on a remote, push it directly from a phone browser via **TV Web Remote (`load_audio`)**, or adjust `±60 min` Audio Sync directly inside `TracksSheet` using D-pad presets (`−5s`, `−1s`, `−250ms`, `−50ms`, `+50ms`, `+250ms`, `+1s`, `+5s`) or exact `ms`/`s`/`m` input.
+- **TV-Only Guardrails:** Mobile-only features (PiP button, Background Audio foreground service, Offline Downloads pill & per-film download buttons, touch swipe/pinch gestures) are automatically hidden on Android TV (`!isTvDevice`), while TV-first tools (**TV Web Remote QR**, `CH-`/`CH+` remote key zapping, `1.35×` enlarged living-room subtitles, visible `tvFocusHighlight` focus borders, and predictable `FocusRequester` modal entry) are front and center.
+

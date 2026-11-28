@@ -46,6 +46,36 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * External audio track candidate (from active playback session or JSON playlist) that can be
+ * displayed in the mobile download quality picker and downloaded alongside the primary video.
+ */
+data class DownloadExternalAudioCandidate(
+    val id: String,
+    val url: String,
+    val label: String,
+    val language: String? = null,
+    val formatBadge: String = "AUDIO",
+    val isHls: Boolean = false,
+    val delayMs: Long = 0L,
+    val isCurrentlyActive: Boolean = false
+)
+
+/**
+ * Saved sidecar manifest (`offline_audio.json`) stored inside a completed offline download folder
+ * when an external audio track (HLS `.m3u8` or direct `.mp3`/`.ac3`/`.flac`/`.wav`/`.m4a`/etc.)
+ * was bundled with the offline video.
+ */
+data class OfflineSidecarAudio(
+    val id: String,
+    val relativePath: String,
+    val label: String,
+    val language: String? = null,
+    val formatBadge: String = "AUDIO",
+    val isHls: Boolean = false,
+    val delayMs: Long = 0L
+)
+
 data class DownloadQualityOption(
     val id: String,
     val label: String,
@@ -61,7 +91,14 @@ data class DownloadQualityOption(
     val audioBitrateBps: Long = 0L,
     val estimatedBytes: Long = 0L,
     val isRecommended: Boolean = false,
-    val hasExplicitAudioChoice: Boolean = false
+    val hasExplicitAudioChoice: Boolean = false,
+    val isExternalAudio: Boolean = false,
+    val externalAudioUrl: String? = null,
+    val externalAudioId: String? = null,
+    val externalAudioFormatBadge: String? = null,
+    val externalAudioIsHls: Boolean = false,
+    val externalAudioDelayMs: Long = 0L,
+    val isProgressiveVideo: Boolean = false
 )
 
 /**
@@ -99,6 +136,7 @@ class OfflineDownloadManager(
         private const val MAX_REDIRECT_HOPS = 5
         private const val MAX_SINGLE_FILE_BYTES = 8L * 1024L * 1024L * 1024L // 8 GB safety cap
         private const val STATE_FILE_NAME = "download_state.json"
+        const val SIDECAR_AUDIO_FILE_NAME = "offline_audio.json"
 
         fun sanitizeFolderName(rawTitle: String, id: Long): String {
             val clean = rawTitle.replace(Regex("[^a-zA-Z0-9._-]+"), "_")
@@ -519,6 +557,404 @@ class OfflineDownloadManager(
             }
             return result
         }
+
+        private val SUPPORTED_DIRECT_AUDIO_EXTS = setOf(
+            "mp3", "ac3", "eac3", "ec3", "flac", "wav", "m4a",
+            "aac", "opus", "ogg", "oga", "dts", "mka", "weba", "ts", "mp4", "mkv"
+        )
+
+        /**
+         * Resolves the exact local file extension for a downloaded external audio file so Media3's
+         * `DefaultExtractorsFactory` picks the right extractor (MP3, AC-3, FLAC, WAV, M4A, AAC,
+         * Opus, etc.) immediately on offline playback.
+         */
+        fun resolveExternalAudioFileExtension(
+            url: String,
+            contentType: String? = null,
+            formatBadge: String? = null
+        ): String {
+            val cleanPath = url.substringBefore('?').substringBefore('#').lowercase(Locale.US)
+            val pathExt = cleanPath.substringAfterLast('/', "").substringAfterLast('.', "")
+            if (pathExt in SUPPORTED_DIRECT_AUDIO_EXTS) {
+                return if (pathExt == "ec3") "eac3" else pathExt
+            }
+            val ct = contentType.orEmpty().lowercase(Locale.US)
+            when {
+                ct.contains("audio/mpeg") || ct.contains("audio/mp3") -> return "mp3"
+                ct.contains("audio/eac3") || ct.contains("audio/ec-3") -> return "eac3"
+                ct.contains("audio/ac3") || ct.contains("audio/vnd.dolby") -> return "ac3"
+                ct.contains("audio/flac") || ct.contains("audio/x-flac") -> return "flac"
+                ct.contains("audio/wav") || ct.contains("audio/x-wav") ||
+                    ct.contains("audio/wave") || ct.contains("audio/vnd.wave") -> return "wav"
+                ct.contains("audio/x-m4a") || ct.contains("audio/mp4") || ct.contains("audio/mp4a") -> return "m4a"
+                ct.contains("audio/aac") -> return "aac"
+                ct.contains("audio/opus") -> return "opus"
+                ct.contains("audio/ogg") -> return "ogg"
+                ct.contains("audio/vnd.dts") -> return "dts"
+                ct.contains("audio/x-matroska") -> return "mka"
+                ct.contains("audio/webm") -> return "weba"
+            }
+            val badgeExt = formatBadge.orEmpty().trim().lowercase(Locale.US)
+            if (badgeExt in SUPPORTED_DIRECT_AUDIO_EXTS) {
+                return if (badgeExt == "ec3") "eac3" else badgeExt
+            }
+            return "m4a"
+        }
+
+        fun formatBadgeForExtension(ext: String, fallback: String = "AUDIO"): String = when (ext.lowercase(Locale.US)) {
+            "mp3" -> "MP3"
+            "ac3" -> "AC3"
+            "eac3", "ec3" -> "EAC3"
+            "flac" -> "FLAC"
+            "wav" -> "WAV"
+            "m4a" -> "M4A"
+            "aac" -> "AAC"
+            "opus" -> "OPUS"
+            "ogg", "oga" -> "OGG"
+            "dts" -> "DTS"
+            "mka" -> "MKA"
+            "weba" -> "WEBA"
+            "m3u8" -> "HLS"
+            else -> fallback.ifBlank { "AUDIO" }
+        }
+
+        fun estimateExternalAudioBitrateBps(formatBadge: String?, url: String = ""): Long {
+            val ext = resolveExternalAudioFileExtension(url, null, formatBadge)
+            return when (ext) {
+                "wav" -> 1_411_000L
+                "flac" -> 900_000L
+                "dts" -> 768_000L
+                "eac3" -> 448_000L
+                "ac3" -> 384_000L
+                "mp3", "m4a", "aac" -> 192_000L
+                "opus", "ogg", "oga" -> 128_000L
+                else -> 192_000L
+            }
+        }
+
+        /**
+         * Given an external audio URL that points to an HLS Master Playlist (`#EXT-X-STREAM-INF`),
+         * resolves the best media playlist URL to download:
+         * 1. Prefer an explicit `#EXT-X-MEDIA:TYPE=AUDIO` rendition with a `URI` (default/autoselect first).
+         * 2. Otherwise (muxed external master `.m3u8`), pick the lowest-bandwidth variant so offline
+         *    audio storage stays compact while `AudioOnlyFilteringMediaSource` strips video on playback.
+         */
+        fun selectExternalHlsAudioPlaylistUrl(masterUrl: String, masterContent: String): String? {
+            val lines = masterContent.lines().map { it.trim() }
+            data class MasterAudio(val uri: String, val isDefault: Boolean, val isAutoSelect: Boolean)
+            val audioUris = mutableListOf<MasterAudio>()
+            var pendingBandwidth = Long.MAX_VALUE
+            var awaitingUri = false
+            val variants = mutableListOf<Pair<Long, String>>()
+            val bwRegex = Regex("""(?:^|,)BANDWIDTH=(\d+)""", RegexOption.IGNORE_CASE)
+
+            for (line in lines) {
+                if (line.startsWith("#EXT-X-MEDIA:", ignoreCase = true) &&
+                    (line.contains("TYPE=AUDIO", ignoreCase = true) || line.contains("TYPE=\"AUDIO\"", ignoreCase = true))
+                ) {
+                    val attrs = parseHlsAttributes(line.substringAfter(":"))
+                    val rawUri = attrs["URI"]?.takeIf { it.isNotBlank() } ?: continue
+                    audioUris.add(
+                        MasterAudio(
+                            uri = resolveRelativeUrl(masterUrl, rawUri),
+                            isDefault = attrs["DEFAULT"].equals("YES", ignoreCase = true),
+                            isAutoSelect = attrs["AUTOSELECT"].equals("YES", ignoreCase = true)
+                        )
+                    )
+                } else if (line.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true)) {
+                    pendingBandwidth = bwRegex.find(line.substringAfter(":"))
+                        ?.groupValues?.getOrNull(1)?.toLongOrNull() ?: Long.MAX_VALUE
+                    awaitingUri = true
+                } else if (awaitingUri && line.isNotEmpty() && !line.startsWith("#")) {
+                    variants.add(pendingBandwidth to resolveRelativeUrl(masterUrl, line))
+                    awaitingUri = false
+                }
+            }
+            if (audioUris.isNotEmpty()) {
+                return audioUris.sortedWith(
+                    compareByDescending<MasterAudio> { it.isDefault }
+                        .thenByDescending { it.isAutoSelect }
+                ).first().uri
+            }
+            return variants.minByOrNull { it.first }?.second
+        }
+
+        /**
+         * Merges loaded external audio tracks (from the active player session or JSON playlist)
+         * into the download quality options so they appear as selectable audio choices for
+         * multi-variant HLS, single-variant HLS, and progressive MP4/MKV/WebM streams alike.
+         */
+        fun mergeExternalAudioOptions(
+            baseHlsOptions: List<DownloadQualityOption>,
+            externalAudios: List<DownloadExternalAudioCandidate>,
+            sourceUrl: String,
+            format: StreamFormat,
+            durationMs: Long = 0L,
+            progressiveVideoBytes: Long = 0L,
+            externalAudioSizesByUrl: Map<String, Long> = emptyMap()
+        ): List<DownloadQualityOption> {
+            val validExternal = externalAudios
+                .filter {
+                    val u = it.url.trim().lowercase(Locale.US)
+                    u.startsWith("http://") || u.startsWith("https://")
+                }
+                .distinctBy { it.url.trim().lowercase(Locale.US) }
+            if (validExternal.isEmpty()) return baseHlsOptions
+
+            fun formatChipLabel(candidate: DownloadExternalAudioCandidate): String {
+                val cleanLabel = candidate.label.trim().ifBlank { "External Audio" }
+                val badge = candidate.formatBadge.trim().uppercase(Locale.US)
+                return if (badge.isNotBlank() && badge != "AUDIO" && !cleanLabel.contains(badge, ignoreCase = true)) {
+                    "$cleanLabel ($badge)"
+                } else {
+                    cleanLabel
+                }
+            }
+
+            fun buildSyncSuffix(delayMs: Long): String? = if (delayMs != 0L) {
+                "Sync ${AudioDelayMath.formatDelayLabel(delayMs)}"
+            } else {
+                null
+            }
+
+            val hasActiveExternal = validExternal.any { it.isCurrentlyActive }
+
+            // Case 1: Progressive video (MP4/MKV/WebM) or single-variant HLS without master variants
+            if (baseHlsOptions.isEmpty()) {
+                val pathLower = sourceUrl.substringBefore('?').substringBefore('#').lowercase(Locale.US)
+                val isSingleHls = format == StreamFormat.HLS ||
+                    format == StreamFormat.M3U8 ||
+                    pathLower.contains(".m3u8")
+                val videoLabel = when {
+                    isSingleHls -> "Original Stream"
+                    format == StreamFormat.MKV || pathLower.endsWith(".mkv") -> "Original MKV"
+                    format == StreamFormat.WEBM || pathLower.endsWith(".webm") -> "Original WebM"
+                    else -> "Original Video"
+                }
+                val results = mutableListOf<DownloadQualityOption>()
+
+                // Put loaded external audio tracks first when active (so user's loaded track is highlighted)
+                validExternal.forEachIndexed { idx, ext ->
+                    val chip = formatChipLabel(ext)
+                    val audioBps = estimateExternalAudioBitrateBps(ext.formatBadge, ext.url)
+                    val probedAudioBytes = externalAudioSizesByUrl[ext.url.trim()] ?: 0L
+                    val estAudioBytes = when {
+                        probedAudioBytes > 0L -> probedAudioBytes
+                        durationMs > 0L -> (audioBps / 8L) * (durationMs / 1000L)
+                        else -> 0L
+                    }
+                    val totalEst = when {
+                        progressiveVideoBytes > 0L && estAudioBytes > 0L -> progressiveVideoBytes + estAudioBytes
+                        progressiveVideoBytes > 0L -> progressiveVideoBytes
+                        else -> estAudioBytes
+                    }
+                    val detailParts = buildList {
+                        add("Loaded Audio: ${ext.label} (${ext.formatBadge.uppercase(Locale.US)})")
+                        buildSyncSuffix(ext.delayMs)?.let { add(it) }
+                        formatEstimatedSize(totalEst).takeIf { it.isNotBlank() }?.let { add(it) }
+                    }
+                    results.add(
+                        DownloadQualityOption(
+                            id = "ext_direct_${idx}_${ext.id}",
+                            label = "$videoLabel · $chip",
+                            detail = detailParts.joinToString(" · "),
+                            height = 0,
+                            bandwidthBps = audioBps,
+                            variantPlaylistUrl = "",
+                            streamInfLine = "",
+                            audioPlaylistUrl = null,
+                            audioName = chip,
+                            audioLanguage = ext.language,
+                            audioBitrateBps = audioBps,
+                            estimatedBytes = totalEst,
+                            isRecommended = ext.isCurrentlyActive || (!hasActiveExternal && idx == 0),
+                            hasExplicitAudioChoice = true,
+                            isExternalAudio = true,
+                            externalAudioUrl = ext.url.trim(),
+                            externalAudioId = ext.id,
+                            externalAudioFormatBadge = ext.formatBadge.uppercase(Locale.US),
+                            externalAudioIsHls = ext.isHls,
+                            externalAudioDelayMs = ext.delayMs,
+                            isProgressiveVideo = !isSingleHls
+                        )
+                    )
+                }
+
+                // Always keep Original Audio option available
+                val origDetailParts = buildList {
+                    add(if (isSingleHls) "HLS Stream · Original Audio" else "Direct Video · Original Audio")
+                    formatEstimatedSize(progressiveVideoBytes).takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+                results.add(
+                    DownloadQualityOption(
+                        id = "orig_video_only",
+                        label = "$videoLabel · Original Audio",
+                        detail = origDetailParts.joinToString(" · "),
+                        height = 0,
+                        bandwidthBps = 0L,
+                        variantPlaylistUrl = "",
+                        streamInfLine = "",
+                        audioPlaylistUrl = null,
+                        audioName = "Original Audio",
+                        estimatedBytes = progressiveVideoBytes,
+                        isRecommended = false,
+                        hasExplicitAudioChoice = true,
+                        isExternalAudio = false,
+                        isProgressiveVideo = !isSingleHls
+                    )
+                )
+                return results
+            }
+
+            // Case 2: Multi-variant HLS Master Playlist -> combine each resolution tier with loaded external audios
+            val recommendedVariantUrl = baseHlsOptions.firstOrNull { it.isRecommended }?.variantPlaylistUrl
+                ?: baseHlsOptions.first().variantPlaylistUrl
+
+            // Upgrade base options so every existing track has an explicit audio filter label
+            val upgradedBase = baseHlsOptions.map { opt ->
+                val audioLabel = if (opt.hasExplicitAudioChoice && opt.audioName.isNotBlank()) {
+                    opt.audioName
+                } else if (opt.audioName.isNotBlank() && !opt.audioName.equals("Default", ignoreCase = true)) {
+                    opt.audioName
+                } else {
+                    "Original Audio"
+                }
+                val baseRes = opt.label.substringBefore(" · ")
+                opt.copy(
+                    label = "$baseRes · $audioLabel",
+                    audioName = audioLabel,
+                    hasExplicitAudioChoice = true,
+                    isRecommended = if (hasActiveExternal) false else opt.isRecommended
+                )
+            }
+
+            // Unique video resolution tiers in original sorted order
+            val distinctVideoTiers = baseHlsOptions.distinctBy { it.variantPlaylistUrl }
+            val combined = mutableListOf<DownloadQualityOption>()
+
+            distinctVideoTiers.forEachIndexed { vIdx, tier ->
+                val baseRes = tier.label.substringBefore(" · ")
+                val tierBaseBps = tier.bandwidthBps
+
+                // Add each loaded external audio for this video tier
+                validExternal.forEachIndexed { eIdx, ext ->
+                    val chip = formatChipLabel(ext)
+                    val audioBps = estimateExternalAudioBitrateBps(ext.formatBadge, ext.url)
+                    val videoCoreBps = if (tierBaseBps > 0L) {
+                        (tierBaseBps - tier.audioBitrateBps).coerceAtLeast((tierBaseBps * 75L) / 100L)
+                    } else {
+                        0L
+                    }
+                    val effectiveBps = videoCoreBps + audioBps
+                    val probedAudioBytes = externalAudioSizesByUrl[ext.url.trim()] ?: 0L
+                    val estVideoBytes = if (durationMs > 0L && videoCoreBps > 0L) {
+                        (videoCoreBps / 8L) * (durationMs / 1000L)
+                    } else {
+                        tier.estimatedBytes
+                    }
+                    val estAudioBytes = when {
+                        probedAudioBytes > 0L -> probedAudioBytes
+                        durationMs > 0L -> (audioBps / 8L) * (durationMs / 1000L)
+                        else -> 0L
+                    }
+                    val totalEst = estVideoBytes + estAudioBytes
+                    val detailParts = buildList {
+                        formatBitrateLabel(effectiveBps).takeIf { it.isNotBlank() }?.let { add(it) }
+                        formatEstimatedSize(totalEst).takeIf { it.isNotBlank() }?.let { add(it) }
+                        add("Loaded Audio: ${ext.label} (${ext.formatBadge.uppercase(Locale.US)})")
+                        buildSyncSuffix(ext.delayMs)?.let { add(it) }
+                    }
+                    combined.add(
+                        DownloadQualityOption(
+                            id = "hls_q_${vIdx}_ext_${eIdx}_${ext.id}_${tier.height}",
+                            label = "$baseRes · $chip",
+                            detail = detailParts.joinToString(" · "),
+                            height = tier.height,
+                            bandwidthBps = effectiveBps,
+                            variantPlaylistUrl = tier.variantPlaylistUrl,
+                            streamInfLine = tier.streamInfLine,
+                            audioPlaylistUrl = null,
+                            audioName = chip,
+                            audioLanguage = ext.language,
+                            audioBitrateBps = audioBps,
+                            estimatedBytes = totalEst,
+                            isRecommended = hasActiveExternal && ext.isCurrentlyActive &&
+                                tier.variantPlaylistUrl == recommendedVariantUrl,
+                            hasExplicitAudioChoice = true,
+                            isExternalAudio = true,
+                            externalAudioUrl = ext.url.trim(),
+                            externalAudioId = ext.id,
+                            externalAudioFormatBadge = ext.formatBadge.uppercase(Locale.US),
+                            externalAudioIsHls = ext.isHls,
+                            externalAudioDelayMs = ext.delayMs,
+                            isProgressiveVideo = false
+                        )
+                    )
+                }
+
+                // Append the original/manifest audio options for this same video tier
+                combined.addAll(upgradedBase.filter { it.variantPlaylistUrl == tier.variantPlaylistUrl })
+            }
+
+            return combined
+        }
+
+        fun writeOfflineSidecarAudio(folder: File, sidecar: OfflineSidecarAudio) {
+            runCatching {
+                val json = JSONObject().apply {
+                    put("id", sidecar.id)
+                    put("relativePath", sidecar.relativePath)
+                    put("label", sidecar.label)
+                    if (!sidecar.language.isNullOrBlank()) put("language", sidecar.language)
+                    put("formatBadge", sidecar.formatBadge)
+                    put("isHls", sidecar.isHls)
+                    put("delayMs", sidecar.delayMs)
+                }
+                val tmp = File(folder, "$SIDECAR_AUDIO_FILE_NAME.tmp")
+                val target = File(folder, SIDECAR_AUDIO_FILE_NAME)
+                tmp.writeText(json.toString(), Charsets.UTF_8)
+                if (target.exists()) target.delete()
+                if (!tmp.renameTo(target)) {
+                    tmp.copyTo(target, overwrite = true)
+                    tmp.delete()
+                }
+            }
+        }
+
+        /**
+         * Reads the optional saved `offline_audio.json` sidecar from the download folder containing
+         * [localMediaFilePath]. Validates canonical path boundaries so tampered paths cannot escape.
+         */
+        fun readOfflineSidecarAudio(localMediaFilePath: String): OfflineSidecarAudio? {
+            if (localMediaFilePath.isBlank()) return null
+            val mediaFile = File(localMediaFilePath)
+            val folder = mediaFile.parentFile ?: return null
+            val sidecarFile = File(folder, SIDECAR_AUDIO_FILE_NAME)
+            if (!sidecarFile.exists()) return null
+            return runCatching {
+                val obj = JSONObject(sidecarFile.readText(Charsets.UTF_8))
+                val relPath = obj.optString("relativePath", "").trim()
+                if (relPath.isBlank()) return@runCatching null
+                val resolvedAudio = File(folder, relPath)
+                val folderCanonical = folder.canonicalPath
+                val audioCanonical = resolvedAudio.canonicalPath
+                if (!audioCanonical.startsWith(folderCanonical + File.separator)) {
+                    return@runCatching null
+                }
+                if (!resolvedAudio.exists() || resolvedAudio.length() <= 0L) {
+                    return@runCatching null
+                }
+                OfflineSidecarAudio(
+                    id = obj.optString("id", "offline_ext_audio").ifBlank { "offline_ext_audio" },
+                    relativePath = relPath,
+                    label = obj.optString("label", "Offline Audio").ifBlank { "Offline Audio" },
+                    language = obj.optString("language", "").takeIf { it.isNotBlank() },
+                    formatBadge = obj.optString("formatBadge", "AUDIO").ifBlank { "AUDIO" },
+                    isHls = obj.optBoolean("isHls", relPath.endsWith(".m3u8", ignoreCase = true)),
+                    delayMs = AudioDelayMath.clampDelayMs(obj.optLong("delayMs", 0L))
+                )
+            }.getOrNull()
+        }
     }
 
     private class NetworkPausedException(message: String) : IOException(message)
@@ -537,7 +973,17 @@ class OfflineDownloadManager(
         val selectedAudioLanguage: String? = null,
         val selectedQualityLabel: String? = null,
         val contentLength: Long = 0L,
-        val chunks: List<ChunkCheckpoint> = emptyList()
+        val chunks: List<ChunkCheckpoint> = emptyList(),
+        val isProgressiveVideo: Boolean = false,
+        val videoCompleted: Boolean = false,
+        val completedVideoPath: String? = null,
+        val externalAudioUrl: String? = null,
+        val externalAudioId: String? = null,
+        val externalAudioLabel: String? = null,
+        val externalAudioLanguage: String? = null,
+        val externalAudioFormatBadge: String? = null,
+        val externalAudioIsHls: Boolean = false,
+        val externalAudioDelayMs: Long = 0L
     )
 
     private val appContext = context.applicationContext
@@ -736,6 +1182,72 @@ class OfflineDownloadManager(
         }.getOrDefault(emptyList())
     }
 
+    /**
+     * Probes HLS variants (when applicable) AND merges any loaded external audio tracks
+     * (`.m3u8`, `.mp3`, `.ac3`, `.flac`, `.wav`, `.m4a`, etc.) into selectable download options.
+     */
+    suspend fun inspectDownloadOptions(
+        sourceUrl: String,
+        format: StreamFormat = StreamFormat.AUTO,
+        headers: Map<String, String> = emptyMap(),
+        durationMs: Long = 0L,
+        externalAudios: List<DownloadExternalAudioCandidate> = emptyList()
+    ): List<DownloadQualityOption> = withContext(Dispatchers.IO) {
+        val trimmed = sourceUrl.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) &&
+            !trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            return@withContext emptyList()
+        }
+        val pathLower = trimmed.substringBefore('?').substringBefore('#').lowercase(Locale.US)
+        val isKnownProgressiveExt = pathLower.endsWith(".mp4") ||
+            pathLower.endsWith(".mkv") ||
+            pathLower.endsWith(".webm") ||
+            pathLower.endsWith(".avi") ||
+            pathLower.endsWith(".mov") ||
+            pathLower.endsWith(".m4v") ||
+            pathLower.endsWith(".ts")
+
+        val baseHlsOptions = if (!isKnownProgressiveExt || format == StreamFormat.HLS || format == StreamFormat.M3U8) {
+            inspectHlsQualities(trimmed, headers, durationMs)
+        } else {
+            emptyList()
+        }
+
+        if (externalAudios.isEmpty()) {
+            return@withContext baseHlsOptions
+        }
+
+        // For progressive videos paired with external audio, quickly probe Content-Length for size display
+        val progressiveBytes = if (baseHlsOptions.isEmpty() && !pathLower.contains(".m3u8") &&
+            format != StreamFormat.HLS && format != StreamFormat.M3U8
+        ) {
+            runCatching { probeProgressiveUrl(trimmed, headers).contentLength }.getOrDefault(0L)
+        } else {
+            0L
+        }
+
+        // Quickly probe Content-Length for direct external audio files (mp3/ac3/flac/wav/m4a)
+        val extSizes = mutableMapOf<String, Long>()
+        for (ext in externalAudios) {
+            val extUrl = ext.url.trim()
+            if (!ext.isHls && !extUrl.contains(".m3u8", ignoreCase = true)) {
+                val len = runCatching { probeProgressiveUrl(extUrl, headers).contentLength }.getOrDefault(0L)
+                if (len > 0L) extSizes[extUrl] = len
+            }
+        }
+
+        mergeExternalAudioOptions(
+            baseHlsOptions = baseHlsOptions,
+            externalAudios = externalAudios,
+            sourceUrl = trimmed,
+            format = format,
+            durationMs = durationMs,
+            progressiveVideoBytes = progressiveBytes,
+            externalAudioSizesByUrl = extSizes
+        )
+    }
+
     fun enqueueDownload(
         title: String,
         sourceUrl: String,
@@ -767,7 +1279,11 @@ class OfflineDownloadManager(
                     if (selectedQuality.height > 0 && !baseTitle.contains("${selectedQuality.height}p", ignoreCase = true)) {
                         add("${selectedQuality.height}p")
                     }
-                    if (selectedQuality.hasExplicitAudioChoice && selectedQuality.audioName.isNotBlank()) {
+                    if ((selectedQuality.hasExplicitAudioChoice || selectedQuality.isExternalAudio) &&
+                        selectedQuality.audioName.isNotBlank() &&
+                        !selectedQuality.audioName.equals("Original Audio", ignoreCase = true) &&
+                        !selectedQuality.audioName.equals("Default", ignoreCase = true)
+                    ) {
                         add(selectedQuality.audioName)
                     }
                 }
@@ -933,9 +1449,10 @@ class OfflineDownloadManager(
             val folder = resolveDownloadFolder(entity)
             val savedCheckpoint = if (preserveExistingProgress) readCheckpoint(folder) else null
             val qualityChanged = selectedQuality != null &&
-                savedCheckpoint?.selectedVariantUrl != null &&
-                (savedCheckpoint.selectedVariantUrl != selectedQuality.variantPlaylistUrl ||
-                    savedCheckpoint.selectedAudioUrl != selectedQuality.audioPlaylistUrl)
+                savedCheckpoint != null &&
+                (savedCheckpoint.selectedVariantUrl != selectedQuality.variantPlaylistUrl.takeIf { it.isNotBlank() } ||
+                    savedCheckpoint.selectedAudioUrl != selectedQuality.audioPlaylistUrl ||
+                    savedCheckpoint.externalAudioUrl != selectedQuality.externalAudioUrl)
 
             if (!preserveExistingProgress || qualityChanged) {
                 if (folder.exists()) folder.deleteRecursively()
@@ -948,12 +1465,20 @@ class OfflineDownloadManager(
                 writeCheckpoint(
                     folder,
                     DownloadCheckpoint(
-                        selectedVariantUrl = selectedQuality.variantPlaylistUrl,
-                        selectedStreamInf = selectedQuality.streamInfLine,
+                        selectedVariantUrl = selectedQuality.variantPlaylistUrl.takeIf { it.isNotBlank() },
+                        selectedStreamInf = selectedQuality.streamInfLine.takeIf { it.isNotBlank() },
                         selectedAudioUrl = selectedQuality.audioPlaylistUrl,
                         selectedAudioName = selectedQuality.audioName,
                         selectedAudioLanguage = selectedQuality.audioLanguage,
-                        selectedQualityLabel = selectedQuality.label
+                        selectedQualityLabel = selectedQuality.label,
+                        isProgressiveVideo = selectedQuality.isProgressiveVideo,
+                        externalAudioUrl = selectedQuality.externalAudioUrl,
+                        externalAudioId = selectedQuality.externalAudioId,
+                        externalAudioLabel = selectedQuality.audioName.takeIf { selectedQuality.isExternalAudio },
+                        externalAudioLanguage = selectedQuality.audioLanguage,
+                        externalAudioFormatBadge = selectedQuality.externalAudioFormatBadge,
+                        externalAudioIsHls = selectedQuality.externalAudioIsHls,
+                        externalAudioDelayMs = selectedQuality.externalAudioDelayMs
                     )
                 )
             }
@@ -969,29 +1494,68 @@ class OfflineDownloadManager(
                     errorMessage = null
                 )
                 val effectiveCheckpoint = readCheckpoint(folder)
-                val isHls = selectedQuality != null ||
-                    effectiveCheckpoint?.selectedVariantUrl != null ||
-                    format == StreamFormat.HLS ||
-                    format == StreamFormat.M3U8 ||
-                    entity.sourceUrl.contains(".m3u8", ignoreCase = true)
+                val hasExternalAudio = !effectiveCheckpoint?.externalAudioUrl.isNullOrBlank()
+                val videoProgressRange = if (hasExternalAudio) 0..85 else 0..99
 
-                val finalPath = if (isHls) {
-                    downloadHlsStreamParallel(
-                        id = id,
-                        playlistUrl = entity.sourceUrl,
-                        folder = folder,
-                        headers = headers,
-                        checkpoint = effectiveCheckpoint
-                    )
+                val hasSelectedHlsVariant = !selectedQuality?.variantPlaylistUrl.isNullOrBlank() ||
+                    !effectiveCheckpoint?.selectedVariantUrl.isNullOrBlank()
+                val isHls = when {
+                    selectedQuality?.isProgressiveVideo == true || effectiveCheckpoint?.isProgressiveVideo == true -> false
+                    hasSelectedHlsVariant -> true
+                    format == StreamFormat.HLS || format == StreamFormat.M3U8 -> true
+                    entity.sourceUrl.contains(".m3u8", ignoreCase = true) -> true
+                    else -> false
+                }
+
+                val savedVideoPath = effectiveCheckpoint?.completedVideoPath
+                val finalPath = if (effectiveCheckpoint?.videoCompleted == true &&
+                    !savedVideoPath.isNullOrBlank() &&
+                    File(savedVideoPath).exists() &&
+                    File(savedVideoPath).length() > 0L
+                ) {
+                    savedVideoPath
                 } else {
-                    downloadProgressiveFileFast(
+                    val downloadedVideoPath = if (isHls) {
+                        downloadHlsStreamParallel(
+                            id = id,
+                            playlistUrl = entity.sourceUrl,
+                            folder = folder,
+                            headers = headers,
+                            checkpoint = effectiveCheckpoint,
+                            progressRange = videoProgressRange
+                        )
+                    } else {
+                        downloadProgressiveFileFast(
+                            id = id,
+                            url = entity.sourceUrl,
+                            format = format,
+                            folder = folder,
+                            headers = headers,
+                            checkpoint = effectiveCheckpoint,
+                            progressRange = videoProgressRange
+                        )
+                    }
+                    if (hasExternalAudio && effectiveCheckpoint != null) {
+                        writeCheckpoint(
+                            folder,
+                            effectiveCheckpoint.copy(
+                                videoCompleted = true,
+                                completedVideoPath = downloadedVideoPath
+                            )
+                        )
+                    }
+                    downloadedVideoPath
+                }
+
+                if (hasExternalAudio && effectiveCheckpoint != null) {
+                    val sidecar = downloadExternalAudioSidecar(
                         id = id,
-                        url = entity.sourceUrl,
-                        format = format,
                         folder = folder,
                         headers = headers,
-                        checkpoint = effectiveCheckpoint
+                        checkpoint = effectiveCheckpoint,
+                        progressRange = 85..99
                     )
+                    writeOfflineSidecarAudio(folder, sidecar)
                 }
 
                 // Clean up checkpoint metadata file after successful completion
@@ -1079,7 +1643,8 @@ class OfflineDownloadManager(
         val finalUrl: String,
         val effectiveHeaders: Map<String, String>,
         val contentLength: Long,
-        val supportsRanges: Boolean
+        val supportsRanges: Boolean,
+        val contentType: String? = null
     )
 
     private suspend fun probeProgressiveUrl(
@@ -1099,6 +1664,7 @@ class OfflineDownloadManager(
                     extraHeaders = mapOf("Range" to "bytes=0-0")
                 )
                 return response.use { resp ->
+                    val ct = resp.header("Content-Type")
                     if (resp.code == 206) {
                         val contentRange = resp.header("Content-Range").orEmpty()
                         val totalLen = contentRange.substringAfter('/', "").trim().toLongOrNull() ?: 0L
@@ -1106,7 +1672,8 @@ class OfflineDownloadManager(
                             finalUrl = finalUrl,
                             effectiveHeaders = effectiveHeaders,
                             contentLength = totalLen,
-                            supportsRanges = totalLen > 0L
+                            supportsRanges = totalLen > 0L,
+                            contentType = ct
                         )
                     } else if (resp.isSuccessful) {
                         val len = resp.header("Content-Length")?.toLongOrNull() ?: 0L
@@ -1115,10 +1682,11 @@ class OfflineDownloadManager(
                             finalUrl = finalUrl,
                             effectiveHeaders = effectiveHeaders,
                             contentLength = len,
-                            supportsRanges = acceptsRanges && len > 0L
+                            supportsRanges = acceptsRanges && len > 0L,
+                            contentType = ct
                         )
                     } else {
-                        ProgressiveProbe(url, headers, 0L, false)
+                        ProgressiveProbe(url, headers, 0L, false, ct)
                     }
                 }
             } catch (ce: CancellationException) {
@@ -1140,7 +1708,8 @@ class OfflineDownloadManager(
         format: StreamFormat,
         folder: File,
         headers: Map<String, String>,
-        checkpoint: DownloadCheckpoint?
+        checkpoint: DownloadCheckpoint?,
+        progressRange: IntRange = 0..99
     ): String {
         val cleanPath = url.substringBefore('?').lowercase(Locale.US)
         val ext = when {
@@ -1151,7 +1720,10 @@ class OfflineDownloadManager(
             cleanPath.endsWith(".m4v") -> "m4v"
             cleanPath.endsWith(".avi") -> "avi"
             cleanPath.endsWith(".mp3") -> "mp3"
+            cleanPath.endsWith(".ac3") -> "ac3"
+            cleanPath.endsWith(".eac3") || cleanPath.endsWith(".ec3") -> "eac3"
             cleanPath.endsWith(".flac") -> "flac"
+            cleanPath.endsWith(".wav") -> "wav"
             cleanPath.endsWith(".m4a") -> "m4a"
             else -> "mp4"
         }
@@ -1170,14 +1742,16 @@ class OfflineDownloadManager(
                 contentLength = probe.contentLength,
                 outFile = outFile,
                 folder = folder,
-                existingCheckpoint = checkpoint
+                existingCheckpoint = checkpoint,
+                progressRange = progressRange
             )
         } else {
             downloadProgressiveSingleStreamResumable(
                 id = id,
                 url = probe.finalUrl,
                 headers = probe.effectiveHeaders,
-                outFile = outFile
+                outFile = outFile,
+                progressRange = progressRange
             )
         }
         return outFile.absolutePath
@@ -1190,7 +1764,8 @@ class OfflineDownloadManager(
         contentLength: Long,
         outFile: File,
         folder: File,
-        existingCheckpoint: DownloadCheckpoint?
+        existingCheckpoint: DownloadCheckpoint?,
+        progressRange: IntRange = 0..99
     ) {
         val canResumeChunks = existingCheckpoint != null &&
             existingCheckpoint.contentLength == contentLength &&
@@ -1226,7 +1801,7 @@ class OfflineDownloadManager(
                 val snapshot = chunks.map { it.copy() }
                 writeCheckpoint(
                     folder,
-                    DownloadCheckpoint(
+                    (existingCheckpoint ?: DownloadCheckpoint()).copy(
                         contentLength = contentLength,
                         chunks = snapshot
                     )
@@ -1240,7 +1815,9 @@ class OfflineDownloadManager(
             downloadId = id,
             totalBytesExpected = contentLength,
             totalItemsExpected = 0,
-            initialBytes = initialBytes
+            initialBytes = initialBytes,
+            minPercent = progressRange.first,
+            maxPercent = progressRange.last
         )
         flushChunkCheckpoint(force = true)
         if (initialBytes > 0L) {
@@ -1328,7 +1905,8 @@ class OfflineDownloadManager(
         id: Long,
         url: String,
         headers: Map<String, String>,
-        outFile: File
+        outFile: File,
+        progressRange: IntRange = 0..99
     ) {
         var attempt = 0
         while (true) {
@@ -1363,7 +1941,9 @@ class OfflineDownloadManager(
                         downloadId = id,
                         totalBytesExpected = totalExpected,
                         totalItemsExpected = 0,
-                        initialBytes = startOffset
+                        initialBytes = startOffset,
+                        minPercent = progressRange.first,
+                        maxPercent = progressRange.last
                     )
                     if (startOffset > 0L) {
                         reporter.forceReport(bytesDownloaded = startOffset, completedItems = 0)
@@ -1428,7 +2008,8 @@ class OfflineDownloadManager(
         playlistUrl: String,
         folder: File,
         headers: Map<String, String>,
-        checkpoint: DownloadCheckpoint?
+        checkpoint: DownloadCheckpoint?,
+        progressRange: IntRange = 0..99
     ): String {
         val (resolvedPlaylistUrl, resolvedHeaders, initialManifest) = fetchTextWithRetry(playlistUrl, headers)
             ?: throw IllegalStateException("Failed to fetch HLS playlist")
@@ -1443,7 +2024,8 @@ class OfflineDownloadManager(
             executeParallelHlsTasksWithHeaders(
                 downloadId = id,
                 tasksWithHeaders = prepared.tasks.map { it to resolvedHeaders },
-                totalSegments = prepared.segmentCount
+                totalSegments = prepared.segmentCount,
+                progressRange = progressRange
             )
             val localManifest = File(folder, "index.m3u8")
             localManifest.writeText(prepared.rewrittenManifestText, Charsets.UTF_8)
@@ -1458,24 +2040,29 @@ class OfflineDownloadManager(
                 videoStreamInfLine = checkpoint.selectedStreamInf.orEmpty().ifBlank {
                     "#EXT-X-STREAM-INF:BANDWIDTH=4000000"
                 },
-                audioPlaylistUrl = checkpoint.selectedAudioUrl,
+                audioPlaylistUrl = if (!checkpoint.externalAudioUrl.isNullOrBlank()) null else checkpoint.selectedAudioUrl,
                 audioName = checkpoint.selectedAudioName,
                 audioLanguage = checkpoint.selectedAudioLanguage
             )
         } else {
             val autoSel = selectHlsStreams(resolvedPlaylistUrl, initialManifest)
                 ?: throw IllegalStateException("No playable HLS variant found")
+            val effectiveSel = if (!checkpoint?.externalAudioUrl.isNullOrBlank()) {
+                autoSel.copy(audioPlaylistUrl = null)
+            } else {
+                autoSel
+            }
             writeCheckpoint(
                 folder,
-                DownloadCheckpoint(
-                    selectedVariantUrl = autoSel.videoPlaylistUrl,
-                    selectedStreamInf = autoSel.videoStreamInfLine,
-                    selectedAudioUrl = autoSel.audioPlaylistUrl,
-                    selectedAudioName = autoSel.audioName,
-                    selectedAudioLanguage = autoSel.audioLanguage
+                (checkpoint ?: DownloadCheckpoint()).copy(
+                    selectedVariantUrl = effectiveSel.videoPlaylistUrl,
+                    selectedStreamInf = effectiveSel.videoStreamInfLine,
+                    selectedAudioUrl = effectiveSel.audioPlaylistUrl,
+                    selectedAudioName = effectiveSel.audioName,
+                    selectedAudioLanguage = effectiveSel.audioLanguage
                 )
             )
-            autoSel
+            effectiveSel
         }
 
         val (videoUrl, videoHeaders, videoManifest) = fetchTextWithRetry(selection.videoPlaylistUrl, resolvedHeaders)
@@ -1491,7 +2078,8 @@ class OfflineDownloadManager(
             executeParallelHlsTasksWithHeaders(
                 downloadId = id,
                 tasksWithHeaders = prepared.tasks.map { it to videoHeaders },
-                totalSegments = prepared.segmentCount
+                totalSegments = prepared.segmentCount,
+                progressRange = progressRange
             )
             val localManifest = File(folder, "index.m3u8")
             localManifest.writeText(prepared.rewrittenManifestText, Charsets.UTF_8)
@@ -1510,7 +2098,8 @@ class OfflineDownloadManager(
             executeParallelHlsTasksWithHeaders(
                 downloadId = id,
                 tasksWithHeaders = videoPrepared.tasks.map { it to videoHeaders },
-                totalSegments = videoPrepared.segmentCount
+                totalSegments = videoPrepared.segmentCount,
+                progressRange = progressRange
             )
             val localManifest = File(videoDir, "video.m3u8")
             localManifest.writeText(videoPrepared.rewrittenManifestText, Charsets.UTF_8)
@@ -1538,7 +2127,8 @@ class OfflineDownloadManager(
         executeParallelHlsTasksWithHeaders(
             downloadId = id,
             tasksWithHeaders = allTasks,
-            totalSegments = combinedSegments
+            totalSegments = combinedSegments,
+            progressRange = progressRange
         )
 
         File(videoDir, "video.m3u8").writeText(videoPrepared.rewrittenManifestText, Charsets.UTF_8)
@@ -1562,6 +2152,103 @@ class OfflineDownloadManager(
         val localMaster = File(folder, "index.m3u8")
         localMaster.writeText(localMasterText, Charsets.UTF_8)
         return localMaster.absolutePath
+    }
+
+    /**
+     * Downloads an external loaded audio track (HLS `.m3u8` master/media OR direct `.mp3`, `.ac3`,
+     * `.eac3`, `.flac`, `.wav`, `.m4a`, `.aac`, `.opus`, `.ogg`, `.dts`, etc.) into `ext_audio/`
+     * inside the download folder with full pause/resume safety and returns its sidecar descriptor.
+     */
+    private suspend fun downloadExternalAudioSidecar(
+        id: Long,
+        folder: File,
+        headers: Map<String, String>,
+        checkpoint: DownloadCheckpoint,
+        progressRange: IntRange = 85..99
+    ): OfflineSidecarAudio {
+        val extUrl = checkpoint.externalAudioUrl?.trim()
+            ?: throw IllegalStateException("Missing external audio URL")
+        val extAudioDir = File(folder, "ext_audio").apply { mkdirs() }
+        val audioId = checkpoint.externalAudioId?.takeIf { it.isNotBlank() } ?: "offline_ext_audio"
+        val audioLabel = checkpoint.externalAudioLabel?.takeIf { it.isNotBlank() }
+            ?: checkpoint.selectedAudioName.takeIf { it.isNotBlank() }
+            ?: "External Audio"
+
+        val urlLooksHls = checkpoint.externalAudioIsHls ||
+            extUrl.contains(".m3u8", ignoreCase = true) ||
+            extUrl.contains("format=m3u8", ignoreCase = true)
+        val peekedPlaylist = if (urlLooksHls) {
+            fetchTextWithRetry(extUrl, headers)
+        } else {
+            runCatching { fetchPlaylistTextBounded(extUrl, headers) }.getOrNull()
+        }
+
+        if (peekedPlaylist != null && peekedPlaylist.third.contains("#EXTM3U", ignoreCase = true)) {
+            val (resolvedUrl, resolvedHeaders, manifestText) = peekedPlaylist
+            val (mediaUrl, mediaHeaders, mediaManifest) = if (manifestText.contains("#EXT-X-STREAM-INF", ignoreCase = true)) {
+                val chosenMediaUrl = selectExternalHlsAudioPlaylistUrl(resolvedUrl, manifestText)
+                    ?: throw IllegalStateException("External audio HLS master has no playable rendition")
+                fetchTextWithRetry(chosenMediaUrl, resolvedHeaders)
+                    ?: throw IllegalStateException("Failed to fetch external audio HLS media playlist")
+            } else {
+                Triple(resolvedUrl, resolvedHeaders, manifestText)
+            }
+
+            val prepared = prepareHlsMediaPlaylist(
+                mediaPlaylistUrl = mediaUrl,
+                manifestContent = mediaManifest,
+                targetDir = extAudioDir
+            )
+            executeParallelHlsTasksWithHeaders(
+                downloadId = id,
+                tasksWithHeaders = prepared.tasks.map { it to mediaHeaders },
+                totalSegments = prepared.segmentCount,
+                progressRange = progressRange
+            )
+            val localAudioManifest = File(extAudioDir, "audio.m3u8")
+            localAudioManifest.writeText(prepared.rewrittenManifestText, Charsets.UTF_8)
+            return OfflineSidecarAudio(
+                id = audioId,
+                relativePath = "ext_audio/audio.m3u8",
+                label = audioLabel,
+                language = checkpoint.externalAudioLanguage,
+                formatBadge = "HLS",
+                isHls = true,
+                delayMs = checkpoint.externalAudioDelayMs
+            )
+        }
+
+        // Direct audio file (.mp3, .ac3, .eac3, .flac, .wav, .m4a, .aac, .opus, .ogg, .dts, etc.)
+        val probe = probeProgressiveUrl(extUrl, headers)
+        if (probe.contentLength > MAX_SINGLE_FILE_BYTES) {
+            throw IllegalStateException("External audio exceeds offline size limit")
+        }
+        val ext = resolveExternalAudioFileExtension(
+            url = probe.finalUrl,
+            contentType = probe.contentType,
+            formatBadge = checkpoint.externalAudioFormatBadge
+        )
+        val outFile = File(extAudioDir, "track.$ext")
+        downloadProgressiveSingleStreamResumable(
+            id = id,
+            url = probe.finalUrl,
+            headers = probe.effectiveHeaders,
+            outFile = outFile,
+            progressRange = progressRange
+        )
+        val badge = formatBadgeForExtension(
+            ext = ext,
+            fallback = checkpoint.externalAudioFormatBadge ?: "AUDIO"
+        )
+        return OfflineSidecarAudio(
+            id = audioId,
+            relativePath = "ext_audio/track.$ext",
+            label = audioLabel,
+            language = checkpoint.externalAudioLanguage,
+            formatBadge = badge,
+            isHls = false,
+            delayMs = checkpoint.externalAudioDelayMs
+        )
     }
 
     private fun prepareHlsMediaPlaylist(
@@ -1690,7 +2377,8 @@ class OfflineDownloadManager(
     private suspend fun executeParallelHlsTasksWithHeaders(
         downloadId: Long,
         tasksWithHeaders: List<Pair<HlsAssetTask, Map<String, String>>>,
-        totalSegments: Int
+        totalSegments: Int,
+        progressRange: IntRange = 0..99
     ) {
         // RESUME: skip any segment/key/init already completely saved on disk!
         var alreadyBytes = 0L
@@ -1715,7 +2403,9 @@ class OfflineDownloadManager(
             downloadId = downloadId,
             totalBytesExpected = 0L,
             totalItemsExpected = totalSegments.coerceAtLeast(1),
-            initialBytes = alreadyBytes
+            initialBytes = alreadyBytes,
+            minPercent = progressRange.first,
+            maxPercent = progressRange.last
         )
         if (alreadySegments > 0 || alreadyBytes > 0L) {
             reporter.forceReport(bytesDownloaded = alreadyBytes, completedItems = alreadySegments)
@@ -1969,6 +2659,16 @@ class OfflineDownloadManager(
                 if (checkpoint.selectedAudioLanguage != null) put("audioLang", checkpoint.selectedAudioLanguage)
                 if (checkpoint.selectedQualityLabel != null) put("qualityLabel", checkpoint.selectedQualityLabel)
                 put("contentLength", checkpoint.contentLength)
+                put("isProgressiveVideo", checkpoint.isProgressiveVideo)
+                put("videoCompleted", checkpoint.videoCompleted)
+                if (checkpoint.completedVideoPath != null) put("completedVideoPath", checkpoint.completedVideoPath)
+                if (checkpoint.externalAudioUrl != null) put("externalAudioUrl", checkpoint.externalAudioUrl)
+                if (checkpoint.externalAudioId != null) put("externalAudioId", checkpoint.externalAudioId)
+                if (checkpoint.externalAudioLabel != null) put("externalAudioLabel", checkpoint.externalAudioLabel)
+                if (checkpoint.externalAudioLanguage != null) put("externalAudioLanguage", checkpoint.externalAudioLanguage)
+                if (checkpoint.externalAudioFormatBadge != null) put("externalAudioFormatBadge", checkpoint.externalAudioFormatBadge)
+                put("externalAudioIsHls", checkpoint.externalAudioIsHls)
+                put("externalAudioDelayMs", checkpoint.externalAudioDelayMs)
                 val arr = JSONArray()
                 checkpoint.chunks.forEach { ch ->
                     arr.put(
@@ -2019,7 +2719,17 @@ class OfflineDownloadManager(
                 selectedAudioLanguage = obj.optString("audioLang", "").takeIf { it.isNotBlank() },
                 selectedQualityLabel = obj.optString("qualityLabel", "").takeIf { it.isNotBlank() },
                 contentLength = obj.optLong("contentLength", 0L),
-                chunks = chunks
+                chunks = chunks,
+                isProgressiveVideo = obj.optBoolean("isProgressiveVideo", false),
+                videoCompleted = obj.optBoolean("videoCompleted", false),
+                completedVideoPath = obj.optString("completedVideoPath", "").takeIf { it.isNotBlank() },
+                externalAudioUrl = obj.optString("externalAudioUrl", "").takeIf { it.isNotBlank() },
+                externalAudioId = obj.optString("externalAudioId", "").takeIf { it.isNotBlank() },
+                externalAudioLabel = obj.optString("externalAudioLabel", "").takeIf { it.isNotBlank() },
+                externalAudioLanguage = obj.optString("externalAudioLanguage", "").takeIf { it.isNotBlank() },
+                externalAudioFormatBadge = obj.optString("externalAudioFormatBadge", "").takeIf { it.isNotBlank() },
+                externalAudioIsHls = obj.optBoolean("externalAudioIsHls", false),
+                externalAudioDelayMs = obj.optLong("externalAudioDelayMs", 0L)
             )
         }.getOrNull()
     }
@@ -2028,7 +2738,9 @@ class OfflineDownloadManager(
         private val downloadId: Long,
         private val totalBytesExpected: Long,
         private val totalItemsExpected: Int,
-        initialBytes: Long = 0L
+        initialBytes: Long = 0L,
+        private val minPercent: Int = 0,
+        private val maxPercent: Int = 99
     ) {
         private val lock = Mutex()
         private var lastReportMs = System.currentTimeMillis()
@@ -2091,11 +2803,13 @@ class OfflineDownloadManager(
         }
 
         private fun computePercent(bytesDownloaded: Long, completedItems: Int): Int {
-            return when {
-                totalItemsExpected > 0 -> ((completedItems * 100) / totalItemsExpected).coerceIn(0, 99)
-                totalBytesExpected > 0L -> ((bytesDownloaded * 100L) / totalBytesExpected).toInt().coerceIn(0, 99)
-                else -> 0
+            val span = (maxPercent - minPercent).coerceAtLeast(1)
+            val rawRatio = when {
+                totalItemsExpected > 0 -> (completedItems.toDouble() / totalItemsExpected.toDouble()).coerceIn(0.0, 1.0)
+                totalBytesExpected > 0L -> (bytesDownloaded.toDouble() / totalBytesExpected.toDouble()).coerceIn(0.0, 1.0)
+                else -> 0.0
             }
+            return (minPercent + (rawRatio * span).toInt()).coerceIn(minPercent, maxPercent)
         }
     }
 

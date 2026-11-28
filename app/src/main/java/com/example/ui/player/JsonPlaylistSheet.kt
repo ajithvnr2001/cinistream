@@ -67,6 +67,7 @@ import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
+import com.example.ui.theme.StreamCyan
 import com.example.ui.theme.SubtitleEmerald
 import com.example.viewmodel.LoadedJsonPlaylist
 import kotlinx.coroutines.delay
@@ -113,9 +114,12 @@ fun JsonPlaylistSheet(
     }
 
     val hasMixedTypes = remember(items) {
-        val hasSeries = items.any { it.isSeries }
-        val hasMovies = items.any { !it.isSeries }
-        hasSeries && hasMovies
+        val typeCount = listOf(
+            items.any { !it.isSeries && !it.isCollection },
+            items.any { it.isSeries },
+            items.any { it.isCollection }
+        ).count { it }
+        typeCount >= 2
     }
 
     LaunchedEffect(Unit) {
@@ -137,6 +141,7 @@ fun JsonPlaylistSheet(
             items.filter { item ->
                 val matchesType = when (selectedTypeFilter) {
                     "MOVIES" -> item.contentType == MediaContentType.MOVIE
+                    "COLLECTIONS" -> item.isCollection
                     "SERIES" -> item.isSeries
                     else -> true
                 }
@@ -149,7 +154,12 @@ fun JsonPlaylistSheet(
                     item.title.lowercase().contains(q) ||
                         item.groupTitle.lowercase().contains(q) ||
                         (item.imdbId?.lowercase()?.contains(q) == true) ||
-                        (item.releaseYear?.contains(q) == true)
+                        (item.releaseYear?.contains(q) == true) ||
+                        (item.isCollection && item.collectionMovies.any { m ->
+                            m.title.lowercase().contains(q) ||
+                                (m.imdbId?.lowercase()?.contains(q) == true) ||
+                                (m.releaseYear?.contains(q) == true)
+                        })
                 }
                 matchesType && matchesCat && matchesQuery
             }
@@ -269,16 +279,20 @@ fun JsonPlaylistSheet(
 
             if (hasMixedTypes) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val movieCount = remember(items) { items.count { !it.isSeries } }
+                    val movieCount = remember(items) { items.count { !it.isSeries && !it.isCollection } }
+                    val collectionCount = remember(items) { items.count { it.isCollection } }
                     val seriesCount = remember(items) { items.count { it.isSeries } }
-                    val tabs = listOf(
-                        "ALL" to "All (${items.size})",
-                        "MOVIES" to "Movies ($movieCount)",
-                        "SERIES" to "Series ($seriesCount)"
-                    )
+                    val tabs = buildList {
+                        add("ALL" to "All (${items.size})")
+                        if (movieCount > 0) add("MOVIES" to "Movies ($movieCount)")
+                        if (collectionCount > 0) add("COLLECTIONS" to "Collections ($collectionCount)")
+                        if (seriesCount > 0) add("SERIES" to "Series ($seriesCount)")
+                    }
                     tabs.forEach { (key, label) ->
                         FilterChip(
                             selected = selectedTypeFilter == key,
@@ -288,8 +302,12 @@ fun JsonPlaylistSheet(
                                 .tvFocusHighlight(shape = RoundedCornerShape(8.dp))
                                 .testTag("json_type_filter_${key.lowercase()}"),
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = CinemaAmber.copy(alpha = 0.24f),
-                                selectedLabelColor = CinemaAmber
+                                selectedContainerColor = if (key == "COLLECTIONS") {
+                                    StreamCyan.copy(alpha = 0.24f)
+                                } else {
+                                    CinemaAmber.copy(alpha = 0.24f)
+                                },
+                                selectedLabelColor = if (key == "COLLECTIONS") StreamCyan else CinemaAmber
                             )
                         )
                     }
@@ -395,6 +413,15 @@ fun JsonPlaylistSheet(
                                             text = "SERIES · ${item.seasons.size}S · ${item.totalEpisodes} EP",
                                             accent = CinemaAmber
                                         )
+                                    } else if (item.isCollection) {
+                                        SubtitlePillBadge(
+                                            text = if (item.totalCollectionMovies == 1) {
+                                                "COLLECTION · 1 FILM"
+                                            } else {
+                                                "COLLECTION · ${item.totalCollectionMovies} FILMS"
+                                            },
+                                            accent = StreamCyan
+                                        )
                                     } else {
                                         FormatBadge(format = item.format)
                                         if (item.mirrors.isNotEmpty()) {
@@ -406,6 +433,12 @@ fun JsonPlaylistSheet(
                                     }
                                     if (!item.subtitleUrl.isNullOrBlank()) {
                                         SubtitlePillBadge(text = "CC")
+                                    }
+                                    if (item.externalAudios.isNotEmpty() && !item.isCollection && !item.isSeries) {
+                                        SubtitlePillBadge(
+                                            text = if (item.externalAudios.size == 1) "AUDIO" else "${item.externalAudios.size} AUDIO",
+                                            accent = StreamCyan
+                                        )
                                     }
                                     if (!sourcePlaylistBadge.isNullOrBlank()) {
                                         SubtitlePillBadge(

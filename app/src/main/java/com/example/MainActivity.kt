@@ -41,6 +41,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.compose.runtime.rememberCoroutineScope
 import com.example.player.PlayerPlaybackState
 import com.example.ui.home.HomeScreen
+import com.example.ui.player.CollectionDetailSheet
 import com.example.ui.player.DownloadQualitySheet
 import com.example.ui.player.DownloadsSheet
 import com.example.ui.player.JsonPlaylistSheet
@@ -504,7 +505,12 @@ private fun CineStreamApp(
                 jsonPlaylistState.allItems.firstOrNull { it.id == seriesId }
             }
             val hasNextEpisode = remember(activeSeries, uiState.activeSession?.episodeId) {
-                activeSeries?.findNextEpisode(uiState.activeSession?.episodeId) != null
+                val container = activeSeries ?: return@remember false
+                if (container.isCollection) {
+                    container.findNextCollectionMovie(uiState.activeSession?.episodeId) != null
+                } else {
+                    container.findNextEpisode(uiState.activeSession?.episodeId) != null
+                }
             }
 
             PlayerScreen(
@@ -554,6 +560,11 @@ private fun CineStreamApp(
                 onUpdateSubtitleBg = viewModel::updateSubtitleBg,
                 onSelectVideoTrack = viewModel::selectVideoTrack,
                 onSelectAudioTrack = viewModel::selectAudioTrack,
+                isLoadingExternalAudio = uiState.isLoadingExternalAudio,
+                externalAudioError = uiState.externalAudioError,
+                onLoadExternalAudioUrl = viewModel::loadExternalAudioUrlIntoPlayer,
+                onRemoveExternalAudio = viewModel::removeExternalAudioFromPlayer,
+                onDismissExternalAudioError = viewModel::clearExternalAudioError,
                 onRetryFormat = viewModel::retryWithFormat,
                 onSelectM3uEntry = viewModel::playM3uEntry,
                 onSelectJsonItem = viewModel::playJsonPlaylistItem,
@@ -561,6 +572,8 @@ private fun CineStreamApp(
                 onRemoveJsonPlaylist = viewModel::removeJsonPlaylist,
                 onAddJsonPlaylistUrl = { url -> viewModel.loadJsonPlaylistFromUrl(url, openSheetOnSuccess = false) },
                 onSelectSeriesEpisode = viewModel::playSeriesEpisode,
+                onSelectCollectionMovie = viewModel::playCollectionMovie,
+                onDownloadCollectionMovie = if (!isTvDevice) viewModel::downloadCollectionMovie else null,
                 onPlayNextEpisode = viewModel::playNextEpisode,
                 onSwitchCdnMirror = viewModel::switchToNextCdnMirror,
                 onClearEdgeCache = viewModel::clearMediaEdgeCache,
@@ -680,6 +693,19 @@ private fun CineStreamApp(
             episodeProgressMap = globalEpisodeProgress,
             onDismiss = viewModel::dismissSeriesSheet,
             onSelectEpisode = viewModel::playSeriesEpisode
+        )
+    }
+
+    val selectedCollection = globalJsonState.selectedCollectionForSheet
+    if (selectedCollection != null) {
+        CollectionDetailSheet(
+            collection = selectedCollection,
+            activeMovieId = globalJsonState.activeEpisodeId,
+            movieProgressMap = globalEpisodeProgress,
+            isEnrichingImdb = globalJsonState.isEnrichingImdb,
+            onDismiss = viewModel::dismissCollectionSheet,
+            onSelectMovie = viewModel::playCollectionMovie,
+            onDownloadMovie = if (!isTvDevice) viewModel::downloadCollectionMovie else null
         )
     }
 

@@ -69,7 +69,7 @@
     <string name="cd_open_privacy_vpn">Open DNS and VPN settings</string>
     <string name="section_continue_watching">Continue Watching</string>
     <string name="audio_delay_title">Audio Delay</string>
-    <string name="audio_delay_subtitle">Lip-sync (-10s to +10s) · Enter ms or s</string>
+    <string name="audio_delay_subtitle">Custom lip-sync · Enter ms, s, or min</string>
     <string name="background_audio_title">Background Audio</string>
     <string name="background_audio_subtitle">Keep playing when minimized or locked.</string>
     <string name="cd_background_audio">Toggle background audio playback</string>
@@ -120,6 +120,12 @@
     <string name="cd_brightness_decrease">Decrease brightness 10%</string>
     <string name="cd_brightness_increase">Increase brightness 10%</string>
     <string name="sync_apply_label">Apply</string>
-    <string name="sync_invalid_number">Enter a valid number (e.g. 250 or -1.5)</string>
+    <string name="sync_invalid_number">Enter a valid number (e.g. 250, -1.5, or 2m)</string>
     <string name="cd_toggle_sync_sign">Toggle positive or negative sync sign</string>
+    <string name="add_external_audio_url">Add Audio URL</string>
+    <string name="external_audio_url_placeholder">https://… (.m3u8, .aac, .m4a, .mp3, .ac3)</string>
+    <string name="external_audio_label_placeholder">Track name (optional, e.g. Hindi Dub)</string>
+    <string name="attach_external_audio_action">Attach</string>
+    <string name="external_audio_invalid_url">Enter a valid http:// or https:// audio or .m3u8 URL</string>
+    <string name="cd_remove_external_audio">Remove external audio track</string>
 </resources>

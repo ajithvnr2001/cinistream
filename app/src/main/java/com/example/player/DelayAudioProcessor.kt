@@ -18,39 +18,45 @@ enum class SyncTimeUnit(val label: String) {
 
 /**
  * Pure clamping, parsing, and formatting math for real-time bidirectional Audio & Subtitle Sync
- * (-10.0 s to +10.0 s in ms or s numeric input, plus quick ±25 ms / ±50 ms steps).
+ * with unbounded practical range (-60 min to +60 min) in ms, s, or min numeric input, plus quick
+ * ±25 ms / ±50 ms / ±1 s steps.
  */
 object AudioDelayMath {
-    const val MIN_DELAY_MS = -10_000L
-    const val MAX_DELAY_MS = 10_000L
+    const val MIN_DELAY_MS = -3_600_000L
+    const val MAX_DELAY_MS = 3_600_000L
     const val FINE_STEP_MS = 25L
     const val COARSE_STEP_MS = 50L
+    const val SECOND_STEP_MS = 1_000L
 
     fun clampDelayMs(delayMs: Long): Long = delayMs.coerceIn(MIN_DELAY_MS, MAX_DELAY_MS)
 
     /**
-     * Parses a user-entered numeric delay string in either milliseconds or seconds.
-     * Supports optional leading +/-, decimal dots or commas, and optional inline "ms" / "s" suffix
-     * (which overrides [defaultUnit]). Returns null if blank or not a valid finite number.
+     * Parses a user-entered numeric delay string in milliseconds, seconds, or minutes.
+     * Supports optional leading +/-, decimal dots or commas, and optional inline "ms" / "s" / "m" / "min"
+     * suffix (which overrides [defaultUnit]). Returns null if blank or not a valid finite number.
      */
     fun parseDelayInputMs(rawInput: String, defaultUnit: SyncTimeUnit): Long? {
         val cleaned = rawInput.trim().replace(',', '.')
         if (cleaned.isEmpty()) return null
 
         val lower = cleaned.lowercase(Locale.US)
-        val (numberPart, effectiveUnit) = when {
-            lower.endsWith("ms") -> cleaned.dropLast(2).trim() to SyncTimeUnit.MILLISECONDS
-            lower.endsWith("s") -> cleaned.dropLast(1).trim() to SyncTimeUnit.SECONDS
-            else -> cleaned to defaultUnit
+        val (numberPart, multiplierMs) = when {
+            lower.endsWith("ms") -> cleaned.dropLast(2).trim() to 1.0
+            lower.endsWith("min") -> cleaned.dropLast(3).trim() to 60_000.0
+            lower.endsWith("m") -> cleaned.dropLast(1).trim() to 60_000.0
+            lower.endsWith("s") -> cleaned.dropLast(1).trim() to 1_000.0
+            else -> cleaned to when (defaultUnit) {
+                SyncTimeUnit.MILLISECONDS -> 1.0
+                SyncTimeUnit.SECONDS -> 1_000.0
+            }
         }
 
         val parsed = numberPart.toDoubleOrNull() ?: return null
         if (!parsed.isFinite()) return null
 
-        val msValue = when (effectiveUnit) {
-            SyncTimeUnit.MILLISECONDS -> parsed.roundToLong()
-            SyncTimeUnit.SECONDS -> (parsed * 1000.0).roundToLong()
-        }
+        val rawMs = parsed * multiplierMs
+        if (!rawMs.isFinite()) return null
+        val msValue = rawMs.coerceIn(MIN_DELAY_MS.toDouble(), MAX_DELAY_MS.toDouble()).roundToLong()
         return clampDelayMs(msValue)
     }
 
@@ -85,20 +91,24 @@ object AudioDelayMath {
     }
 
     /**
-     * Computes the exact underlying MediaPeriod seek position for [AudioSyncMediaSource] so
-     * video stays anchored on [currentPositionMs] when applying [audioDelayMs]:
-     * - Positive delay (+D): seek back by D so audio starting at `pos - D` is shifted to `pos`.
-     * - Zero or negative delay (-D): seek to `pos` so MediaCodecAudioRenderer discards shifted
-     *   samples `< pos` and starts audio cleanly from original `pos + |D|` at `pos`.
+     * Computes the exact underlying MediaPeriod seek position when applying [audioDelayMs]:
+     * - External audio active: keep video pinned on [currentPositionMs]; `ExternalAudioSyncMediaPeriod`
+     *   independently seeks the external audio stream to `currentPositionMs - audioDelayMs`.
+     * - Embedded audio positive delay (+D): seek back by D so audio starting at `pos - D` is shifted to `pos`.
+     * - Embedded audio zero or negative delay (-D): seek to `pos` so MediaCodecAudioRenderer discards
+     *   shifted samples `< pos` and starts audio cleanly from original `pos + |D|` at `pos`.
      */
     fun computeRealignSeekPositionMs(
         currentPositionMs: Long,
         audioDelayMs: Long,
-        durationMs: Long? = null
+        durationMs: Long? = null,
+        isExternalAudioActive: Boolean = false
     ): Long {
         val clampedPos = currentPositionMs.coerceAtLeast(0L)
         val clampedDelay = clampDelayMs(audioDelayMs)
-        val rawTarget = if (clampedDelay > 0L) {
+        val rawTarget = if (isExternalAudioActive) {
+            clampedPos
+        } else if (clampedDelay > 0L) {
             (clampedPos - clampedDelay).coerceAtLeast(0L)
         } else {
             clampedPos
@@ -115,10 +125,19 @@ object AudioDelayMath {
         if (clamped == 0L) return "0 ms"
         val sign = if (clamped > 0L) "+" else "-"
         val absMs = abs(clamped)
-        return if (absMs < 1000L) {
-            "$sign$absMs ms"
-        } else {
-            String.format(Locale.US, "%s%.2f s", sign, absMs / 1000.0)
+        return when {
+            absMs < 1_000L -> "$sign$absMs ms"
+            absMs < 60_000L -> String.format(Locale.US, "%s%.2f s", sign, absMs / 1_000.0)
+            else -> {
+                val mins = absMs / 60_000L
+                val remMs = absMs % 60_000L
+                val remSec = remMs / 1_000.0
+                if (remMs % 1_000L == 0L) {
+                    String.format(Locale.US, "%s%dm %02ds", sign, mins, remMs / 1_000L)
+                } else {
+                    String.format(Locale.US, "%s%dm %04.1fs", sign, mins, remSec)
+                }
+            }
         }
     }
 

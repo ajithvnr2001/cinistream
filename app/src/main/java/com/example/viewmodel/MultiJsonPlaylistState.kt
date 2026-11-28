@@ -29,6 +29,7 @@ data class JsonPlaylistUiState(
     val activeItemId: String? = null,
     val activeEpisodeId: String? = null,
     val selectedSeriesForSheet: JsonPlaylistItem? = null,
+    val selectedCollectionForSheet: JsonPlaylistItem? = null,
     val isLoading: Boolean = false,
     val isEnrichingImdb: Boolean = false,
     val errorMessage: String? = null
@@ -164,11 +165,13 @@ object MultiJsonPlaylistReducer {
         }
         val remainingIds = remaining.flatMap { pl -> pl.items.map { it.id } }.toSet()
         val updatedSeriesSheet = state.selectedSeriesForSheet?.takeIf { it.id in remainingIds }
+        val updatedCollectionSheet = state.selectedCollectionForSheet?.takeIf { it.id in remainingIds }
         val updatedActiveId = state.activeItemId?.takeIf { it in remainingIds }
         return projectSelection(
             base = state.copy(
                 activeItemId = updatedActiveId,
-                selectedSeriesForSheet = updatedSeriesSheet
+                selectedSeriesForSheet = updatedSeriesSheet,
+                selectedCollectionForSheet = updatedCollectionSheet
             ),
             playlists = remaining,
             selectedPlaylistId = nextSelectedId
@@ -177,7 +180,8 @@ object MultiJsonPlaylistReducer {
 
     /**
      * Applies IMDb metadata enrichment updates across all loaded playlists and refreshes the
-     * projected [JsonPlaylistUiState.items] and [JsonPlaylistUiState.selectedSeriesForSheet].
+     * projected [JsonPlaylistUiState.items], [JsonPlaylistUiState.selectedSeriesForSheet], and
+     * [JsonPlaylistUiState.selectedCollectionForSheet].
      */
     fun applyImdbUpdates(
         state: JsonPlaylistUiState,
@@ -187,15 +191,20 @@ object MultiJsonPlaylistReducer {
         if (state.playlists.isEmpty()) {
             return state.copy(
                 items = state.items.map { updatedMap[it.id] ?: it },
-                selectedSeriesForSheet = state.selectedSeriesForSheet?.let { updatedMap[it.id] ?: it }
+                selectedSeriesForSheet = state.selectedSeriesForSheet?.let { updatedMap[it.id] ?: it },
+                selectedCollectionForSheet = state.selectedCollectionForSheet?.let { updatedMap[it.id] ?: it }
             )
         }
         val updatedPlaylists = state.playlists.map { pl ->
             pl.copy(items = pl.items.map { existing -> updatedMap[existing.id] ?: existing })
         }
         val updatedSeriesSheet = state.selectedSeriesForSheet?.let { updatedMap[it.id] ?: it }
+        val updatedCollectionSheet = state.selectedCollectionForSheet?.let { updatedMap[it.id] ?: it }
         return projectSelection(
-            base = state.copy(selectedSeriesForSheet = updatedSeriesSheet),
+            base = state.copy(
+                selectedSeriesForSheet = updatedSeriesSheet,
+                selectedCollectionForSheet = updatedCollectionSheet
+            ),
             playlists = updatedPlaylists,
             selectedPlaylistId = state.selectedPlaylistId
         )

@@ -2,8 +2,10 @@ package com.example.player
 
 import android.content.Context
 import android.net.Uri
+import com.example.model.CollectionMovie
 import com.example.model.JsonPlaylistItem
 import com.example.model.MediaContentType
+import com.example.model.PlaylistAudioSpec
 import com.example.model.SeriesEpisode
 import com.example.model.SeriesSeason
 import com.example.model.StreamFormat
@@ -164,10 +166,14 @@ class JsonPlaylistParser(
                     }
                 }
 
-                // Collect ALL catalog arrays (supports combined "movies" + "series" + "items" in one JSON!)
+                // Collect ALL catalog arrays (supports combined "movies" + "series" + "collections" + "items" in one JSON!)
                 val rootArrays = findCatalogArrays(root)
                 for ((arr, hint) in rootArrays) {
-                    val defaultGroup = if (hint == MediaContentType.SERIES) "Series" else "Movies"
+                    val defaultGroup = when (hint) {
+                        MediaContentType.SERIES -> "Series"
+                        MediaContentType.COLLECTION -> "Collections"
+                        else -> "Movies"
+                    }
                     collectArrayItems(
                         array = arr,
                         defaultGroup = defaultGroup,
@@ -178,7 +184,7 @@ class JsonPlaylistParser(
                     )
                 }
 
-                // Fallback: single-item JSON object directly describing a playable movie or series
+                // Fallback: single-item JSON object directly describing a playable movie, series, or collection
                 if (collected.isEmpty()) {
                     parseItemObject(
                         obj = root,
@@ -195,11 +201,15 @@ class JsonPlaylistParser(
         }
 
         if (collected.isEmpty()) {
-            return JsonPlaylistLoadResult.Error("No playable movies or series found in JSON playlist.")
+            return JsonPlaylistLoadResult.Error("No playable movies, collections, or series found in JSON playlist.")
         }
 
         val deduped = collected.distinctBy { item ->
-            if (item.isSeries) "series::${item.id}" else "movie::${item.url}"
+            when {
+                item.isSeries -> "series::${item.id}"
+                item.isCollection -> "collection::${item.id}"
+                else -> "movie::${item.url}"
+            }
         }
         return JsonPlaylistLoadResult.Success(
             items = deduped,
@@ -215,6 +225,10 @@ class JsonPlaylistParser(
         val preferredKeys = listOf(
             "items" to null,
             "movies" to MediaContentType.MOVIE,
+            "collections" to MediaContentType.COLLECTION,
+            "franchises" to MediaContentType.COLLECTION,
+            "movieSeries" to MediaContentType.COLLECTION,
+            "movie_series" to MediaContentType.COLLECTION,
             "series" to MediaContentType.SERIES,
             "shows" to MediaContentType.SERIES,
             "tvShows" to MediaContentType.SERIES,
@@ -267,15 +281,101 @@ class JsonPlaylistParser(
         playlistHeaders: Map<String, String>,
         target: MutableList<JsonPlaylistItem>
     ) {
+        data class GroupedMovieDraft(
+            val collectionTitle: String,
+            val groupTitle: String,
+            val movie: CollectionMovie
+        )
+
+        val groupedByCollection = LinkedHashMap<String, MutableList<GroupedMovieDraft>>()
+        val insertionOrder = mutableListOf<Any>() // Either JsonPlaylistItem or collectionKey String
+
         for (i in 0 until array.length()) {
             val obj = array.optJSONObject(i) ?: continue
+            val flatCollectionName = extractFlatCollectionName(obj)
+            val isExplicitContainer = obj.optJSONArray("seasons") != null ||
+                obj.optJSONArray("episodes") != null ||
+                obj.optJSONArray("movies") != null ||
+                obj.optJSONArray("films") != null ||
+                obj.optJSONArray("parts") != null
+
+            if (flatCollectionName != null && !isExplicitContainer) {
+                val itemHeaders = mergeHeaders(playlistHeaders, extractHeaders(obj))
+                val movie = parseCollectionMovieObject(
+                    movieObj = obj,
+                    collectionId = buildCollectionSlugId(flatCollectionName),
+                    defaultOrder = i + 1,
+                    playlistMirrors = playlistMirrors,
+                    inheritedHeaders = itemHeaders
+                )
+                if (movie != null) {
+                    val key = flatCollectionName.trim().lowercase(Locale.ROOT)
+                    val bucket = groupedByCollection.getOrPut(key) {
+                        insertionOrder.add(key)
+                        mutableListOf()
+                    }
+                    val itemGroup = extractGroup(obj) ?: defaultGroup
+                    bucket.add(
+                        GroupedMovieDraft(
+                            collectionTitle = flatCollectionName.trim(),
+                            groupTitle = itemGroup,
+                            movie = movie
+                        )
+                    )
+                    continue
+                }
+            }
+
             parseItemObject(
                 obj = obj,
                 defaultGroup = defaultGroup,
                 defaultTypeHint = defaultTypeHint,
                 playlistMirrors = playlistMirrors,
                 playlistHeaders = playlistHeaders
-            )?.let { target.add(it) }
+            )?.let { insertionOrder.add(it) }
+        }
+
+        for (entry in insertionOrder) {
+            when (entry) {
+                is JsonPlaylistItem -> target.add(entry)
+                is String -> {
+                    val drafts = groupedByCollection[entry].orEmpty()
+                    if (drafts.isEmpty()) continue
+                    val sortedMovies = drafts
+                        .map { it.movie }
+                        .distinctBy { it.url }
+                        .sortedWith(
+                            compareBy<CollectionMovie> { it.order }
+                                .thenBy { it.releaseYear?.toIntOrNull() ?: Int.MAX_VALUE }
+                        )
+                        .mapIndexed { idx, m -> m.copy(order = idx + 1) }
+                    val first = sortedMovies.first()
+                    val title = drafts.first().collectionTitle
+                    val group = drafts.first().groupTitle.ifBlank { "Collections" }
+                    val yearSpan = computeCollectionYearSpan(sortedMovies)
+                    target.add(
+                        JsonPlaylistItem(
+                            id = buildCollectionSlugId(title),
+                            title = title,
+                            url = first.url,
+                            groupTitle = group,
+                            format = first.format,
+                            imageUrl = sortedMovies.firstNotNullOfOrNull { it.imageUrl },
+                            imdbId = null,
+                            imdbRating = sortedMovies.firstNotNullOfOrNull { it.imdbRating },
+                            releaseYear = yearSpan,
+                            description = "${sortedMovies.size} films in the $title",
+                            subtitleUrl = first.subtitleUrl,
+                            subtitleLabel = first.subtitleLabel,
+                            contentType = MediaContentType.COLLECTION,
+                            mirrors = first.mirrors,
+                            headers = first.headers,
+                            collectionMovies = sortedMovies,
+                            externalAudios = first.externalAudios
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -288,16 +388,78 @@ class JsonPlaylistParser(
     ): JsonPlaylistItem? {
         val rawContentType = obj.optFirstString("contentType", "content_type", "mediaType", "media_type", "kind", "type")
             ?.lowercase(Locale.ROOT)
+        val hasCollectionMovies = obj.optJSONArray("movies") != null ||
+            obj.optJSONArray("films") != null ||
+            obj.optJSONArray("parts") != null
+        val isCollectionObject = hasCollectionMovies ||
+            rawContentType == "collection" ||
+            rawContentType == "franchise" ||
+            rawContentType == "saga" ||
+            rawContentType == "movie_series" ||
+            rawContentType == "movieseries" ||
+            rawContentType == "boxset" ||
+            rawContentType == "box_set" ||
+            (defaultTypeHint == MediaContentType.COLLECTION &&
+                (hasCollectionMovies || obj.optJSONArray("items") != null || obj.optJSONArray("videos") != null))
+
         val hasSeasonsOrEpisodes = obj.optJSONArray("seasons") != null || obj.optJSONArray("episodes") != null
-        val isSeriesObject = hasSeasonsOrEpisodes ||
-            rawContentType == "series" ||
-            rawContentType == "show" ||
-            rawContentType == "tv" ||
-            rawContentType == "tvshow" ||
-            (defaultTypeHint == MediaContentType.SERIES && hasSeasonsOrEpisodes)
+        val isSeriesObject = !isCollectionObject && (
+            hasSeasonsOrEpisodes ||
+                rawContentType == "series" ||
+                rawContentType == "show" ||
+                rawContentType == "tv" ||
+                rawContentType == "tvshow" ||
+                (defaultTypeHint == MediaContentType.SERIES && hasSeasonsOrEpisodes)
+            )
 
         val itemId = obj.optFirstString("id") ?: UUID.randomUUID().toString()
         val itemHeaders = mergeHeaders(playlistHeaders, extractHeaders(obj))
+
+        if (isCollectionObject) {
+            val movies = parseCollectionMovies(
+                collectionObj = obj,
+                collectionId = itemId,
+                playlistMirrors = playlistMirrors,
+                inheritedHeaders = itemHeaders
+            )
+            if (movies.isEmpty()) return null
+
+            val firstMovie = movies.first()
+            val title = obj.optFirstString("title", "name", "collectionTitle", "collection_title", "franchise")
+                ?.takeIf { it.isNotBlank() } ?: "Untitled Collection"
+            val group = extractGroup(obj) ?: if (defaultGroup == "Movies") "Collections" else defaultGroup
+            val imageUrl = extractImageUrl(obj) ?: movies.firstNotNullOfOrNull { it.imageUrl }
+            val imdbRaw = obj.optFirstString(
+                "imdbId", "imdb_id", "imdb", "imdbUrl", "imdb_url", "imdbLink", "imdb_link", "tconst", "tt"
+            )
+            val imdbId = ImdbMetadataClient.extractImdbId(imdbRaw)
+            val rating = extractRating(obj) ?: movies.firstNotNullOfOrNull { it.imdbRating }
+            val year = obj.optFirstString("year", "releaseYear", "release_year", "years")
+                ?.takeIf { it.isNotBlank() }
+                ?: computeCollectionYearSpan(movies)
+            val description = obj.optFirstString("description", "plot", "overview", "synopsis", "summary")
+                ?: "${movies.size} films in the $title"
+
+            return JsonPlaylistItem(
+                id = itemId,
+                title = title,
+                url = firstMovie.url,
+                groupTitle = group,
+                format = firstMovie.format,
+                imageUrl = imageUrl,
+                imdbId = imdbId,
+                imdbRating = rating,
+                releaseYear = year,
+                description = description,
+                subtitleUrl = firstMovie.subtitleUrl,
+                subtitleLabel = firstMovie.subtitleLabel,
+                contentType = MediaContentType.COLLECTION,
+                mirrors = firstMovie.mirrors,
+                headers = itemHeaders,
+                collectionMovies = movies,
+                externalAudios = firstMovie.externalAudios
+            )
+        }
 
         if (isSeriesObject) {
             val seasons = parseSeasons(
@@ -339,7 +501,8 @@ class JsonPlaylistParser(
                 contentType = MediaContentType.SERIES,
                 mirrors = firstEp.mirrors,
                 headers = itemHeaders,
-                seasons = seasons
+                seasons = seasons,
+                externalAudios = firstEp.externalAudios
             )
         }
 
@@ -366,6 +529,7 @@ class JsonPlaylistParser(
             ?.let { Regex("""\b(19|20)\d{2}\b""").find(it)?.value ?: it }
         val description = obj.optFirstString("description", "plot", "overview", "synopsis", "summary")
         val subtitlePair = extractSubtitle(obj)
+        val externalAudios = extractExternalAudios(obj)
 
         val explicitMirrors = extractItemMirrors(obj, primaryUrl = streamUrl)
         val resolvedCandidates = CdnMirrorResolver.buildCandidateUrls(
@@ -391,7 +555,8 @@ class JsonPlaylistParser(
             contentType = MediaContentType.MOVIE,
             mirrors = backupMirrors,
             headers = itemHeaders,
-            seasons = emptyList()
+            seasons = emptyList(),
+            externalAudios = externalAudios
         )
     }
 
@@ -492,6 +657,7 @@ class JsonPlaylistParser(
         val formatHint = epObj.optFirstString("format", "mimeType", "mime_type", "type")
         val format = resolveFormat(formatHint, streamUrl)
         val subtitlePair = extractSubtitle(epObj)
+        val externalAudios = extractExternalAudios(epObj)
         val explicitMirrors = extractItemMirrors(epObj, primaryUrl = streamUrl)
         val backupMirrors = CdnMirrorResolver.buildCandidateUrls(
             primaryUrl = streamUrl,
@@ -513,8 +679,123 @@ class JsonPlaylistParser(
             durationLabel = epObj.optFirstString("duration", "runtime", "length"),
             imageUrl = extractImageUrl(epObj),
             subtitleUrl = subtitlePair?.first,
-            subtitleLabel = subtitlePair?.second
+            subtitleLabel = subtitlePair?.second,
+            externalAudios = externalAudios
         )
+    }
+
+    private fun parseCollectionMovies(
+        collectionObj: JSONObject,
+        collectionId: String,
+        playlistMirrors: List<String>,
+        inheritedHeaders: Map<String, String>
+    ): List<CollectionMovie> {
+        val moviesArr = collectionObj.optJSONArray("movies")
+            ?: collectionObj.optJSONArray("films")
+            ?: collectionObj.optJSONArray("parts")
+            ?: collectionObj.optJSONArray("items")
+            ?: collectionObj.optJSONArray("videos")
+            ?: return emptyList()
+
+        val parsed = mutableListOf<CollectionMovie>()
+        for (i in 0 until moviesArr.length()) {
+            val movieObj = moviesArr.optJSONObject(i) ?: continue
+            parseCollectionMovieObject(
+                movieObj = movieObj,
+                collectionId = collectionId,
+                defaultOrder = i + 1,
+                playlistMirrors = playlistMirrors,
+                inheritedHeaders = inheritedHeaders
+            )?.let { parsed.add(it) }
+        }
+        return parsed
+            .distinctBy { it.url }
+            .sortedWith(
+                compareBy<CollectionMovie> { it.order }
+                    .thenBy { it.releaseYear?.toIntOrNull() ?: Int.MAX_VALUE }
+            )
+            .mapIndexed { idx, m -> m.copy(order = idx + 1) }
+    }
+
+    private fun parseCollectionMovieObject(
+        movieObj: JSONObject,
+        collectionId: String,
+        defaultOrder: Int,
+        playlistMirrors: List<String>,
+        inheritedHeaders: Map<String, String>
+    ): CollectionMovie? {
+        val streamUrl = extractStreamUrl(movieObj) ?: return null
+        if (!MediaFormatDetector.isValidMediaLink(streamUrl)) return null
+
+        val order = movieObj.optIntOrNull("part", "order", "collectionOrder", "collection_order", "number", "index")
+            ?: defaultOrder
+        val movieId = movieObj.optFirstString("id") ?: "${collectionId}_part_$order"
+        val title = movieObj.optFirstString("title", "name", "movieName", "movie_name", "label")
+            ?.takeIf { it.isNotBlank() } ?: MediaFormatDetector.inferTitle(streamUrl)
+
+        val formatHint = movieObj.optFirstString("format", "mimeType", "mime_type", "type")
+        val format = resolveFormat(formatHint, streamUrl)
+        val subtitlePair = extractSubtitle(movieObj)
+        val externalAudios = extractExternalAudios(movieObj)
+        val explicitMirrors = extractItemMirrors(movieObj, primaryUrl = streamUrl)
+        val backupMirrors = CdnMirrorResolver.buildCandidateUrls(
+            primaryUrl = streamUrl,
+            itemMirrors = explicitMirrors,
+            playlistCdnMirrors = playlistMirrors
+        ).drop(1)
+        val movieHeaders = mergeHeaders(inheritedHeaders, extractHeaders(movieObj))
+        val imdbRaw = movieObj.optFirstString(
+            "imdbId", "imdb_id", "imdb", "imdbUrl", "imdb_url", "imdbLink", "imdb_link", "tconst", "tt"
+        )
+        val imdbId = ImdbMetadataClient.extractImdbId(imdbRaw)
+            ?: ImdbMetadataClient.extractImdbId(movieObj.optFirstString("id"))
+        val rating = extractRating(movieObj)
+        val year = movieObj.optFirstString("year", "releaseYear", "release_year", "datePublished")
+            ?.let { Regex("""\b(19|20)\d{2}\b""").find(it)?.value ?: it }
+
+        return CollectionMovie(
+            id = movieId,
+            order = order,
+            title = title,
+            url = streamUrl,
+            mirrors = backupMirrors,
+            headers = movieHeaders,
+            format = format,
+            imageUrl = extractImageUrl(movieObj),
+            imdbId = imdbId,
+            imdbRating = rating,
+            releaseYear = year,
+            durationLabel = movieObj.optFirstString("duration", "runtime", "length"),
+            description = movieObj.optFirstString("description", "plot", "overview", "synopsis", "summary"),
+            subtitleUrl = subtitlePair?.first,
+            subtitleLabel = subtitlePair?.second,
+            externalAudios = externalAudios
+        )
+    }
+
+    private fun extractFlatCollectionName(obj: JSONObject): String? {
+        return obj.optFirstString(
+            "collection", "collectionName", "collection_name", "franchise", "saga", "movieSeries", "movie_series"
+        )?.takeIf { it.isNotBlank() }
+    }
+
+    private fun buildCollectionSlugId(title: String): String {
+        val slug = title.trim()
+            .lowercase(Locale.ROOT)
+            .replace(Regex("""[^a-z0-9]+"""), "-")
+            .trim('-')
+            .ifBlank { "collection" }
+        return "col_$slug"
+    }
+
+    private fun computeCollectionYearSpan(movies: List<CollectionMovie>): String? {
+        val years = movies.mapNotNull { it.releaseYear?.toIntOrNull() }.sorted()
+        if (years.isEmpty()) return null
+        return if (years.first() == years.last()) {
+            years.first().toString()
+        } else {
+            "${years.first()}–${years.last()}"
+        }
     }
 
     private fun extractItemMirrors(obj: JSONObject, primaryUrl: String): List<String> {
@@ -657,6 +938,104 @@ class JsonPlaylistParser(
         return null
     }
 
+    private fun extractExternalAudios(obj: JSONObject): List<PlaylistAudioSpec> {
+        val seenUrls = LinkedHashSet<String>()
+        val result = mutableListOf<PlaylistAudioSpec>()
+
+        fun addIfValid(
+            rawUrl: String?,
+            label: String? = null,
+            language: String? = null,
+            isDefault: Boolean? = null,
+            delayMs: Long? = null
+        ) {
+            val trimmed = rawUrl?.trim() ?: return
+            if (!ExternalAudioUrlInspector.isValidAudioUrl(trimmed)) return
+            val key = trimmed.lowercase(Locale.ROOT)
+            if (!seenUrls.add(key)) return
+            val clampedDelay = delayMs?.let { AudioDelayMath.clampDelayMs(it) }
+            result.add(
+                PlaylistAudioSpec(
+                    url = trimmed,
+                    label = label?.trim()?.takeIf { it.isNotBlank() },
+                    language = language?.trim()?.takeIf { it.isNotBlank() },
+                    isDefault = isDefault,
+                    delayMs = clampedDelay
+                )
+            )
+        }
+
+        val itemDelayFallback = obj.optLongOrNull(
+            "audioDelayMs", "audio_delay_ms", "audioDelay", "audio_delay"
+        )
+
+        // 1. Direct string shorthand ("audioUrl", "audio", "dubUrl", etc.)
+        val directUrl = obj.optFirstString(
+            "audioUrl", "audio_url", "audio", "audioStream", "audio_stream",
+            "dubUrl", "dub_url", "externalAudioUrl", "external_audio_url"
+        )
+        if (!directUrl.isNullOrBlank()) {
+            addIfValid(
+                rawUrl = directUrl,
+                label = obj.optFirstString("audioLabel", "audio_label", "dubLabel", "dub_label"),
+                language = obj.optFirstString("audioLang", "audio_lang", "audioLanguage", "audio_language"),
+                isDefault = obj.optBooleanOrNull("audioDefault", "audio_default"),
+                delayMs = itemDelayFallback
+            )
+        }
+
+        // 2. Single object shorthand ("audio": { "url": "...", ... }, "externalAudio": { ... })
+        val singleAudioObj = obj.optJSONObject("audio")
+            ?: obj.optJSONObject("externalAudio")
+            ?: obj.optJSONObject("external_audio")
+        if (singleAudioObj != null) {
+            val url = singleAudioObj.optFirstString(
+                "url", "src", "file", "audioUrl", "audio_url", "streamUrl", "stream_url", "hls", "link"
+            )
+            addIfValid(
+                rawUrl = url,
+                label = singleAudioObj.optFirstString("label", "name", "title"),
+                language = singleAudioObj.optFirstString("language", "lang"),
+                isDefault = singleAudioObj.optBooleanOrNull("default", "selected", "autoSelect", "auto_select"),
+                delayMs = singleAudioObj.optLongOrNull(
+                    "delayMs", "delay_ms", "audioDelayMs", "audio_delay_ms", "offsetMs", "offset_ms"
+                ) ?: itemDelayFallback
+            )
+        }
+
+        // 3. Array of audio tracks ("audios", "audioTracks", "externalAudios", "audioUrls", etc.)
+        val arrayKeys = listOf(
+            "audios", "audioTracks", "audio_tracks",
+            "externalAudios", "external_audios",
+            "externalAudio", "external_audio",
+            "audioUrls", "audio_urls"
+        )
+        for (key in arrayKeys) {
+            val arr = obj.optJSONArray(key) ?: continue
+            for (i in 0 until arr.length()) {
+                when (val entry = arr.opt(i)) {
+                    is String -> addIfValid(rawUrl = entry, delayMs = itemDelayFallback)
+                    is JSONObject -> {
+                        val url = entry.optFirstString(
+                            "url", "src", "file", "audioUrl", "audio_url", "streamUrl", "stream_url", "hls", "link"
+                        )
+                        addIfValid(
+                            rawUrl = url,
+                            label = entry.optFirstString("label", "name", "title"),
+                            language = entry.optFirstString("language", "lang"),
+                            isDefault = entry.optBooleanOrNull("default", "selected", "autoSelect", "auto_select"),
+                            delayMs = entry.optLongOrNull(
+                                "delayMs", "delay_ms", "audioDelayMs", "audio_delay_ms", "offsetMs", "offset_ms"
+                            ) ?: itemDelayFallback
+                        )
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
     private fun extractGroup(obj: JSONObject): String? {
         obj.optFirstString("group", "groupTitle", "group_title", "group-title", "category", "genre")
             ?.takeIf { it.isNotBlank() }
@@ -716,6 +1095,34 @@ class JsonPlaylistParser(
             when (value) {
                 is Number -> return value.toInt()
                 is String -> value.trim().toIntOrNull()?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun JSONObject.optLongOrNull(vararg keys: String): Long? {
+        for (key in keys) {
+            if (!has(key) || isNull(key)) continue
+            val value = opt(key)
+            when (value) {
+                is Number -> return value.toLong()
+                is String -> value.trim().toLongOrNull()?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun JSONObject.optBooleanOrNull(vararg keys: String): Boolean? {
+        for (key in keys) {
+            if (!has(key) || isNull(key)) continue
+            val value = opt(key)
+            when (value) {
+                is Boolean -> return value
+                is String -> when (value.trim().lowercase(Locale.ROOT)) {
+                    "true", "1", "yes" -> return true
+                    "false", "0", "no" -> return false
+                }
+                is Number -> return value.toInt() != 0
             }
         }
         return null

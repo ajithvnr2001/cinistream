@@ -1,0 +1,350 @@
+{
+  "title": "CineStream v3 · Movies, Collections, Series & External Audio",
+  "cdnMirrors": [],
+  "items": [
+    {
+      "id": "hidden-face-2011",
+      "type": "movie",
+      "title": "The Hidden Face",
+      "url": "https://multicloud-s3-index.ajithvnr2001.workers.dev/pub/9f712691f8937399bfe52e34c80a450d/rustfs-demo-2/The.hidden.face.2011-hls/master.m3u8",
+      "mirrors": [],
+      "format": "HLS",
+      "group": "Mystery · Thriller",
+      "imdbId": "tt1772240",
+      "imdbUrl": "https://www.imdb.com/title/tt1772240/",
+      "year": "2011",
+      "description": "A Spanish orchestra conductor investigates the mysterious disappearance of his girlfriend, uncovering a hidden secret inside their house.",
+      "audios": [
+        {
+          "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel-audio_eng=128008.m3u8",
+          "label": "English External (HLS)",
+          "language": "en",
+          "default": false,
+          "delayMs": 0
+        }
+      ]
+    },
+    {
+      "id": "tears-of-steel-dual-audio",
+      "type": "movie",
+      "title": "Tears of Steel (Auto External Audio)",
+      "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
+      "mirrors": [
+        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4"
+      ],
+      "format": "HLS",
+      "group": "Sci-Fi · External Audio Demo",
+      "imdbId": "tt2285752",
+      "year": "2012",
+      "description": "Demonstrates automatic external HLS audio loading from JSON playlists. Multiple audio URLs can be declared under \"audios\" with optional \"label\", \"language\", \"default\", and \"delayMs\" sync offset.",
+      "audios": [
+        {
+          "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel-audio_eng=128008.m3u8",
+          "label": "Studio English (HLS)",
+          "language": "en",
+          "default": true,
+          "delayMs": 0
+        },
+        {
+          "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/audio/stereo/en/128kbit.m3u8",
+          "label": "Alternate Track (HLS)",
+          "language": "en",
+          "default": false
+        }
+      ]
+    },
+    {
+      "id": "resident-evil-collection",
+      "type": "collection",
+      "title": "Resident Evil Collection",
+      "group": "Horror · Action · Sci-Fi",
+      "description": "All six films in the Resident Evil saga. Each film auto-fetches its own IMDb poster, rating, and year, and supports per-film external audio URLs.",
+      "movies": [
+        {
+          "id": "resident-evil-2002",
+          "part": 1,
+          "title": "Resident Evil",
+          "year": "2002",
+          "imdbId": "tt0120804",
+          "duration": "1h 40m",
+          "format": "HLS",
+          "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8?film=re1",
+          "mirrors": [
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4?film=re1"
+          ],
+          "audios": [
+            {
+              "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel-audio_eng=128008.m3u8",
+              "label": "English External (HLS)",
+              "language": "en",
+              "default": true,
+              "delayMs": 0
+            }
+          ],
+          "description": "A special military unit fights a powerful, out-of-control supercomputer and hundreds of scientists who have mutated into flesh-eating creatures."
+        },
+        {
+          "id": "resident-evil-apocalypse-2004",
+          "part": 2,
+          "title": "Resident Evil: Apocalypse",
+          "year": "2004",
+          "imdbId": "tt0318627",
+          "duration": "1h 34m",
+          "format": "HLS",
+          "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8?film=re2",
+          "mirrors": [
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4?film=re2"
+          ],
+          "audioUrl": "https://bitdash-a.akamaihd.net/content/sintel/hls/audio/stereo/en/128kbit.m3u8",
+          "audioLabel": "Stereo English (HLS)",
+          "audioDelayMs": 0,
+          "description": "Alice awakes in Raccoon City only to discover the viral outbreak has spread across the quarantined metropolis."
+        },
+        {
+          "id": "resident-evil-extinction-2007",
+          "part": 3,
+          "title": "Resident Evil: Extinction",
+          "year": "2007",
+          "imdbId": "tt0432021",
+          "duration": "1h 34m",
+          "format": "MP4",
+          "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4?film=re3",
+          "description": "Survivors of the Raccoon City catastrophe travel across the Nevada desert hoping to reach safety in Alaska."
+        },
+        {
+          "id": "resident-evil-afterlife-2010",
+          "part": 4,
+          "title": "Resident Evil: Afterlife",
+          "year": "2010",
+          "imdbId": "tt1220634",
+          "duration": "1h 37m",
+          "format": "MP4",
+          "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4?film=re4",
+          "description": "In a world overrun by the undead, Alice continues searching for survivors and leads them toward a rumored safe haven in Los Angeles."
+        },
+        {
+          "id": "resident-evil-retribution-2012",
+          "part": 5,
+          "title": "Resident Evil: Retribution",
+          "year": "2012",
+          "imdbId": "tt1855325",
+          "duration": "1h 36m",
+          "format": "HLS",
+          "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8?film=re5",
+          "description": "Alice fights alongside a resistance movement in a covert Umbrella Corporation underwater testing facility."
+        },
+        {
+          "id": "resident-evil-final-chapter-2016",
+          "part": 6,
+          "title": "Resident Evil: The Final Chapter",
+          "year": "2016",
+          "imdbId": "tt2592614",
+          "duration": "1h 47m",
+          "format": "HLS",
+          "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8?film=re6",
+          "description": "Alice returns to the Hive in Raccoon City, where the Umbrella Corporation is gathering its forces for a final strike."
+        }
+      ]
+    },
+    {
+      "id": "final-destination-collection",
+      "type": "collection",
+      "title": "Final Destination Collection",
+      "group": "Horror · Thriller",
+      "description": "Five supernatural thriller films where cheating Death triggers an inescapable chain reaction.",
+      "movies": [
+        {
+          "id": "final-destination-2000",
+          "part": 1,
+          "title": "Final Destination",
+          "year": "2000",
+          "imdbId": "tt0195714",
+          "duration": "1h 38m",
+          "format": "HLS",
+          "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8?film=fd1"
+        },
+        {
+          "id": "final-destination-2-2003",
+          "part": 2,
+          "title": "Final Destination 2",
+          "year": "2003",
+          "imdbId": "tt0309593",
+          "duration": "1h 30m",
+          "format": "HLS",
+          "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8?film=fd2"
+        },
+        {
+          "id": "final-destination-3-2006",
+          "part": 3,
+          "title": "Final Destination 3",
+          "year": "2006",
+          "imdbId": "tt0414982",
+          "duration": "1h 33m",
+          "format": "MP4",
+          "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4?film=fd3"
+        },
+        {
+          "id": "final-destination-4-2009",
+          "part": 4,
+          "title": "The Final Destination",
+          "year": "2009",
+          "imdbId": "tt1144884",
+          "duration": "1h 22m",
+          "format": "MP4",
+          "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4?film=fd4"
+        },
+        {
+          "id": "final-destination-5-2011",
+          "part": 5,
+          "title": "Final Destination 5",
+          "year": "2011",
+          "imdbId": "tt1622979",
+          "duration": "1h 32m",
+          "format": "HLS",
+          "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8?film=fd5"
+        }
+      ]
+    },
+    {
+      "id": "evil-dead-1981",
+      "type": "movie",
+      "collection": "Evil Dead Collection",
+      "part": 1,
+      "title": "The Evil Dead",
+      "year": "1981",
+      "imdbId": "tt0083907",
+      "duration": "1h 25m",
+      "group": "Horror · Cult Classic",
+      "format": "HLS",
+      "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8?film=ed1"
+    },
+    {
+      "id": "evil-dead-2-1987",
+      "type": "movie",
+      "collection": "Evil Dead Collection",
+      "part": 2,
+      "title": "Evil Dead II",
+      "year": "1987",
+      "imdbId": "tt0092991",
+      "duration": "1h 24m",
+      "group": "Horror · Cult Classic",
+      "format": "HLS",
+      "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8?film=ed2"
+    },
+    {
+      "id": "army-of-darkness-1992",
+      "type": "movie",
+      "collection": "Evil Dead Collection",
+      "part": 3,
+      "title": "Army of Darkness",
+      "year": "1992",
+      "imdbId": "tt0106308",
+      "duration": "1h 21m",
+      "group": "Horror · Cult Classic",
+      "format": "MP4",
+      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4?film=ed3"
+    },
+    {
+      "id": "evil-dead-2013",
+      "type": "movie",
+      "collection": "Evil Dead Collection",
+      "part": 4,
+      "title": "Evil Dead",
+      "year": "2013",
+      "imdbId": "tt1288558",
+      "duration": "1h 31m",
+      "group": "Horror · Cult Classic",
+      "format": "MP4",
+      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4?film=ed4"
+    },
+    {
+      "id": "evil-dead-rise-2023",
+      "type": "movie",
+      "collection": "Evil Dead Collection",
+      "part": 5,
+      "title": "Evil Dead Rise",
+      "year": "2023",
+      "imdbId": "tt13345606",
+      "duration": "1h 36m",
+      "group": "Horror · Cult Classic",
+      "format": "HLS",
+      "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8?film=ed5"
+    },
+    {
+      "id": "blender-anthology-series",
+      "type": "series",
+      "title": "Blender Open Cinema Anthology",
+      "group": "Sci-Fi · Animation",
+      "imdbId": "tt2285752",
+      "year": "2012",
+      "description": "A multi-season showcase demonstrating TV Series, Seasons, Episodes, Multi-CDN failover, and per-episode external HLS audio URLs inside CineStream.",
+      "seasons": [
+        {
+          "season": 1,
+          "title": "Season 1 · Classics",
+          "episodes": [
+            {
+              "id": "blender-s1-e1",
+              "episode": 1,
+              "title": "Tears of Steel",
+              "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
+              "mirrors": [
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4"
+              ],
+              "audios": [
+                {
+                  "url": "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel-audio_eng=128008.m3u8",
+                  "label": "English External (HLS)",
+                  "language": "en",
+                  "default": true,
+                  "delayMs": 0
+                }
+              ],
+              "format": "HLS",
+              "duration": "12m",
+              "description": "In an apocalyptic Amsterdam future, warriors and scientists stage a crucial event from the past."
+            },
+            {
+              "id": "blender-s1-e2",
+              "episode": 2,
+              "title": "Sintel",
+              "url": "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8",
+              "mirrors": [
+                "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4"
+              ],
+              "audioUrl": "https://bitdash-a.akamaihd.net/content/sintel/hls/audio/stereo/en/128kbit.m3u8",
+              "audioLabel": "English Stereo (HLS)",
+              "format": "M3U8",
+              "duration": "15m",
+              "description": "A lonely young woman searches across treacherous lands for her lost baby dragon, Scales."
+            }
+          ]
+        },
+        {
+          "season": 2,
+          "title": "Season 2 · Shorts",
+          "episodes": [
+            {
+              "id": "blender-s2-e1",
+              "episode": 1,
+              "title": "Big Buck Bunny",
+              "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+              "format": "MP4",
+              "duration": "10m",
+              "description": "A giant, gentle rabbit confronts three mischievous rodents in a colorful woodland comedy."
+            },
+            {
+              "id": "blender-s2-e2",
+              "episode": 2,
+              "title": "Elephants Dream",
+              "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+              "format": "MP4",
+              "duration": "11m",
+              "description": "Two travelers explore a bizarre and surreal mechanical world built from memories and giant gears."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

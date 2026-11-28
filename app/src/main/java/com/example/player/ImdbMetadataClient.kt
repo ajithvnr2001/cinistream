@@ -1,6 +1,13 @@
 package com.example.player
 
+import com.example.model.CollectionMovie
+import com.example.model.JsonPlaylistItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -245,6 +252,78 @@ class ImdbMetadataClient(
                 .replace('_', ' ')
                 .replace(Regex("""\s+"""), " ")
                 .trim()
+        }
+
+        /**
+         * Enriches every individual [CollectionMovie] inside a Movie Collection with its own
+         * IMDb poster, rating, release year, and plot synopsis, and backfills the collection's
+         * cover poster, year span, and rating from its films when not explicitly specified.
+         */
+        suspend fun enrichCollectionItem(
+            collection: JsonPlaylistItem,
+            concurrency: Int = 2,
+            lookupFn: suspend (imdbId: String?, titleQuery: String?, releaseYear: String?) -> ImdbMovieInfo?
+        ): JsonPlaylistItem {
+            if (!collection.isCollection) return collection
+            val semaphore = Semaphore(concurrency.coerceAtLeast(1))
+            var discoveredGenres: String? = null
+            val enrichedMovies = coroutineScope {
+                collection.collectionMovies.map { movie ->
+                    async {
+                        val needsLookup = movie.imageUrl.isNullOrBlank() ||
+                            movie.imdbRating.isNullOrBlank() ||
+                            movie.imdbId.isNullOrBlank() ||
+                            movie.releaseYear.isNullOrBlank()
+                        if (!needsLookup) return@async movie
+                        semaphore.withPermit {
+                            val info = lookupFn(movie.imdbId, movie.title, movie.releaseYear)
+                            if (info != null) {
+                                if (discoveredGenres == null && !info.genres.isNullOrBlank()) {
+                                    discoveredGenres = info.genres
+                                }
+                                movie.copy(
+                                    imageUrl = movie.imageUrl ?: info.posterUrl,
+                                    imdbId = movie.imdbId ?: info.imdbId,
+                                    imdbRating = movie.imdbRating ?: info.rating,
+                                    releaseYear = movie.releaseYear ?: info.year,
+                                    description = movie.description ?: info.plot ?: info.cast
+                                )
+                            } else {
+                                movie
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            val years = enrichedMovies.mapNotNull { it.releaseYear?.toIntOrNull() }.sorted()
+            val computedSpan = when {
+                years.isEmpty() -> null
+                years.first() == years.last() -> years.first().toString()
+                else -> "${years.first()}–${years.last()}"
+            }
+            val numericRatings = enrichedMovies.mapNotNull { it.imdbRating?.toDoubleOrNull() }
+            val avgRating = if (numericRatings.isNotEmpty()) {
+                String.format(Locale.US, "%.1f", numericRatings.average())
+            } else {
+                enrichedMovies.firstNotNullOfOrNull { it.imdbRating }
+            }
+            val updatedGroup = if (
+                (collection.groupTitle == "Collections" || collection.groupTitle == "Movies") &&
+                !discoveredGenres.isNullOrBlank()
+            ) {
+                discoveredGenres!!
+            } else {
+                collection.groupTitle
+            }
+
+            return collection.copy(
+                imageUrl = collection.imageUrl ?: enrichedMovies.firstNotNullOfOrNull { it.imageUrl },
+                imdbRating = collection.imdbRating ?: avgRating,
+                releaseYear = collection.releaseYear ?: computedSpan,
+                groupTitle = updatedGroup,
+                collectionMovies = enrichedMovies
+            )
         }
     }
 }

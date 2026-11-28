@@ -4,6 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -53,7 +55,7 @@ import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.SlateInkSecondary
 import com.example.ui.theme.StreamCyan
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun DownloadQualitySheet(
     title: String,
@@ -64,9 +66,14 @@ fun DownloadQualitySheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val distinctAudioTracks = remember(options) {
-        options.filter { it.hasExplicitAudioChoice }.map { it.audioName }.distinct()
+        options.filter { it.hasExplicitAudioChoice || it.isExternalAudio }
+            .map { it.audioName }
+            .distinct()
     }
-    val hasMultiAudio = distinctAudioTracks.size >= 2
+    val hasExternalAudioOptions = remember(options) {
+        options.any { it.isExternalAudio }
+    }
+    val hasMultiAudio = distinctAudioTracks.size >= 2 || hasExternalAudioOptions
     var selectedAudioFilter by remember(options) { mutableStateOf<String?>(null) }
 
     val filteredOptions = remember(options, selectedAudioFilter) {
@@ -237,9 +244,9 @@ fun DownloadQualitySheet(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    FlowRow(
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
@@ -248,7 +255,7 @@ fun DownloadQualitySheet(
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
-                                        if (option.hasExplicitAudioChoice) {
+                                        if (option.hasExplicitAudioChoice || option.isExternalAudio) {
                                             Surface(
                                                 shape = RoundedCornerShape(6.dp),
                                                 color = StreamCyan.copy(alpha = 0.2f),
@@ -261,6 +268,22 @@ fun DownloadQualitySheet(
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
                                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        if (option.isExternalAudio) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = StreamCyan.copy(alpha = 0.14f),
+                                                border = BorderStroke(0.75.dp, StreamCyan.copy(alpha = 0.45f)),
+                                                modifier = Modifier.testTag("download_loaded_audio_badge_$idx")
+                                            ) {
+                                                Text(
+                                                    text = "Loaded",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = StreamCyan,
+                                                    maxLines = 1,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                                                 )
                                             }
                                         }

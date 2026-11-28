@@ -38,6 +38,7 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.example.CineStreamApplication
+import com.example.model.ExternalAudioTrack
 import com.example.model.ExternalSubtitle
 import com.example.model.StreamFormat
 import com.example.model.TrackOption
@@ -95,6 +96,7 @@ data class PlayerPlaybackState(
     val surfaceResetToken: Int = 0,
     val ffmpegAvailable: Boolean = false,
     val audioDelayMs: Long = 0L,
+    val isExternalAudioActive: Boolean = false,
     val nightModeAudioEnabled: Boolean = false,
     val temporarySpeedActive: Boolean = false
 )
@@ -274,6 +276,16 @@ class CinePlayerManager(context: Context) {
     private val mediaSourceFactory = DefaultMediaSourceFactory(smartEdgeDataSourceFactory, extractorsFactory)
         .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
 
+    // Dedicated direct factories for external audio URLs (.m3u8 / DASH / direct audio) so external
+    // playlists never overwrite the primary video's ParallelPrefetchManager manifest state.
+    private val externalAudioHlsFactory = HlsMediaSource.Factory(directDataSourceFactory)
+        .setExtractorFactory(DefaultHlsExtractorFactory(tolerantTsFlags, true))
+        .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+        .setAllowChunklessPreparation(true)
+
+    private val externalAudioGenericFactory = DefaultMediaSourceFactory(directDataSourceFactory, extractorsFactory)
+        .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+
     val targetBufferBytes: Int = computeSafeTargetBufferBytes()
     val backBufferDurationMs: Int = computeSafeBackBufferMs()
 
@@ -416,6 +428,7 @@ class CinePlayerManager(context: Context) {
 
     private var currentTracks: Tracks = Tracks.EMPTY
     private var pendingAutoSelectSubtitleId: String? = null
+    private var pendingAutoSelectAudioId: String? = null
 
     // Live telemetry & Multi-CDN failover state
     private var activeMediaUri: String? = null
@@ -430,6 +443,8 @@ class CinePlayerManager(context: Context) {
         activeHeaders.keys.any { it.equals("Authorization", ignoreCase = true) }
     private var lastLoadedSubtitles: List<Pair<ExternalSubtitle, Uri>> = emptyList()
     private var lastAutoSelectSubtitleId: String? = null
+    private var lastLoadedExternalAudios: List<ExternalAudioTrack> = emptyList()
+    private var lastAutoSelectAudioId: String? = null
     private var lastRequestedStartPosMs: Long = 0L
     private var lastAutoPlay: Boolean = true
 
@@ -440,6 +455,7 @@ class CinePlayerManager(context: Context) {
     var onMediaEnded: (() -> Unit)? = null
     var onSmartVpnStallCandidate: ((estimatedBps: Long) -> Unit)? = null
     var onSmartVpnFatalNetworkError: ((reason: String) -> Boolean)? = null
+    var onExternalAudioLoadFailed: ((failedAudio: ExternalAudioTrack, reason: String) -> Unit)? = null
 
     private val windowBytesLoaded = AtomicLong(0L)
     private val sessionBytesLoaded = AtomicLong(0L)
@@ -539,11 +555,52 @@ class CinePlayerManager(context: Context) {
                     selectSubtitleTrack(match)
                 }
             }
+
+            val targetAudioId = pendingAutoSelectAudioId
+            if (targetAudioId != null) {
+                val match = _state.value.audioTracks.firstOrNull { it.externalAudioId == targetAudioId }
+                    ?: _state.value.audioTracks.lastOrNull { it.isExternal }
+                if (match != null) {
+                    pendingAutoSelectAudioId = null
+                    selectAudioTrack(match)
+                }
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
             val isDecErr = DecoderFallbackHelper.isDecoderError(error)
             val failedCodec = if (isDecErr) DecoderFallbackHelper.extractFailedDecoderName(error) else null
+
+            // 0. If an external audio URL failed during initial merge/load, detach it cleanly and
+            // recover the primary video stream at the exact playback position instead of failing playback.
+            if (!isDecErr && lastLoadedExternalAudios.isNotEmpty() && !hasReachedReadyOnce) {
+                val failedAudio = lastLoadedExternalAudios.last()
+                val remainingAudios = lastLoadedExternalAudios.dropLast(1)
+                val targetUrl = candidateUrls.getOrNull(activeMirrorIndex) ?: activeMediaUri
+                if (!targetUrl.isNullOrBlank()) {
+                    lastLoadedExternalAudios = remainingAudios
+                    val preservedAutoSelect = lastAutoSelectAudioId?.takeIf { id ->
+                        remainingAudios.any { it.id == id }
+                    }
+                    lastAutoSelectAudioId = preservedAutoSelect
+                    pendingAutoSelectAudioId = preservedAutoSelect
+                    val reason = error.cause?.localizedMessage?.takeIf { it.isNotBlank() }
+                        ?: error.errorCodeName.replace('_', ' ').lowercase(Locale.US)
+                    onExternalAudioLoadFailed?.invoke(failedAudio, reason)
+                    prepareResolvedUrl(
+                        targetUrl = targetUrl,
+                        format = activeMediaFormat,
+                        externalSubtitles = lastLoadedSubtitles,
+                        externalAudios = remainingAudios,
+                        startPositionMs = lastRequestedStartPosMs,
+                        autoPlay = lastAutoPlay,
+                        autoSelectSubtitleId = lastAutoSelectSubtitleId,
+                        autoSelectAudioId = preservedAutoSelect,
+                        resetSessionCounters = false
+                    )
+                    return
+                }
+            }
 
             // 1. Multi-Tier Automatic Video Decoder Failover (fixes both c2.qti.hevc.decoder & c2.android.hevc.decoder)
             if (isDecErr) {
@@ -819,7 +876,9 @@ class CinePlayerManager(context: Context) {
         autoPlay: Boolean = true,
         autoSelectSubtitleId: String? = null,
         mirrors: List<String> = emptyList(),
-        headers: Map<String, String> = emptyMap()
+        headers: Map<String, String> = emptyMap(),
+        externalAudios: List<ExternalAudioTrack> = emptyList(),
+        autoSelectAudioId: String? = null
     ) {
         candidateUrls = CdnMirrorResolver.buildCandidateUrls(
             primaryUrl = mediaUri,
@@ -830,6 +889,8 @@ class CinePlayerManager(context: Context) {
         activeHeaders = headers
         lastLoadedSubtitles = externalSubtitles
         lastAutoSelectSubtitleId = autoSelectSubtitleId
+        lastLoadedExternalAudios = externalAudios
+        lastAutoSelectAudioId = autoSelectAudioId
         lastAutoPlay = autoPlay
 
         // Fresh media resets per-session prefetch queue, QUIC watchdog, failed codec blocklist & cache bypass
@@ -845,6 +906,7 @@ class CinePlayerManager(context: Context) {
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
             .build()
 
         // Apply per-URL CDN headers (or clear stale headers from previous session)
@@ -855,9 +917,11 @@ class CinePlayerManager(context: Context) {
             targetUrl = initialUrl,
             format = format,
             externalSubtitles = externalSubtitles,
+            externalAudios = externalAudios,
             startPositionMs = startPositionMs,
             autoPlay = autoPlay,
             autoSelectSubtitleId = autoSelectSubtitleId,
+            autoSelectAudioId = autoSelectAudioId,
             resetSessionCounters = true
         )
     }
@@ -1109,9 +1173,12 @@ class CinePlayerManager(context: Context) {
         autoPlay: Boolean,
         autoSelectSubtitleId: String?,
         resetSessionCounters: Boolean,
-        forceResetRenderer: Boolean = false
+        forceResetRenderer: Boolean = false,
+        externalAudios: List<ExternalAudioTrack> = lastLoadedExternalAudios,
+        autoSelectAudioId: String? = lastAutoSelectAudioId
     ) {
         pendingAutoSelectSubtitleId = autoSelectSubtitleId
+        pendingAutoSelectAudioId = autoSelectAudioId
         lastRequestedStartPosMs = startPositionMs.coerceAtLeast(0L)
         if (resetSessionCounters) {
             resetStatsSession(targetUrl, format)
@@ -1133,14 +1200,6 @@ class CinePlayerManager(context: Context) {
                 .setLanguage("und")
                 .setSelectionFlags(if (isTarget) C.SELECTION_FLAG_DEFAULT else 0)
                 .build()
-        }
-
-        val mediaItemBuilder = MediaItem.Builder()
-            .setUri(Uri.parse(targetUrl))
-            .setSubtitleConfigurations(subtitleConfigs)
-
-        if (mimeType != null) {
-            mediaItemBuilder.setMimeType(mimeType)
         }
 
         val safeStart = startPositionMs.coerceAtLeast(0L)
@@ -1202,41 +1261,88 @@ class CinePlayerManager(context: Context) {
             format == StreamFormat.M3U8 ||
             targetUrl.contains(".m3u8", ignoreCase = true)
 
-        val baseMediaSource: MediaSource = if (isHlsSource) {
+        val needsExplicitMerge = externalAudios.isNotEmpty() || (isHlsSource && subtitleConfigs.isNotEmpty())
+
+        val rawPrimarySource: MediaSource = if (isHlsSource) {
             val baseItem = MediaItem.Builder()
                 .setUri(Uri.parse(targetUrl))
                 .setMimeType(MimeTypes.APPLICATION_M3U8)
                 .build()
-            val hlsSource: MediaSource = hlsMediaSourceFactory.createMediaSource(baseItem)
-            if (subtitleConfigs.isEmpty()) {
-                hlsSource
-            } else {
-                val subSources = subtitleConfigs.map { subConfig ->
+            hlsMediaSourceFactory.createMediaSource(baseItem)
+        } else {
+            val mediaItemBuilder = MediaItem.Builder().setUri(Uri.parse(targetUrl))
+            if (!needsExplicitMerge) {
+                mediaItemBuilder.setSubtitleConfigurations(subtitleConfigs)
+            }
+            if (mimeType != null) {
+                mediaItemBuilder.setMimeType(mimeType)
+            }
+            mediaSourceFactory.createMediaSource(mediaItemBuilder.build())
+        }
+
+        // Wrap ONLY the primary source in AudioSyncMediaSource so embedded audio shifts cleanly
+        // without ever double-shifting external audio tracks (which have their own independent sync).
+        val syncedPrimarySource: MediaSource = AudioSyncMediaSource(
+            mediaSource = rawPrimarySource,
+            audioDelayUsProvider = { audioDelayUs.get() }
+        )
+
+        val finalMediaSource: MediaSource = if (!needsExplicitMerge) {
+            syncedPrimarySource
+        } else {
+            val mergedChildren = ArrayList<MediaSource>(1 + externalAudios.size + subtitleConfigs.size)
+            mergedChildren.add(syncedPrimarySource)
+            externalAudios.forEach { extAudio ->
+                mergedChildren.add(buildSyncedExternalAudioSource(extAudio))
+            }
+            subtitleConfigs.forEach { subConfig ->
+                mergedChildren.add(
                     SubtitleMediaSourceBuilder.buildMediaSource(
                         subConfig = subConfig,
                         dataSourceFactory = directDataSourceFactory,
                         loadErrorHandlingPolicy = loadErrorHandlingPolicy
                     )
-                }
-                MergingMediaSource(hlsSource, *subSources.toTypedArray())
+                )
             }
-        } else {
-            mediaSourceFactory.createMediaSource(mediaItemBuilder.build())
+            MergingMediaSource(
+                /* adjustPeriodTimeOffsets = */ true,
+                /* clipDurations = */ true,
+                *mergedChildren.toTypedArray()
+            )
         }
 
-        val syncMediaSource = AudioSyncMediaSource(
-            mediaSource = baseMediaSource,
-            audioDelayUsProvider = { audioDelayUs.get() }
-        )
+        val expectExternalAudioActive = autoSelectAudioId != null ||
+            (externalAudios.isNotEmpty() && _state.value.isExternalAudioActive)
         val effectiveStartMs = AudioDelayMath.computeRealignSeekPositionMs(
             currentPositionMs = safeStart,
-            audioDelayMs = _state.value.audioDelayMs
+            audioDelayMs = _state.value.audioDelayMs,
+            isExternalAudioActive = expectExternalAudioActive
         )
         cancelPendingAudioDelayRealign()
-        player.setMediaSource(syncMediaSource, effectiveStartMs)
+        player.setMediaSource(finalMediaSource, effectiveStartMs)
         player.prepare()
         setVolumePercent(_state.value.volumePercent)
         player.playWhenReady = autoPlay
+    }
+
+    private fun buildSyncedExternalAudioSource(extAudio: ExternalAudioTrack): MediaSource {
+        val itemBuilder = MediaItem.Builder().setUri(Uri.parse(extAudio.url))
+        val rawSource: MediaSource = when {
+            extAudio.isHls -> {
+                itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+                externalAudioHlsFactory.createMediaSource(itemBuilder.build())
+            }
+            extAudio.isDash -> {
+                itemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
+                externalAudioGenericFactory.createMediaSource(itemBuilder.build())
+            }
+            else -> externalAudioGenericFactory.createMediaSource(itemBuilder.build())
+        }
+        val audioOnly = AudioOnlyFilteringMediaSource(rawSource, extAudio)
+        return ExternalAudioSyncMediaSource(
+            mediaSource = audioOnly,
+            audioDelayUsProvider = { audioDelayUs.get() }
+        )
     }
 
     private fun isRecoverableCdnError(error: PlaybackException): Boolean {
@@ -1489,7 +1595,8 @@ class CinePlayerManager(context: Context) {
         val effectiveSeekMs = AudioDelayMath.computeRealignSeekPositionMs(
             currentPositionMs = clamped,
             audioDelayMs = _state.value.audioDelayMs,
-            durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+            durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L },
+            isExternalAudioActive = _state.value.isExternalAudioActive
         )
         frameDropAnalyzer.markSeekOrTransition(SystemClock.elapsedRealtime())
         player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
@@ -1643,7 +1750,8 @@ class CinePlayerManager(context: Context) {
             val seekTargetMs = AudioDelayMath.computeRealignSeekPositionMs(
                 currentPositionMs = anchorMs,
                 audioDelayMs = targetDelayMs,
-                durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+                durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L },
+                isExternalAudioActive = _state.value.isExternalAudioActive
             )
             frameDropAnalyzer.markSeekOrTransition(SystemClock.elapsedRealtime())
             player.setSeekParameters(SeekParameters.EXACT)
@@ -1760,6 +1868,8 @@ class CinePlayerManager(context: Context) {
                     }
 
                     C.TRACK_TYPE_AUDIO -> {
+                        val extAudioId = ExternalAudioTrack.extractAudioId(format.id)
+                        val isExternal = extAudioId != null
                         val langName = format.language?.let {
                             Locale.forLanguageTag(it).displayLanguage.takeIf { d -> d.isNotBlank() && d != "und" }
                         }
@@ -1767,7 +1877,11 @@ class CinePlayerManager(context: Context) {
                             ?: langName
                             ?: "Audio Track ${audioList.size + 1}"
                         val detail = buildString {
+                            if (isExternal) {
+                                append("External URL")
+                            }
                             format.channelCount.takeIf { it > 0 }?.let { ch ->
+                                if (isNotEmpty()) append(" · ")
                                 append(if (ch == 6) "5.1" else if (ch == 2) "Stereo" else "${ch}ch")
                             }
                             format.sampleMimeType?.substringAfter('/')?.uppercase(Locale.US)?.let { codec ->
@@ -1781,9 +1895,11 @@ class CinePlayerManager(context: Context) {
                                 groupIndex = groupIdx,
                                 trackIndex = trackIdx,
                                 label = label,
-                                detail = detail.ifBlank { "Audio" },
+                                detail = detail.ifBlank { if (isExternal) "External Audio URL" else "Audio" },
                                 language = format.language,
-                                isSelected = selected
+                                isSelected = selected,
+                                isExternal = isExternal,
+                                externalAudioId = extAudioId
                             )
                         )
                     }
@@ -1819,12 +1935,14 @@ class CinePlayerManager(context: Context) {
         }
 
         val disabled = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val externalAudioActive = audioList.any { it.isExternal && it.isSelected }
         _state.update {
             it.copy(
                 videoTracks = videoList.sortedByDescending { v -> v.label.removeSuffix("p").toIntOrNull() ?: 0 },
                 audioTracks = audioList,
                 subtitleTracks = subList,
-                subtitlesDisabled = disabled
+                subtitlesDisabled = disabled,
+                isExternalAudioActive = externalAudioActive
             )
         }
     }

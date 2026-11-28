@@ -19,6 +19,7 @@ enum class RemotePushAction(val formValue: String, val label: String) {
     PLAY_STREAM("play_stream", "Play Video / Stream URL"),
     LOAD_JSON("load_json", "Add JSON IMDb Catalog URL"),
     LOAD_M3U("load_m3u", "Load M3U / IPTV Playlist URL"),
+    LOAD_AUDIO("load_audio", "Attach External Audio URL (.m3u8 / Audio)"),
     LOAD_SUBTITLE("load_subtitle", "Attach Subtitle URL"),
     LOAD_EPG("load_epg", "Load XMLTV EPG Guide URL"),
     SET_NORDVPN_TOKEN("nordvpn_token", "Connect NordVPN Access Key"),
@@ -271,6 +272,7 @@ class LocalWebRemoteServer(
                         RemotePushAction.PLAY_STREAM,
                         RemotePushAction.LOAD_JSON,
                         RemotePushAction.LOAD_M3U,
+                        RemotePushAction.LOAD_AUDIO,
                         RemotePushAction.LOAD_SUBTITLE,
                         RemotePushAction.LOAD_EPG
                     )
@@ -387,7 +389,7 @@ class LocalWebRemoteServer(
             <body>
               <div class="card">
                 <h1>CineStream TV Web Remote</h1>
-                <p>Send stream links, JSON/M3U playlists, subtitles, EPG guides, NordVPN keys, or sync snapshots straight to your TV over local Wi-Fi.</p>
+                <p>Send stream links, JSON/M3U playlists, external audio (.m3u8), subtitles, EPG guides, NordVPN keys, or sync snapshots straight to your TV over local Wi-Fi.</p>
                 $statusBanner
                 <form method="POST" action="/push">
                   <label for="pin">6-Digit TV Session PIN</label>

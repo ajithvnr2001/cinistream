@@ -1,5 +1,6 @@
 package com.example.ui.player
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -32,9 +34,11 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -79,12 +83,14 @@ import com.example.R
 import com.example.data.OfflineDownloadEntity
 import com.example.model.AbLoopState
 import com.example.model.ChapterMarker
+import com.example.model.ExternalAudioTrack
 import com.example.model.PreferredLanguageCatalog
 import com.example.model.SleepTimerMode
 import com.example.model.SleepTimerUiState
 import com.example.model.TrackOption
 import com.example.player.AudioDelayMath
 import com.example.player.DecoderFallbackHelper
+import com.example.player.ExternalAudioUrlInspector
 import com.example.player.NetworkTransportMode
 import com.example.player.OfflineDownloadManager
 import com.example.player.PlayerStatsFormatter
@@ -110,6 +116,13 @@ fun TracksSheet(
     volumePercent: Int = 100,
     onSetVolumePercent: (Int) -> Unit = {},
     audioDelayMs: Long = 0L,
+    isExternalAudioActive: Boolean = false,
+    externalAudios: List<ExternalAudioTrack> = emptyList(),
+    isLoadingExternalAudio: Boolean = false,
+    externalAudioError: String? = null,
+    onLoadExternalAudioUrl: ((url: String, label: String?) -> Unit)? = null,
+    onRemoveExternalAudio: ((String) -> Unit)? = null,
+    onDismissExternalAudioError: (() -> Unit)? = null,
     onAdjustAudioDelay: (Long) -> Unit = {},
     onSetAudioDelay: ((Long) -> Unit)? = null,
     onResetAudioDelay: () -> Unit = {},
@@ -437,11 +450,31 @@ fun TracksSheet(
                                 modifier = Modifier.size(20.dp)
                             )
                             Column {
-                                Text(
-                                    text = stringResource(R.string.audio_delay_title),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.audio_delay_title),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (isExternalAudioActive) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = StreamCyan.copy(alpha = 0.18f),
+                                            border = BorderStroke(0.75.dp, StreamCyan.copy(alpha = 0.55f))
+                                        ) {
+                                            Text(
+                                                text = "EXT AUDIO",
+                                                fontFamily = JetBrainsMonoFamily,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = StreamCyan,
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
                                     text = stringResource(R.string.audio_delay_subtitle),
                                     style = MaterialTheme.typography.bodySmall,
@@ -484,6 +517,66 @@ fun TracksSheet(
                         }
                     }
 
+                    // Coarse steppers (-5s, -1s, +1s, +5s) for rapid multi-second / multi-minute sync
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { onAdjustAudioDelay(-5 * AudioDelayMath.SECOND_STEP_MS) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                .testTag("tracks_audio_delay_minus_5s"),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, ObsidianOutline),
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Text("-5s", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = { onAdjustAudioDelay(-AudioDelayMath.SECOND_STEP_MS) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                .testTag("tracks_audio_delay_minus_1s"),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, ObsidianOutline),
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Text("-1s", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = { onAdjustAudioDelay(AudioDelayMath.SECOND_STEP_MS) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                .testTag("tracks_audio_delay_plus_1s"),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, ObsidianOutline),
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Text("+1s", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = { onAdjustAudioDelay(5 * AudioDelayMath.SECOND_STEP_MS) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                .testTag("tracks_audio_delay_plus_5s"),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, ObsidianOutline),
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Text("+5s", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+
+                    // Fine steppers (-50ms, -25ms, +25ms, +50ms)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -499,7 +592,7 @@ fun TracksSheet(
                             border = BorderStroke(1.dp, ObsidianOutline),
                             contentPadding = PaddingValues(horizontal = 4.dp)
                         ) {
-                            Text("-50ms", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                            Text("-50ms", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                         OutlinedButton(
                             onClick = { onAdjustAudioDelay(-AudioDelayMath.FINE_STEP_MS) },
@@ -512,7 +605,7 @@ fun TracksSheet(
                             border = BorderStroke(1.dp, ObsidianOutline),
                             contentPadding = PaddingValues(horizontal = 4.dp)
                         ) {
-                            Text("-25ms", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                            Text("-25ms", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                         OutlinedButton(
                             onClick = { onAdjustAudioDelay(AudioDelayMath.FINE_STEP_MS) },
@@ -525,7 +618,7 @@ fun TracksSheet(
                             border = BorderStroke(1.dp, ObsidianOutline),
                             contentPadding = PaddingValues(horizontal = 4.dp)
                         ) {
-                            Text("+25ms", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                            Text("+25ms", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                         OutlinedButton(
                             onClick = { onAdjustAudioDelay(AudioDelayMath.COARSE_STEP_MS) },
@@ -538,7 +631,7 @@ fun TracksSheet(
                             border = BorderStroke(1.dp, ObsidianOutline),
                             contentPadding = PaddingValues(horizontal = 4.dp)
                         ) {
-                            Text("+50ms", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                            Text("+50ms", fontFamily = JetBrainsMonoFamily, maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                     }
 
@@ -546,7 +639,7 @@ fun TracksSheet(
                         currentOffsetMs = audioDelayMs,
                         testTagPrefix = "tracks_audio_delay",
                         defaultUnit = SyncTimeUnit.MILLISECONDS,
-                        hintDirection = "− earlier · + later",
+                        hintDirection = "− earlier · + later · any ms/s/m",
                         onApplyOffsetMs = { targetMs ->
                             if (onSetAudioDelay != null) {
                                 onSetAudioDelay(targetMs)
@@ -999,23 +1092,268 @@ fun TracksSheet(
 
             HorizontalDivider(color = ObsidianOutline.copy(alpha = 0.6f))
 
-            // Audio Tracks
+            // Audio Tracks & Custom External Audio URL (.m3u8 / Direct)
+            var showAddAudioComposer by remember { mutableStateOf(false) }
+            var externalAudioUrlInput by remember { mutableStateOf("") }
+            var externalAudioLabelInput by remember { mutableStateOf("") }
+            var inlineAudioUrlError by remember { mutableStateOf<String?>(null) }
+
+            val submitExternalAudioUrl = {
+                val trimmed = externalAudioUrlInput.trim()
+                if (!ExternalAudioUrlInspector.isValidAudioUrl(trimmed)) {
+                    inlineAudioUrlError = "Enter a valid http:// or https:// audio or .m3u8 URL"
+                } else {
+                    inlineAudioUrlError = null
+                    onLoadExternalAudioUrl?.invoke(trimmed, externalAudioLabelInput.trim().ifBlank { null })
+                    externalAudioUrlInput = ""
+                    externalAudioLabelInput = ""
+                    showAddAudioComposer = false
+                }
+            }
+
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.GraphicEq,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Audio Tracks (${audioTracks.size})",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Audio Tracks (${audioTracks.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (onLoadExternalAudioUrl != null) {
+                        OutlinedButton(
+                            onClick = {
+                                showAddAudioComposer = !showAddAudioComposer
+                                inlineAudioUrlError = null
+                                onDismissExternalAudioError?.invoke()
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (showAddAudioComposer) StreamCyan else StreamCyan.copy(alpha = 0.6f)
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                .testTag("tracks_add_audio_url_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (showAddAudioComposer) Icons.Rounded.Close else Icons.Rounded.Add,
+                                contentDescription = null,
+                                tint = StreamCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = stringResource(R.string.add_external_audio_url),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = StreamCyan
+                            )
+                        }
+                    }
+                }
+
+                AnimatedVisibility(visible = showAddAudioComposer && onLoadExternalAudioUrl != null) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("tracks_external_audio_composer"),
+                        shape = RoundedCornerShape(14.dp),
+                        color = ObsidianSurfaceHigh,
+                        border = BorderStroke(1.dp, StreamCyan.copy(alpha = 0.55f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Attach HLS (.m3u8) or Audio Stream URL",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = StreamCyan
+                            )
+                            OutlinedTextField(
+                                value = externalAudioUrlInput,
+                                onValueChange = {
+                                    externalAudioUrlInput = it
+                                    inlineAudioUrlError = null
+                                },
+                                placeholder = {
+                                    Text(
+                                        text = stringResource(R.string.external_audio_url_placeholder),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                singleLine = true,
+                                isError = inlineAudioUrlError != null,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Uri,
+                                    imeAction = ImeAction.Next
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .tvFocusHighlight(
+                                        shape = RoundedCornerShape(12.dp),
+                                        focusedScale = 1.01f,
+                                        includeChildFocus = true
+                                    )
+                                    .testTag("tracks_external_audio_url_input"),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            OutlinedTextField(
+                                value = externalAudioLabelInput,
+                                onValueChange = { externalAudioLabelInput = it },
+                                placeholder = {
+                                    Text(
+                                        text = stringResource(R.string.external_audio_label_placeholder),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Text,
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(onDone = { submitExternalAudioUrl() }),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .tvFocusHighlight(
+                                        shape = RoundedCornerShape(12.dp),
+                                        focusedScale = 1.01f,
+                                        includeChildFocus = true
+                                    )
+                                    .testTag("tracks_external_audio_label_input"),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            if (inlineAudioUrlError != null) {
+                                Text(
+                                    text = inlineAudioUrlError!!,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SignalRose,
+                                    modifier = Modifier.testTag("tracks_external_audio_url_error")
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        showAddAudioComposer = false
+                                        inlineAudioUrlError = null
+                                    },
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                ) {
+                                    Text("Cancel")
+                                }
+                                Button(
+                                    onClick = submitExternalAudioUrl,
+                                    enabled = externalAudioUrlInput.isNotBlank() && !isLoadingExternalAudio,
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = StreamCyan,
+                                        contentColor = Color(0xFF061318)
+                                    ),
+                                    modifier = Modifier
+                                        .height(48.dp)
+                                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                                        .testTag("tracks_external_audio_attach_button")
+                                ) {
+                                    if (isLoadingExternalAudio) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                            color = Color(0xFF061318)
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                    }
+                                    Text(
+                                        text = stringResource(R.string.attach_external_audio_action),
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!externalAudioError.isNullOrBlank()) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("tracks_external_audio_error_banner"),
+                        shape = RoundedCornerShape(10.dp),
+                        color = SignalRose.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, SignalRose.copy(alpha = 0.55f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = externalAudioError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SignalRose,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (onDismissExternalAudioError != null) {
+                                IconButton(
+                                    onClick = onDismissExternalAudioError,
+                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "Dismiss audio error",
+                                        tint = SignalRose,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (isLoadingExternalAudio) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = StreamCyan
+                        )
+                        Text(
+                            text = "Inspecting & attaching external audio stream…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StreamCyan
+                        )
+                    }
                 }
 
                 if (audioTracks.isEmpty()) {
@@ -1026,10 +1364,20 @@ fun TracksSheet(
                     )
                 } else {
                     audioTracks.forEachIndexed { idx, track ->
+                        val extAudioModel = track.externalAudioId?.let { id ->
+                            externalAudios.firstOrNull { it.id == id }
+                        }
                         TrackSelectionRow(
                             label = track.label,
                             detail = track.detail,
                             isSelected = track.isSelected,
+                            badgeText = if (track.isExternal) (extAudioModel?.formatBadge ?: "EXT") else null,
+                            onRemove = if (track.isExternal && track.externalAudioId != null && onRemoveExternalAudio != null) {
+                                { onRemoveExternalAudio(track.externalAudioId) }
+                            } else {
+                                null
+                            },
+                            removeTestTag = track.externalAudioId?.let { "tracks_remove_external_audio_$it" },
                             onClick = { onSelectAudioTrack(track) },
                             testTag = "audio_track_$idx"
                         )
@@ -1325,6 +1673,9 @@ private fun TrackSelectionRow(
     detail: String,
     isSelected: Boolean,
     leadingAutoIcon: Boolean = false,
+    badgeText: String? = null,
+    onRemove: (() -> Unit)? = null,
+    removeTestTag: String? = null,
     onClick: () -> Unit,
     testTag: String,
     modifier: Modifier = Modifier
@@ -1345,9 +1696,9 @@ private fun TrackSelectionRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Icon(
                 imageVector = when {
@@ -1360,13 +1711,34 @@ private fun TrackSelectionRow(
                 modifier = Modifier.size(20.dp)
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (!badgeText.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = StreamCyan.copy(alpha = 0.18f),
+                            border = BorderStroke(0.75.dp, StreamCyan.copy(alpha = 0.55f))
+                        ) {
+                            Text(
+                                text = badgeText,
+                                fontFamily = JetBrainsMonoFamily,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StreamCyan,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
                 Text(
                     text = detail,
                     style = MaterialTheme.typography.bodySmall,
@@ -1374,6 +1746,22 @@ private fun TrackSelectionRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+            if (onRemove != null) {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .tvFocusHighlight(shape = RoundedCornerShape(10.dp))
+                        .let { mod -> if (removeTestTag != null) mod.testTag(removeTestTag) else mod }
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = stringResource(R.string.cd_remove_external_audio),
+                        tint = SignalRose,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
@@ -1515,9 +1903,9 @@ internal fun SyncOffsetNumericInputRow(
                 placeholder = {
                     Text(
                         text = if (selectedUnit == SyncTimeUnit.MILLISECONDS) {
-                            "e.g. 250 or -150"
+                            "e.g. 250, -150, 2m"
                         } else {
-                            "e.g. 1.5 or -0.5"
+                            "e.g. 1.5, -120, 2m"
                         },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis

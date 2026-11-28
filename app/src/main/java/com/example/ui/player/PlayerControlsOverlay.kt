@@ -37,6 +37,7 @@ import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
@@ -161,6 +162,7 @@ internal fun PlayerTopBar(
     hasActiveSubtitles: Boolean,
     statsForNerdsEnabled: Boolean,
     hasSeriesEpisodes: Boolean,
+    isCollectionPlayback: Boolean = false,
     episodeCodeBadge: String?,
     hasJsonPlaylist: Boolean,
     hasM3uPlaylist: Boolean,
@@ -466,11 +468,12 @@ internal fun PlayerTopBar(
                     }
 
                     if (hasSeriesEpisodes) {
+                        val badgeAccent = if (isCollectionPlayback) StreamCyan else CinemaAmber
                         Surface(
                             onClick = onOpenSeriesEpisodes,
                             shape = RoundedCornerShape(12.dp),
-                            color = CinemaAmber.copy(alpha = 0.22f),
-                            border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                            color = badgeAccent.copy(alpha = 0.22f),
+                            border = BorderStroke(1.dp, badgeAccent.copy(alpha = 0.7f)),
                             modifier = Modifier
                                 .minimumInteractiveComponentSize()
                                 .focusRequester(episodesButtonFocusRequester)
@@ -482,15 +485,15 @@ internal fun PlayerTopBar(
                                 horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.Tv,
-                                    contentDescription = stringResource(R.string.cd_episodes),
-                                    tint = CinemaAmber,
+                                    imageVector = if (isCollectionPlayback) Icons.Rounded.Movie else Icons.Rounded.Tv,
+                                    contentDescription = if (isCollectionPlayback) "Collection Films" else stringResource(R.string.cd_episodes),
+                                    tint = badgeAccent,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = "Episodes",
+                                    text = if (isCollectionPlayback) "Films" else "Episodes",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = CinemaAmber
+                                    color = badgeAccent
                                 )
                             }
                         }
@@ -828,11 +831,12 @@ internal fun PlayerTopBar(
                 }
 
                 if (hasSeriesEpisodes) {
+                    val badgeAccent = if (isCollectionPlayback) StreamCyan else CinemaAmber
                     Surface(
                         onClick = onOpenSeriesEpisodes,
                         shape = RoundedCornerShape(12.dp),
-                        color = CinemaAmber.copy(alpha = 0.22f),
-                        border = BorderStroke(1.dp, CinemaAmber.copy(alpha = 0.7f)),
+                        color = badgeAccent.copy(alpha = 0.22f),
+                        border = BorderStroke(1.dp, badgeAccent.copy(alpha = 0.7f)),
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .focusRequester(episodesButtonFocusRequester)
@@ -845,15 +849,15 @@ internal fun PlayerTopBar(
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Tv,
-                                contentDescription = stringResource(R.string.cd_episodes),
-                                tint = CinemaAmber,
+                                imageVector = if (isCollectionPlayback) Icons.Rounded.Movie else Icons.Rounded.Tv,
+                                contentDescription = if (isCollectionPlayback) "Collection Films" else stringResource(R.string.cd_episodes),
+                                tint = badgeAccent,
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Episodes",
+                                text = if (isCollectionPlayback) "Films" else "Episodes",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = CinemaAmber
+                                color = badgeAccent
                             )
                         }
                     }
@@ -1041,6 +1045,7 @@ internal fun PlayerBottomBar(
     playbackSpeed: Float,
     aspectRatioMode: AspectRatioMode,
     hasNextEpisode: Boolean,
+    isCollectionPlayback: Boolean = false,
     isTv: Boolean,
     showSpeedMenu: Boolean,
     volumeButtonFocusRequester: FocusRequester,
@@ -1103,12 +1108,12 @@ internal fun PlayerBottomBar(
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.SkipNext,
-                                    contentDescription = stringResource(R.string.cd_next_episode),
+                                    contentDescription = if (isCollectionPlayback) "Play Next Film" else stringResource(R.string.cd_next_episode),
                                     tint = CinemaAmber,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = "Next Ep",
+                                    text = if (isCollectionPlayback) "Next Film" else "Next Ep",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = CinemaAmber
                                 )

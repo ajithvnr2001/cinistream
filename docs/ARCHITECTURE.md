@@ -1,6 +1,6 @@
-# CineStream Architecture & Codebase Guide (v1.32)
+# CineStream Architecture & Codebase Guide (v1.39)
 
-This document provides an end-to-end architectural reference for **CineStream v1.32** (`com.aistudio.cinestream.vqxkpm`), detailing how the app coordinates Jetpack Compose Material 3 UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp + WireGuard NordLynx networking, parallel HLS/range prefetching, Media3 + NextLib FFmpeg playback, `AudioSyncMediaSource` HLS-segment bidirectional audio sync, extraction-time HLS subtitle transcoding, multi-account cloud/LAN WebDAV, Room v4 + Android Keystore persistence, and zero-OOM memory engineering across both phones and 32-bit Android TVs.
+This document provides an end-to-end architectural reference for **CineStream v1.39** (`com.aistudio.cinestream.vqxkpm`), detailing how the app coordinates Jetpack Compose Material 3 UI, adaptive HTTP/3 Cronet + HTTP/2 OkHttp + WireGuard NordLynx networking, parallel HLS/range prefetching, Media3 + NextLib FFmpeg playback, `AudioSyncMediaSource` + `ExternalAudioMediaSource` (custom `.m3u8`/direct external audio URLs, JSON playlist auto-loading, and unbounded `±60 min` bidirectional sync), Movie Collections with per-movie IMDb enrichment, 8×/4× resumable multi-quality/multi-audio offline downloads (including loaded external audio bundling in `.mp3`, `.ac3`, `.eac3`, `.flac`, `.wav`, `.m4a`, and external HLS `.m3u8` via `offline_audio.json` sidecars), extraction-time HLS subtitle transcoding, multi-account cloud/LAN WebDAV, Room v4 + Android Keystore persistence, and zero-OOM memory engineering across both phones and 32-bit Android TVs.
 
 ---
 
@@ -50,56 +50,77 @@ CineStream uses **MVVM with Unidirectional Data Flow (UDF)**, **constructor depe
 │ • SmartVpnFailoverCoord. │  │ • LocalNetworkClient      │  │   (SubtitlePrefsRepo)    │
 │ • FrameDropAnalyzer      │  │ • OfflineDownloadManager  │  │ • CredentialVault        │
 │ • AudioSyncMediaSource   │  │ • LocalWebRemoteServer    │  │   (Keystore AES-256-GCM) │
-│ • AudioVolumeBooster     │  │ • QrCodeMatrixGenerator   │  │ • DeviceSyncCodec        │
-│ • CdnMirrorResolver      │  │ • MediaFormatDetector     │  └──────────────────────────┘
-│ • MediaEdgeCache         │  │ • SubtitleHelper          │
-│ • MediaPlaybackService   │  └───────────────────────────┘
+│ • ExternalAudioMediaSrc  │  │ • QrCodeMatrixGenerator   │  │ • DeviceSyncCodec        │
+│ • AudioVolumeBooster     │  │ • MediaFormatDetector     │  └──────────────────────────┘
+│ • CdnMirrorResolver      │  │ • SubtitleHelper          │
+│ • MediaEdgeCache         │  └───────────────────────────┘
+│ • MediaPlaybackService   │
 └──────────────────────────┘
 ```
 
 ---
 
-## 2. End-to-End Request, Prefetch & Playback Pipeline
+## 2. End-to-End Request, Prefetch, External Audio & Playback Pipeline
 
 ```text
-Catalog Loaded / Series Opened / Next Episode Queued
+Catalog Loaded / Collection or Series Opened / Next Item Queued
   └─► StreamingNetworkEngine.prewarmOrigin(url)
         • Debounced 60 s per origin root (HEAD https://<host>/)
         • Warms FastDnsResolver (IPv4-first / DoH) + TLS/QUIC socket pool before Play
 
-User Taps Play -> CinePlayerManager.loadMedia()
+User Taps Play (or JSON Playlist Item / Collection Movie / Series Episode with External Audios)
+  ├─► PlaylistAudioResolver.resolve(externalAudios) [v1.38]
+  │     • Validates http(s):// URLs, deduplicates, assigns stable IDs (pl_audio_*)
+  │     • Picks autoSelectAudioId ("default": true → first track, or null if all default: false)
+  │     • Extracts clamped initialDelayMs (±60 min) when no saved Room history offset overrides it
   │
-  ├─► AdaptiveHttpDataSourceFactory
-  │     ├── Primary: CronetDataSource (Play Services HTTP/3 QUIC + TLS 1.3 + BBR)
-  │     │     (Auto-bypassed when Private DoH / SOCKS5 is active or QuicThroughputWatchdog demotes)
-  │     └── Fallback: OkHttpDataSource (HTTP/2 multiplexed + FastDnsResolver + DoH)
-  │
-  ├─► ParallelPrefetchDataSource (ParallelPrefetchEngine)
-  │     ├── Tees .m3u8 playlists (0 ms overhead) -> 2× TV (<=14 MB) / 3× Mobile (<=28 MB)
-  │     ├── StreamingPrefetchEntry: 0 ms mid-download live handoff in 32 KB chunks
-  │     ├── Dedicated non-blocking audio lane + foreground-first anti-starvation
-  │     └── 2–3× parallel 206 Content-Range slices for progressive MP4/MKV/WebM
-  │
-  ├─► MediaEdgeCache.createSmartDataSourceFactory()
-  │     ├── Android TV / Low-RAM (<=400 MB heap): RAM-Direct (0 eMMC writes, 0 SQLite fsyncs)
-  │     └── Phones / Tablets: 128 MB SimpleCache w/ 128 KB CacheDataSink (skips manifests/subs)
-  │
-  ├─► HlsMediaSource.Factory / DefaultMediaSourceFactory
-  │     ├── Tolerant TS flags (FLAG_ALLOW_NON_IDR_KEYFRAMES | FLAG_DETECT_ACCESS_UNITS)
-  │     └── FastStreamingLoadErrorHandlingPolicy (500 ms transient retry; instant 4xx fail-fast)
-  │
-  ├─► Media3 ExoPlayer (1.11.1)
-  │     ├── DefaultBandwidthMeter (Smart cold-start: 6 Mbps TV / 10 Mbps Phone / 12 Mbps Eth/5G)
-  │     ├── DefaultTrackSelector (TV Stereo 2ch DSP, preferred languages, 1080p/9.5 Mbps TV cap)
-  │     ├── DefaultLoadControl (20–45 s window strictly capped at 12–40 MB Java heap)
-  │     └── FrameDropAnalyzer + seamless display refresh-rate matching
-  │
-  ├─► AudioSyncMediaSource (AudioSyncMediaPeriod + AudioOffsetSampleStream)
-  │     └── Shifts C.TRACK_TYPE_AUDIO PTS (-10s..+10s) on HLS muxed/demuxed segments, DASH, MKV, MP4
-  │
-  └─► NextRenderersFactory (EXTENSION_RENDERER_MODE_ON, Selective Async/Sync Queueing)
-        ├── Video: MediaCodec (HW, .low_latency blocked) ──fallback──► NextLib FFmpeg 10-bit / AV1
-        └── Audio: MediaCodec / HDMI Passthrough / NextLib FFmpeg -> AudioVolumeBooster
+  └─► CinePlayerManager.loadMedia(initialExternalAudios, autoSelectAudioId, initialAudioDelayMs)
+        │
+        ├──[Primary Video + Embedded Audio Lane]───────────────────────────────────────────────┐
+        │   ├─► AdaptiveHttpDataSourceFactory                                                  │
+        │   │     ├── Primary: CronetDataSource (Play Services HTTP/3 QUIC + TLS 1.3 + BBR)    │
+        │   │     │     (Auto-bypassed on Private DoH/SOCKS5 or QuicThroughputWatchdog)        │
+        │   │     └── Fallback: OkHttpDataSource (HTTP/2 multiplexed + FastDnsResolver + DoH)  │
+        │   ├─► ParallelPrefetchDataSource (ParallelPrefetchEngine)                            │
+        │   │     ├── Tees .m3u8 playlists -> 2× TV (<=14 MB) / 3× Mobile (<=28 MB)            │
+        │   │     ├── StreamingPrefetchEntry: 0 ms mid-download live handoff in 32 KB chunks   │
+        │   │     ├── Dedicated non-blocking audio lane + foreground-first anti-starvation     │
+        │   │     └── 2–3× parallel 206 Content-Range slices for progressive MP4/MKV/WebM      │
+        │   ├─► MediaEdgeCache.createSmartDataSourceFactory()                                  │
+        │   │     ├── Android TV / Low-RAM (<=400 MB heap): RAM-Direct (0 eMMC writes)         │
+        │   │     └── Phones / Tablets: 128 MB SimpleCache w/ 128 KB CacheDataSink             │
+        │   ├─► HlsMediaSource.Factory / DefaultMediaSourceFactory                             │
+        │   │     ├── Tolerant TS flags (FLAG_ALLOW_NON_IDR_KEYFRAMES | DETECT_ACCESS_UNITS)   │
+        │   │     └── FastStreamingLoadErrorHandlingPolicy (500 ms retry; instant 4xx fail)    │
+        │   └─► AudioSyncMediaSource (AudioSyncMediaPeriod + AudioOffsetSampleStream)          │
+        │         └── Shifts embedded C.TRACK_TYPE_AUDIO PTS (±60 min, sample-boundary)        │
+        │                                                                                      │
+        ├──[External Audio Lane(s) — v1.37–v1.39] (online URLs OR local file:// offline sidecar)
+        │   ├─► Direct DefaultDataSource.Factory (HTTP/3 + HTTP/2 online; local file:// offline)
+        │   │     (Bypasses primary video prefetch so video & audio queues never contend)
+        │   ├─► AudioOnlyFilteringMediaSource
+        │   │     └── Strips VIDEO/TEXT tracks from muxed .m3u8/.mp4/.mkv external audio URLs,
+        │   │         exposes unique external track IDs + language/label metadata
+        │   └─► ExternalAudioSyncMediaSource (ExternalAudioSyncMediaPeriod)
+        │         └── Independent sample-level PTS shifting (±60 min), timeline-safe clamping
+        │                                                                                      │
+        ├──[Sidecar Subtitles Lane] (SubtitleMediaSourceBuilder)                               │
+        │   └─► ProgressiveMediaSource + SubtitleExtractor -> application/x-media3-cues        │
+        │                                                                                      │
+        ▼                                                                                      │
+  MergingMediaSource(adjustPeriodTimeOffsets = true, clipDurations = true) ◄───────────────────┘
+        │  (Graceful recovery: if one external audio URL fails 404/CORS/codec, drops only the
+        │   failed track while preserving surviving autoSelectAudioId and uninterrupted video)
+        ▼
+  Media3 ExoPlayer (1.11.1)
+        ├── DefaultBandwidthMeter (Smart cold-start: 6 Mbps TV / 10 Mbps Phone / 12 Mbps Eth/5G)
+        ├── DefaultTrackSelector (TV Stereo 2ch DSP, preferred languages, 1080p/9.5 Mbps TV cap,
+        │     + automatic TrackSelectionOverride for external audio track when auto-selected)
+        ├── DefaultLoadControl (20–45 s window strictly capped at 12–40 MB Java heap)
+        ├── FrameDropAnalyzer + seamless display refresh-rate matching
+        └── NextRenderersFactory (EXTENSION_RENDERER_MODE_ON, Selective Async/Sync Queueing)
+              ├── Video: MediaCodec (HW, .low_latency blocked) ──fallback──► NextLib FFmpeg
+              └── Audio: MediaCodec / HDMI Passthrough / NextLib FFmpeg -> AudioVolumeBooster
 ```
 
 ---
@@ -115,16 +136,17 @@ User Taps Play -> CinePlayerManager.loadMedia()
 ### ViewModel Layer (`com.example.viewmodel`)
 | File | Responsibility |
 | :--- | :--- |
-| `CineStreamViewModel.kt` | Central coordinator wiring `CinePlayerManager`, Room v4 repositories, DataStore preferences, multi-JSON & M3U playlists, XMLTV EPG, external/dual subtitles, offline downloads, multi-account WebDAV/Jellyfin browser, LAN Web Remote server, local Wi-Fi/SAF sync, Sleep Timer, Up-Next countdown, A-B loop, and Smart Auto-VPN failover. |
+| `CineStreamViewModel.kt` | Central coordinator wiring `CinePlayerManager`, Room v4 repositories, DataStore preferences, multi-JSON & M3U playlists, XMLTV EPG, external/dual subtitles, offline downloads (forwarding loaded `DownloadExternalAudioCandidate`s from active player sessions & `CollectionDetailSheet` into `DownloadQualitySheet`, and auto-reattaching saved `offline_audio.json` sidecars on `playOfflineDownload` / `playHistoryItem`), multi-account WebDAV/Jellyfin browser, LAN Web Remote server, local Wi-Fi/SAF sync, Sleep Timer, Up-Next countdown, A-B loop, and Smart Auto-VPN failover. |
 | `MultiJsonPlaylistState.kt` | Pure `MultiJsonPlaylistReducer` handling multi-feed JSON aggregation, collision-free item ID namespacing, `"All"` vs single-playlist selection, refresh, and removal. |
 | `NetworkPrivacyState.kt` | `NetworkPrivacyUiState` modeling Private DNS mode, NordVPN login/key status, 118+ searchable locations, NordLynx WireGuard tunnel state, Smart Auto-VPN Failover, and live Cloudflare route probe results. |
 | `V24UiStates.kt` | Immutable UI states for `SecondarySubtitleUiState`, `EpgUiState`, `ChannelZapBannerState`, `WebRemoteUiState`, `LocalNetworkUiState`, `DownloadsUiState`, and `SyncBackupUiState`. |
 
-### Playback, Network, VPN & Ecosystem Engines (`com.example.player` — 26 files)
+### Playback, Network, VPN & Ecosystem Engines (`com.example.player` — 27 files)
 | File | Responsibility |
 | :--- | :--- |
-| `CinePlayerManager.kt` | Media3 `ExoPlayer` (`1.11.1`) wrapper owning `NextRenderersFactory`, `AudioSyncMediaSource`, `AdaptiveHttpDataSourceFactory`, `ParallelPrefetchDataSource`, `MediaEdgeCache`, `AudioVolumeBooster`, `FrameDropAnalyzer`, `QuicThroughputWatchdog`, multi-tier HW↔FFmpeg recovery, Multi-CDN failover, and `AnalyticsListener` telemetry. |
-| `AudioSyncMediaSource.kt` | Container- and codec-agnostic `WrappingMediaSource` (`AudioSyncMediaPeriod` + `AudioOffsetSampleStream`) shifting `C.TRACK_TYPE_AUDIO` timestamps (`-10 s` to `+10 s`) across HLS muxed `.ts` segments, HLS demuxed `#EXT-X-MEDIA:TYPE=AUDIO` segments, DASH, MKV, MP4, PCM, FFmpeg, and HDMI passthrough. |
+| `CinePlayerManager.kt` | Media3 `ExoPlayer` (`1.11.1`) wrapper owning `NextRenderersFactory`, `AudioSyncMediaSource`, `ExternalAudioMediaSource` (direct `DefaultDataSource.Factory` supporting both remote HTTP/3+HTTP/2 and local `file://` offline sidecar audio + `MergingMediaSource` with `clipDurations = true` + graceful audio failure recovery), `AdaptiveHttpDataSourceFactory`, `ParallelPrefetchDataSource`, `MediaEdgeCache`, `AudioVolumeBooster`, `FrameDropAnalyzer`, `QuicThroughputWatchdog`, multi-tier HW↔FFmpeg recovery, Multi-CDN failover, and `AnalyticsListener` telemetry. |
+| `ExternalAudioMediaSource.kt` | Complete external audio URL engine containing `ExternalAudioUrlInspector` (strict `http(s)://` validation, `.m3u8`/`.mpd`/direct extension detection, `Content-Type` sniffing for `.mp3`, `.ac3`, `.eac3`, `.flac`, `.wav`, `.m4a`, and 2 KB `#EXTM3U` peek), `PlaylistAudioResolver` (resolves JSON playlist `PlaylistAudioSpec` lists, deduplicates, selects `default: true` or first track, and extracts initial `delayMs`), `AudioOnlyFilteringMediaSource` (strips foreign video/text tracks from muxed `.m3u8`, tags audio formats with `ext_audio_<id>`), and `ExternalAudioSyncMediaSource` (independent `prepare`/`seekToUs`/`continueLoading`/`discardBuffer`/`bufferedPositionUs` delay translation + `MergingMediaPeriod`-safe `readDiscontinuity()`). |
+| `AudioSyncMediaSource.kt` | Container- and codec-agnostic `WrappingMediaSource` (`AudioSyncMediaPeriod` + `AudioOffsetSampleStream`) shifting embedded `C.TRACK_TYPE_AUDIO` timestamps across HLS muxed `.ts` segments, HLS demuxed `#EXT-X-MEDIA:TYPE=AUDIO` segments, DASH, MKV, MP4, PCM, FFmpeg, and HDMI passthrough. |
 | `StreamingNetworkEngine.kt` | Asynchronous Play Services Cronet HTTP/3 builder (rejecting `PROVIDER_NAME_FALLBACK`), `AdaptiveHttpDataSourceFactory`, `QuicThroughputWatchdog`, `FastDnsResolver` (IPv4-first 5-min cache + DoH), `FastStreamingLoadErrorHandlingPolicy`, and debounced `HEAD` origin pre-warming. |
 | `ParallelPrefetchEngine.kt` | `HlsSegmentIndex`, `StreamingPrefetchEntry`, `ParallelHlsPrefetchManager`, and `ParallelPrefetchDataSource` for live-streaming parallel HLS segment prefetching, dedicated audio lane, and progressive `206 Content-Range` lookahead. |
 | `DecoderEngine.kt` | `VideoDecoderMode` (`AUTO`, `HARDWARE`, `SOFTWARE`), `DecoderFallbackHelper`, `.low_latency` WebRTC exclusion, Dolby Vision → HEVC fallback, H.264/lower-res track fallback picker, and `SmartMediaCodecSelector`. |
@@ -136,16 +158,16 @@ User Taps Play -> CinePlayerManager.loadMedia()
 | `CdnMirrorResolver.kt` | Candidate URL builder (explicit mirrors + path-preserving host swaps), disk cache eligibility filter, and device-tier storage caps. |
 | `MediaEdgeCache.kt` | Routes Android TV / low-RAM devices to **RAM-Direct** (zero eMMC writes) and phones/tablets to a 128 MB LRU `SimpleCache` with 128 KB buffered `CacheDataSink`. |
 | `AudioVolumeBooster.kt` | `AudioBoostMath` (`0%–200%`, `+20 dB`), `LoudnessEnhancer`, and API 28+ `DynamicsProcessing` soft-limiter + Night Mode 4-band dialogue boost Pre-EQ/MBC. |
-| `DelayAudioProcessor.kt` | `AudioDelayMath` (`-10 s` to `+10 s` clamping, `ms`/`s` numeric input parsing, formatting, and seek realignment math), `SyncTimeUnit`, and legacy `DelayAudioProcessor` PCM helper. |
+| `DelayAudioProcessor.kt` | `AudioDelayMath` (unbounded `±60 min` / `±3,600,000 ms` clamping, `ms`/`s`/`m`/`min` numeric parsing, multi-scale label formatting, external-audio anchor-pinned seek realignment math), `SyncTimeUnit`, and legacy `DelayAudioProcessor` PCM helper. |
 | `MediaPlaybackService.kt` | Play-compliant `mediaPlayback` foreground service keeping audio alive with lock-screen media controls when Background Audio is toggled on mobile. |
 | `SecondarySubtitleEngine.kt` | Parses `.srt` and `.vtt` caption files into timestamped cue lists and renders synchronized dual subtitles at the top of the player. |
 | `SubtitleHelper.kt` | Resolves local/remote `.srt`, `.vtt`, `.ass`, `.ssa`, `.ttml` URIs, shifts timestamps, and exposes `SubtitleMediaSourceBuilder` (`ProgressiveMediaSource` + `SubtitleExtractor` → `application/x-media3-cues`) for HLS sidecar subtitles. |
-| `JsonPlaylistParser.kt` | Streaming 4 MB-capped JSON catalog parser supporting Movies, nested/flat Series, categories, mirrors, inherited HTTP headers, subtitles, and IMDb IDs. |
+| `JsonPlaylistParser.kt` | Streaming 4 MB-capped JSON catalog parser supporting Movies, **Movie Collections** (nested `movies[]` & flat `"collection"` grouping), nested/flat Series, categories, mirrors, inherited HTTP headers, subtitles, **external audio URLs (`PlaylistAudioSpec`)**, and IMDb IDs. |
 | `M3uPlaylistParser.kt` | `#EXTM3U` / `#EXTINF` parser supporting `tvg-logo`, `tvg-id`, `group-title`, and `#EXTM3U url-tvg` EPG auto-discovery. |
 | `XmltvEpgParser.kt` | Streaming `.xml` / `.xml.gz` XMLTV parser matching channel IDs/names to compute live Now/Next programs and progress fractions. |
-| `ImdbMetadataClient.kt` | Extracts `tt\d+` IMDb IDs and hydrates poster artwork, ratings, and release years asynchronously. |
+| `ImdbMetadataClient.kt` | Extracts `tt\d+` IMDb IDs and hydrates poster artwork, ratings, and release years asynchronously (including every individual film inside Movie Collections). |
 | `LocalNetworkClient.kt` | Multi-account cloud/LAN media browser implementing RFC 4918 WebDAV `PROPFIND` (with same-origin redirect preservation, cross-origin `Authorization` stripping, XXE-disabled multi-`propstat` XML parsing, byte-for-byte UTF-8 Basic Auth, sibling subtitle auto-discovery, and connection testing) plus Jellyfin REST API browsing. |
-| `OfflineDownloadManager.kt` | Zero-permission app-private downloader (`filesDir/offline_downloads/`) for progressive MP4/MKV and HLS `.m3u8` (segment download + local playlist rewrite). |
+| `OfflineDownloadManager.kt` | Zero-permission app-private downloader (`filesDir/offline_downloads/`) with **8× parallel HLS** (AES-128, `#EXT-X-MAP`, `#EXT-X-BYTERANGE`, separate `#EXT-X-MEDIA:TYPE=AUDIO`) and **4× multi-chunk `206` progressive** engines, `download_state.json` checkpoint resume, automatic network-off & Wi-Fi ↔ Cellular recovery, Multi-Quality × Multi-Audio probing (`inspectDownloadOptions` + `mergeExternalAudioOptions`) surfacing loaded external audio tracks for HLS & progressive streams, and resumable external audio sidecar bundling (`ext_audio/` + canonical-path-checked `offline_audio.json` supporting `.mp3`, `.ac3`, `.eac3`, `.flac`, `.wav`, `.m4a`, etc. and external HLS `.m3u8` with zero Room schema migration). |
 | `MediaFormatDetector.kt` | Format detection, URL validation, title inference, and Media3 MIME mapping. |
 | `PlayerNetworkStats.kt` | Immutable telemetry snapshot (`PlayerNetworkStats`) and human-readable formatters (`PlayerStatsFormatter`). |
 | `SeekBarScrubEngine.kt` | Touch drag and progressive D-pad hold scrubbing math (`±1m → ±2m → ±5m → ±10m`). |
@@ -153,16 +175,16 @@ User Taps Play -> CinePlayerManager.loadMedia()
 ### Phone-to-TV Web Remote (`com.example.remote`)
 | File | Responsibility |
 | :--- | :--- |
-| `LocalWebRemoteServer.kt` | Embedded LAN HTTP server (`ServerSocket`) with constant-time 6-digit session PIN authentication, mobile web UI, push endpoints (stream URL, JSON/M3U playlist, subtitle, EPG URL, NordVPN key), and local Wi-Fi Sync (`/api/sync/export`, `/api/sync/import`). |
+| `LocalWebRemoteServer.kt` | Embedded LAN HTTP server (`ServerSocket`) with constant-time 6-digit session PIN authentication, mobile web UI, push endpoints (stream URL, JSON/M3U playlist, **external audio URL `load_audio`**, subtitle, EPG URL, NordVPN key), and local Wi-Fi Sync (`/api/sync/export`, `/api/sync/import`). |
 | `QrCodeMatrixGenerator.kt` | Pure-Kotlin QR code generator rendering scannable `http://<lan-ip>:<port>` pairing matrices on Canvas with zero external barcode dependencies. |
 
 ### Data Persistence (`com.example.data` — 9 files)
 | File | Responsibility |
 | :--- | :--- |
 | `AppDatabase.kt` | **Room v4** SQLite database with automatic migrations (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`) containing `media_history`, `favorites`, `offline_downloads`, and multi-account `network_servers` (non-unique `(baseUrl, serverType)` index). |
-| `MediaHistoryEntity.kt` / `MediaHistoryDao.kt` / `MediaHistoryRepository.kt` | Stores watch history, exact resume timestamps, series/season/episode keys, audio/subtitle delay offsets per video, and pinned streams. |
-| `ContinueWatchingHelper.kt` | Deduplicates in-progress items per series, filters finished/unstarted entries, formats `S1 E3` codes, remaining minutes, and `Watched` status. |
-| `FavoriteAndSearch.kt` | `FavoriteRepository` and `GlobalSearchEngine` unifying instant search across Watchlist, JSON Catalogs, M3U Live TV, Offline Downloads, and History. |
+| `MediaHistoryEntity.kt` / `MediaHistoryDao.kt` / `MediaHistoryRepository.kt` | Stores watch history, exact resume timestamps, series/collection/episode keys, audio/subtitle delay offsets per video, and pinned streams. |
+| `ContinueWatchingHelper.kt` | Deduplicates in-progress items per series/collection, filters finished/unstarted entries, formats `S1 E3` codes, remaining minutes, and `Watched` status. |
+| `FavoriteAndSearch.kt` | `FavoriteRepository` and `GlobalSearchEngine` unifying instant search across Watchlist, JSON Catalogs (including individual Collection films with preserved `externalAudios`), M3U Live TV, Offline Downloads, and History. |
 | `V24EntitiesAndDaos.kt` | Room entities & DAOs for `FavoriteItemEntity`, `OfflineDownloadEntity`, and `NetworkServerEntity` (NAS credentials encrypted via `CredentialVault`). |
 | `DeviceSyncSnapshot.kt` | `DeviceSyncCodec` serializing/deserializing credential-free JSON snapshots for Phone ↔ TV Wi-Fi sync and SAF backup/restore (explicitly excluding VPN keys and NAS passwords). |
 | `SubtitlePrefsRepository.kt` | Jetpack DataStore (`Preferences`) storing subtitle appearance, multi-JSON URLs, volume boost, aspect ratio, Stats toggle, decoder/transport modes, DNS/VPN settings (Keystore-encrypted), preferred languages, skip interval, and Night Mode. |
@@ -173,7 +195,7 @@ User Taps Play -> CinePlayerManager.loadMedia()
   - `Type.kt`: Local bundled **Fraunces** (`R.font.fraunces`) for display/headlines, **DM Sans** (`R.font.dm_sans`) for titles/body/actions, and **JetBrains Mono** (`R.font.jetbrains_mono`) for telemetry/tags/timestamps.
   - `Theme.kt`: Material 3 `CineStreamDarkColorScheme` + crisp editorial `CineStreamShapes` (`4dp` / `8dp` / `12dp` / `16dp` / `22dp`).
 - **Home (`ui/home/`):** `HomeScreen.kt` (editorial hero reading `BuildConfig.VERSION_NAME`, unified hairline-divided Stream Dock, adaptive 2-column TV vs single-column phone layout), `ContinueWatchingRow.kt` (16:9 cinema stills), `HomeV24Sections.kt` (Quick Tools, Global Search, poster-backed Watchlist), `JsonPlaylistUi.kt`.
-- **Player (`ui/player/` — 15 files):** `PlayerScreen.kt`, `PlayerControlsOverlay.kt` (including Android TV Brightness pill right next to `Sub`), `PlayerOverlaysV24.kt` (Up-Next, Skip Intro, Hold-2×, Dual Subtitles, Channel Zap EPG banner), `PlayerStatsOverlay.kt`, `CinemaSeekBar.kt` (with chapter ticks & A-B loop range), `PlayerGestures.kt` (Mobile vertical `BrightnessHudOverlay` matching `VerticalVolumeBoostHud`, Android TV `TvBrightnessControlPanel` with 10%–150% dim/boost filter, and `ZoomHudBadge`), `VolumeBoostUi.kt`, `TracksSheet.kt`, `SubtitleSheet.kt` (File/URL loader, track switcher, sync delay, appearance customizer, and Dual Subtitles), `SeriesDetailSheet.kt`, `JsonPlaylistSheet.kt`, `M3uPlaylistSheet.kt`, `NetworkPrivacySheet.kt`, `DownloadsSheet.kt`, `LocalNetworkSheet.kt`.
+- **Player (`ui/player/` — 17 files):** `PlayerScreen.kt`, `PlayerControlsOverlay.kt` (2-row zero-overflow mobile header with Download pill + Android TV Brightness pill right next to `Sub` + Films/Next Film controls for Collections), `PlayerOverlaysV24.kt` (Up-Next, Skip Intro, Hold-2×, Dual Subtitles, Channel Zap EPG banner), `PlayerStatsOverlay.kt`, `CinemaSeekBar.kt` (with chapter ticks & A-B loop range), `PlayerGestures.kt` (Mobile vertical `BrightnessHudOverlay`, Android TV `TvBrightnessControlPanel` with 10%–150% dim/boost filter, and `ZoomHudBadge`), `VolumeBoostUi.kt`, `TracksSheet.kt` (unbounded `±60m` Audio Sync with `±5s`/`±1s`/`±50ms`/`±25ms` steppers + `ms`/`s`/`m` input, collapsible **+ Add Audio URL** composer, `[HLS]`/`[EXT]` badges & Remove buttons, plus Offline Download card), `SubtitleSheet.kt`, `CollectionDetailSheet.kt` (franchise films with per-movie IMDb metadata, `AUDIO`/`CC` badges, Play/Resume Next, and per-film downloads carrying playlist external audio), `DownloadQualitySheet.kt` (Multi-Quality × Multi-Audio picker surfacing embedded & **`Loaded`** external audio tracks with wrapping `FlowRow` badges and combined size estimates), `SeriesDetailSheet.kt`, `JsonPlaylistSheet.kt` (with Collections filter chip and `AUDIO` badges), `M3uPlaylistSheet.kt`, `NetworkPrivacySheet.kt`, `DownloadsSheet.kt` (live MB/s speed, Pause/Resume, network-wait banner), `LocalNetworkSheet.kt`.
 - **Remote & Shared (`ui/remote/`, `ui/components/`, `ui/icons/`):** `WebRemoteSheet.kt`, `PosterMediaCard.kt`, `FormatBadge.kt`, `LocalFilePicker.kt`, `TvUtils.kt`, and compact local vector icons (`ExtendedRoundedIcons.kt` replacing the ~15 MB `material-icons-extended` DEX).
 
 ---

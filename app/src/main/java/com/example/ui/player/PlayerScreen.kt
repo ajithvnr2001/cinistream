@@ -89,6 +89,7 @@ import com.example.model.AbLoopState
 import com.example.model.AspectRatioMode
 import com.example.model.ChapterMarker
 import com.example.model.ChannelEpgNowNext
+import com.example.model.CollectionMovie
 import com.example.model.JsonPlaylistItem
 import com.example.model.M3uEntry
 import com.example.model.SeriesEpisode
@@ -175,6 +176,11 @@ fun PlayerScreen(
     onUpdateSubtitleBg: (SubtitleBgPreset) -> Unit,
     onSelectVideoTrack: (TrackOption?) -> Unit,
     onSelectAudioTrack: (TrackOption) -> Unit,
+    isLoadingExternalAudio: Boolean = false,
+    externalAudioError: String? = null,
+    onLoadExternalAudioUrl: ((url: String, label: String?) -> Unit)? = null,
+    onRemoveExternalAudio: ((String) -> Unit)? = null,
+    onDismissExternalAudioError: (() -> Unit)? = null,
     onRetryFormat: (StreamFormat) -> Unit,
     onSelectM3uEntry: (M3uEntry) -> Unit,
     onSelectJsonItem: (JsonPlaylistItem) -> Unit = {},
@@ -182,6 +188,8 @@ fun PlayerScreen(
     onRemoveJsonPlaylist: ((String) -> Unit)? = null,
     onAddJsonPlaylistUrl: ((String) -> Unit)? = null,
     onSelectSeriesEpisode: (JsonPlaylistItem, SeriesEpisode) -> Unit = { _, _ -> },
+    onSelectCollectionMovie: (JsonPlaylistItem, CollectionMovie) -> Unit = { _, _ -> },
+    onDownloadCollectionMovie: ((JsonPlaylistItem, CollectionMovie) -> Unit)? = null,
     onPlayNextEpisode: () -> Unit = {},
     onSwitchCdnMirror: () -> Unit = {},
     onClearEdgeCache: () -> Unit = {},
@@ -1055,6 +1063,7 @@ fun PlayerScreen(
                         hasActiveSubtitles = hasActiveSubtitles,
                         statsForNerdsEnabled = statsForNerdsEnabled,
                         hasSeriesEpisodes = activeSeries != null,
+                        isCollectionPlayback = activeSeries?.isCollection == true,
                         episodeCodeBadge = session?.episodeCodeLabel,
                         hasJsonPlaylist = jsonPlaylistItems.isNotEmpty() || jsonPlaylists.isNotEmpty(),
                         hasM3uPlaylist = m3uEntries.isNotEmpty(),
@@ -1168,6 +1177,7 @@ fun PlayerScreen(
                         playbackSpeed = playbackState.playbackSpeed,
                         aspectRatioMode = aspectRatioMode,
                         hasNextEpisode = hasNextEpisode,
+                        isCollectionPlayback = activeSeries?.isCollection == true,
                         isTv = isTv,
                         showSpeedMenu = showSpeedMenu,
                         volumeButtonFocusRequester = volumeButtonFocusRequester,
@@ -1307,6 +1317,23 @@ fun PlayerScreen(
                 volumeHudNonce++
             },
             audioDelayMs = playbackState.audioDelayMs,
+            isExternalAudioActive = playbackState.isExternalAudioActive,
+            externalAudios = session?.externalAudios.orEmpty(),
+            isLoadingExternalAudio = isLoadingExternalAudio,
+            externalAudioError = externalAudioError,
+            onLoadExternalAudioUrl = onLoadExternalAudioUrl?.let { loader ->
+                { url, label ->
+                    loader(url, label)
+                    interactionNonce++
+                }
+            },
+            onRemoveExternalAudio = onRemoveExternalAudio?.let { remover ->
+                { id ->
+                    remover(id)
+                    interactionNonce++
+                }
+            },
+            onDismissExternalAudioError = onDismissExternalAudioError,
             onAdjustAudioDelay = { delta ->
                 onAdjustAudioDelay(delta)
                 interactionNonce++
@@ -1450,13 +1477,25 @@ fun PlayerScreen(
     }
 
     if (showSeriesSheet && activeSeries != null) {
-        SeriesDetailSheet(
-            series = activeSeries,
-            activeEpisodeId = activeEpisodeId,
-            episodeProgressMap = episodeProgressMap,
-            onDismiss = { showSeriesSheet = false },
-            onSelectEpisode = onSelectSeriesEpisode
-        )
+        if (activeSeries.isCollection) {
+            CollectionDetailSheet(
+                collection = activeSeries,
+                activeMovieId = activeEpisodeId,
+                movieProgressMap = episodeProgressMap,
+                isEnrichingImdb = isEnrichingImdb,
+                onDismiss = { showSeriesSheet = false },
+                onSelectMovie = onSelectCollectionMovie,
+                onDownloadMovie = if (!isTv) onDownloadCollectionMovie else null
+            )
+        } else {
+            SeriesDetailSheet(
+                series = activeSeries,
+                activeEpisodeId = activeEpisodeId,
+                episodeProgressMap = episodeProgressMap,
+                onDismiss = { showSeriesSheet = false },
+                onSelectEpisode = onSelectSeriesEpisode
+            )
+        }
     }
 }
 

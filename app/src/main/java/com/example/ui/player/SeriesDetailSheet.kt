@@ -62,6 +62,7 @@ import com.example.ui.theme.CinemaAmber
 import com.example.ui.theme.ObsidianOutline
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
+import com.example.ui.theme.StreamCyan
 import com.example.ui.theme.SubtitleEmerald
 import kotlinx.coroutines.delay
 
@@ -343,6 +344,12 @@ private fun EpisodeSelectionCard(
                         }
                         if (!episode.subtitleUrl.isNullOrBlank()) {
                             SubtitlePillBadge(text = "CC")
+                        }
+                        if (episode.externalAudios.isNotEmpty()) {
+                            SubtitlePillBadge(
+                                text = if (episode.externalAudios.size == 1) "AUDIO" else "${episode.externalAudios.size} AUDIO",
+                                accent = StreamCyan
+                            )
                         }
                         if (episode.mirrors.isNotEmpty()) {
                             SubtitlePillBadge(

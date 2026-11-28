@@ -24,6 +24,7 @@ import com.example.data.AppDatabase
 import com.example.data.NetworkServerEntity
 import com.example.data.OfflineDownloadEntity
 import com.example.model.StreamFormat
+import com.example.player.DownloadExternalAudioCandidate
 import com.example.player.DownloadQualityOption
 import com.example.player.LocalNetworkClient
 import com.example.player.NetworkBrowserItem
@@ -1331,14 +1332,357 @@ class MobilePlayerDownloadTest {
     }
 
     @Test
-    fun offlineDownloadManager_constantsSpeedFormattingAndVersion35Metadata() {
+    fun externalAudioFormats_mp3Ac3FlacWavM4a_resolveExtensionBitrateAndMergeOptions() {
+        // Verify URL extension and Content-Type resolution for all 5 requested formats + HLS
+        assertEquals("mp3", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/dub.mp3"))
+        assertEquals("ac3", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/dub_51.ac3?sig=1"))
+        assertEquals("flac", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/lossless.flac"))
+        assertEquals("wav", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/master.wav"))
+        assertEquals("m4a", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/aac_dub.m4a"))
+
+        // Extensionless URLs resolve cleanly via Content-Type
+        assertEquals("mp3", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/stream/1", "audio/mpeg"))
+        assertEquals("ac3", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/stream/2", "audio/ac3"))
+        assertEquals("flac", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/stream/3", "audio/x-flac"))
+        assertEquals("wav", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/stream/4", "audio/wav"))
+        assertEquals("m4a", OfflineDownloadManager.resolveExternalAudioFileExtension("https://cdn.example.com/stream/5", "audio/x-m4a"))
+
+        // Merge loaded audio into a progressive MP4 video (previously skipped picker!)
+        val loadedCandidates = listOf(
+            DownloadExternalAudioCandidate(
+                id = "aud_ac3",
+                url = "https://cdn.example.com/hindi.ac3",
+                label = "Hindi 5.1",
+                language = "hi",
+                formatBadge = "AC3",
+                isHls = false,
+                delayMs = -1250L,
+                isCurrentlyActive = true
+            ),
+            DownloadExternalAudioCandidate(
+                id = "aud_flac",
+                url = "https://cdn.example.com/score.flac",
+                label = "Studio Lossless",
+                language = "en",
+                formatBadge = "FLAC",
+                isHls = false,
+                delayMs = 0L,
+                isCurrentlyActive = false
+            )
+        )
+        val mp4Options = OfflineDownloadManager.mergeExternalAudioOptions(
+            baseHlsOptions = emptyList(),
+            externalAudios = loadedCandidates,
+            sourceUrl = "https://cdn.example.com/movie.mp4",
+            format = StreamFormat.MP4,
+            durationMs = 3_600_000L,
+            progressiveVideoBytes = 800L * 1024L * 1024L
+        )
+        assertEquals(3, mp4Options.size)
+        assertTrue(mp4Options[0].isExternalAudio)
+        assertTrue(mp4Options[0].isProgressiveVideo)
+        assertTrue(mp4Options[0].isRecommended)
+        assertEquals("Hindi 5.1 (AC3)", mp4Options[0].audioName)
+        assertEquals(-1250L, mp4Options[0].externalAudioDelayMs)
+        assertTrue(mp4Options[1].isExternalAudio)
+        assertEquals("Studio Lossless (FLAC)", mp4Options[1].audioName)
+        assertEquals("Original Audio", mp4Options[2].audioName)
+        assertTrue(!mp4Options[2].isExternalAudio)
+
+        // Merge loaded audio into multi-variant HLS master (1080p + 720p)
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+            1080p.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+            720p.m3u8
+        """.trimIndent()
+        val baseHls = OfflineDownloadManager.parseHlsQualityOptions("https://cdn.example.com/master.m3u8", master, 3_600_000L)
+        val mergedHls = OfflineDownloadManager.mergeExternalAudioOptions(
+            baseHlsOptions = baseHls,
+            externalAudios = loadedCandidates,
+            sourceUrl = "https://cdn.example.com/master.m3u8",
+            format = StreamFormat.HLS,
+            durationMs = 3_600_000L
+        )
+        // 2 resolutions × (2 loaded audios + 1 original audio) = 6 selectable options
+        assertEquals(6, mergedHls.size)
+        val rec = mergedHls.firstOrNull { it.isRecommended }
+        assertNotNull(rec)
+        assertTrue(rec!!.isExternalAudio)
+        assertEquals(1080, rec.height)
+        assertEquals("Hindi 5.1 (AC3)", rec.audioName)
+    }
+
+    @Test
+    fun offlineDownload_bundlesDirectExternalAudioFormats_mp3Ac3FlacWavM4a_andPersistsSidecar() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+
+        val videoBytes = ByteArray(16_384) { (it % 251).toByte() }
+        val audioPayloads = mapOf(
+            "mp3" to ("ID3" + "A".repeat(4096)).toByteArray(),
+            "ac3" to ("AC3DATA" + "B".repeat(4096)).toByteArray(),
+            "flac" to ("fLaC" + "C".repeat(4096)).toByteArray(),
+            "wav" to ("RIFF" + "D".repeat(4096)).toByteArray(),
+            "m4a" to ("ftypM4A " + "E".repeat(4096)).toByteArray()
+        )
+        val contentTypes = mapOf(
+            "mp3" to "audio/mpeg",
+            "ac3" to "audio/ac3",
+            "flac" to "audio/flac",
+            "wav" to "audio/wav",
+            "m4a" to "audio/x-m4a"
+        )
+
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newFixedThreadPool(4)
+        server.createContext("/video") { ex ->
+            ex.responseHeaders.add("Content-Type", "video/mp4")
+            ex.sendResponseHeaders(200, videoBytes.size.toLong())
+            ex.responseBody.use { it.write(videoBytes) }
+        }
+        audioPayloads.forEach { (ext, bytes) ->
+            server.createContext("/audio.$ext") { ex ->
+                ex.responseHeaders.add("Content-Type", contentTypes[ext]!!)
+                ex.sendResponseHeaders(200, bytes.size.toLong())
+                ex.responseBody.use { it.write(bytes) }
+            }
+        }
+        server.start()
+
+        try {
+            val baseUrl = "http://127.0.0.1:${server.address.port}"
+            val manager = OfflineDownloadManager(context, db.offlineDownloadDao(), OkHttpClient())
+
+            for ((ext, expectedAudioBytes) in audioPayloads) {
+                val videoUrl = "$baseUrl/video?case=$ext"
+                val audioUrl = "$baseUrl/audio.$ext"
+                val candidate = DownloadExternalAudioCandidate(
+                    id = "ext_$ext",
+                    url = audioUrl,
+                    label = "Dub ${ext.uppercase()}",
+                    language = "hi",
+                    formatBadge = ext.uppercase(),
+                    isHls = false,
+                    delayMs = -2500L,
+                    isCurrentlyActive = true
+                )
+                val options = manager.inspectDownloadOptions(
+                    sourceUrl = videoUrl,
+                    format = StreamFormat.MP4,
+                    externalAudios = listOf(candidate)
+                )
+                val chosen = options.first { it.isExternalAudio }
+                manager.enqueueDownload(
+                    title = "Feature $ext",
+                    sourceUrl = videoUrl,
+                    format = StreamFormat.MP4,
+                    selectedQuality = chosen
+                )
+
+                var completed: OfflineDownloadEntity? = null
+                repeat(120) {
+                    val found = db.offlineDownloadDao().getBySourceUrl(videoUrl)
+                    if (found?.status == OfflineDownloadManager.STATUS_COMPLETED) {
+                        completed = found
+                        return@repeat
+                    }
+                    delay(50L)
+                }
+                assertNotNull("Download should complete for .$ext external audio", completed)
+                val localVideoFile = File(completed!!.localFilePath)
+                assertTrue(localVideoFile.exists())
+                assertArrayEquals(videoBytes, localVideoFile.readBytes())
+
+                val sidecar = OfflineDownloadManager.readOfflineSidecarAudio(completed!!.localFilePath)
+                assertNotNull("offline_audio.json must exist for .$ext", sidecar)
+                assertEquals("ext_audio/track.$ext", sidecar!!.relativePath)
+                assertEquals(ext.uppercase(), sidecar.formatBadge)
+                assertEquals(-2500L, sidecar.delayMs)
+                assertTrue(!sidecar.isHls)
+
+                val savedAudioFile = File(localVideoFile.parentFile, sidecar.relativePath)
+                assertTrue(savedAudioFile.exists())
+                assertArrayEquals(expectedAudioBytes, savedAudioFile.readBytes())
+                localVideoFile.parentFile?.deleteRecursively()
+            }
+        } finally {
+            server.stop(0)
+            db.close()
+        }
+    }
+
+    @Test
+    fun offlineDownload_bundlesExternalHlsMasterAudioWithProgressiveVideo(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+
+        val videoBytes = ByteArray(12_000) { 0x2A }
+        val seg0Bytes = ByteArray(2048) { 0x11 }
+        val seg1Bytes = ByteArray(2048) { 0x22 }
+
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newFixedThreadPool(4)
+        server.createContext("/movie.mp4") { ex ->
+            ex.responseHeaders.add("Content-Type", "video/mp4")
+            ex.sendResponseHeaders(200, videoBytes.size.toLong())
+            ex.responseBody.use { it.write(videoBytes) }
+        }
+        server.createContext("/ext/master.m3u8") { ex ->
+            val text = """
+                #EXTM3U
+                #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Hindi",LANGUAGE="hi",DEFAULT=YES,URI="hindi_media.m3u8"
+                #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,AUDIO="aud"
+                video_only.m3u8
+            """.trimIndent().toByteArray()
+            ex.responseHeaders.add("Content-Type", "application/vnd.apple.mpegurl")
+            ex.sendResponseHeaders(200, text.size.toLong())
+            ex.responseBody.use { it.write(text) }
+        }
+        server.createContext("/ext/hindi_media.m3u8") { ex ->
+            val text = """
+                #EXTM3U
+                #EXT-X-VERSION:3
+                #EXT-X-TARGETDURATION:6
+                #EXTINF:6.0,
+                seg0.aac
+                #EXTINF:6.0,
+                seg1.aac
+                #EXT-X-ENDLIST
+            """.trimIndent().toByteArray()
+            ex.responseHeaders.add("Content-Type", "application/vnd.apple.mpegurl")
+            ex.sendResponseHeaders(200, text.size.toLong())
+            ex.responseBody.use { it.write(text) }
+        }
+        server.createContext("/ext/seg0.aac") { ex ->
+            ex.sendResponseHeaders(200, seg0Bytes.size.toLong())
+            ex.responseBody.use { it.write(seg0Bytes) }
+        }
+        server.createContext("/ext/seg1.aac") { ex ->
+            ex.sendResponseHeaders(200, seg1Bytes.size.toLong())
+            ex.responseBody.use { it.write(seg1Bytes) }
+        }
+        server.start()
+
+        try {
+            val baseUrl = "http://127.0.0.1:${server.address.port}"
+            val manager = OfflineDownloadManager(context, db.offlineDownloadDao(), OkHttpClient())
+            val videoUrl = "$baseUrl/movie.mp4"
+            val options = manager.inspectDownloadOptions(
+                sourceUrl = videoUrl,
+                format = StreamFormat.MP4,
+                externalAudios = listOf(
+                    DownloadExternalAudioCandidate(
+                        id = "ext_hls_hi",
+                        url = "$baseUrl/ext/master.m3u8",
+                        label = "Hindi HLS Dub",
+                        language = "hi",
+                        formatBadge = "HLS",
+                        isHls = true,
+                        delayMs = 750L,
+                        isCurrentlyActive = true
+                    )
+                )
+            )
+            val chosen = options.first { it.isExternalAudio }
+            manager.enqueueDownload(
+                title = "Cinema MP4",
+                sourceUrl = videoUrl,
+                format = StreamFormat.MP4,
+                selectedQuality = chosen
+            )
+
+            var completed: OfflineDownloadEntity? = null
+            repeat(120) {
+                val found = db.offlineDownloadDao().getBySourceUrl(videoUrl)
+                if (found?.status == OfflineDownloadManager.STATUS_COMPLETED) {
+                    completed = found
+                    return@repeat
+                }
+                delay(50L)
+            }
+            assertNotNull(completed)
+            val sidecar = OfflineDownloadManager.readOfflineSidecarAudio(completed!!.localFilePath)
+            assertNotNull(sidecar)
+            assertEquals("ext_audio/audio.m3u8", sidecar!!.relativePath)
+            assertTrue(sidecar.isHls)
+            assertEquals("HLS", sidecar.formatBadge)
+            assertEquals(750L, sidecar.delayMs)
+
+            val folder = File(completed!!.localFilePath).parentFile!!
+            val localAudioManifest = File(folder, sidecar.relativePath)
+            assertTrue(localAudioManifest.exists())
+            assertTrue(localAudioManifest.readText().contains("seg_0.aac"))
+            assertArrayEquals(seg0Bytes, File(folder, "ext_audio/seg_0.aac").readBytes())
+            assertArrayEquals(seg1Bytes, File(folder, "ext_audio/seg_1.aac").readBytes())
+            folder.deleteRecursively()
+            Unit
+        } finally {
+            server.stop(0)
+            db.close()
+        }
+    }
+
+    @Test
+    fun downloadQualitySheet_displaysLoadedExternalAudioChipsAndLoadedBadge() {
+        val options = OfflineDownloadManager.mergeExternalAudioOptions(
+            baseHlsOptions = emptyList(),
+            externalAudios = listOf(
+                DownloadExternalAudioCandidate(
+                    id = "loaded_ac3",
+                    url = "https://cdn.example.com/hindi.ac3",
+                    label = "Hindi 5.1",
+                    language = "hi",
+                    formatBadge = "AC3",
+                    isHls = false,
+                    delayMs = -500L,
+                    isCurrentlyActive = true
+                )
+            ),
+            sourceUrl = "https://cdn.example.com/film.mp4",
+            format = StreamFormat.MP4,
+            durationMs = 5_400_000L,
+            progressiveVideoBytes = 1_000_000_000L
+        )
+        var picked: DownloadQualityOption? = null
+        composeRule.setContent {
+            CineStreamTheme {
+                DownloadQualitySheet(
+                    title = "Action Film",
+                    isLoading = false,
+                    options = options,
+                    onSelectQuality = { picked = it },
+                    onDismiss = {}
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Choose Quality & Audio").assertIsDisplayed()
+        composeRule.onNodeWithTag("download_audio_filter_0").assertIsDisplayed()
+        composeRule.onNodeWithTag("download_loaded_audio_badge_0", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("download_quality_option_0").performClick()
+
+        assertNotNull(picked)
+        assertTrue(picked!!.isExternalAudio)
+        assertEquals("https://cdn.example.com/hindi.ac3", picked!!.externalAudioUrl)
+        assertEquals("AC3", picked!!.externalAudioFormatBadge)
+        assertEquals(-500L, picked!!.externalAudioDelayMs)
+    }
+
+    @Test
+    fun offlineDownloadManager_constantsSpeedFormattingAndVersion39Metadata() {
         assertEquals(4000, OfflineDownloadManager.MAX_HLS_SEGMENTS)
         assertEquals(8, OfflineDownloadManager.HLS_PARALLEL_CONCURRENCY)
         assertEquals(4, OfflineDownloadManager.PROGRESSIVE_PARALLEL_CHUNKS)
         assertEquals("", OfflineDownloadManager.formatSpeed(0L))
         assertEquals("512 KB/s", OfflineDownloadManager.formatSpeed(512L * 1024L))
         assertEquals("12.5 MB/s", OfflineDownloadManager.formatSpeed((12.5 * 1024 * 1024).toLong()))
-        assertEquals(35, BuildConfig.VERSION_CODE)
-        assertEquals("1.35", BuildConfig.VERSION_NAME)
+        assertEquals(39, BuildConfig.VERSION_CODE)
+        assertEquals("1.39", BuildConfig.VERSION_NAME)
     }
 }

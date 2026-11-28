@@ -11,6 +11,8 @@ import com.example.data.MediaHistoryEntity
 import com.example.data.MediaHistoryRepository
 import com.example.data.SubtitlePrefsRepository
 import com.example.model.AspectRatioMode
+import com.example.model.CollectionMovie
+import com.example.model.ExternalAudioTrack
 import com.example.model.ExternalSubtitle
 import com.example.model.JsonPlaylistItem
 import com.example.model.M3uEntry
@@ -27,6 +29,8 @@ import com.example.BuildConfig
 import com.example.player.AudioDelayMath
 import com.example.player.CinePlayerManager
 import com.example.player.DynamicSocksProxyManager
+import com.example.player.ExternalAudioUrlInspector
+import com.example.player.PlaylistAudioResolver
 import com.example.player.ImdbMetadataClient
 import com.example.player.JsonPlaylistLoadResult
 import com.example.player.JsonPlaylistParser
@@ -67,6 +71,7 @@ import com.example.model.SleepTimerMode
 import com.example.model.SleepTimerUiState
 import com.example.model.UpNextCountdownState
 import com.example.player.CredentialVault
+import com.example.player.DownloadExternalAudioCandidate
 import com.example.player.DownloadQualityOption
 import com.example.player.LocalNetworkClient
 import com.example.player.NetworkBrowserItem
@@ -109,6 +114,7 @@ data class ActiveMediaSession(
     val format: StreamFormat,
     val isLocalFile: Boolean = false,
     val externalSubtitles: List<ExternalSubtitle> = emptyList(),
+    val externalAudios: List<ExternalAudioTrack> = emptyList(),
     val subtitleOffsetMs: Long = 0L,
     val mirrors: List<String> = emptyList(),
     val headers: Map<String, String> = emptyMap(),
@@ -129,6 +135,8 @@ data class CineStreamUiState(
     val stagedSubtitle: ExternalSubtitle? = null,
     val inputError: String? = null,
     val isParsingPlaylist: Boolean = false,
+    val isLoadingExternalAudio: Boolean = false,
+    val externalAudioError: String? = null,
     val m3uEntries: List<M3uEntry> = emptyList(),
     val activeM3uEntryId: String? = null,
     val activeSession: ActiveMediaSession? = null,
@@ -442,6 +450,19 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
         playerManager.onSmartVpnFatalNetworkError = { reason ->
             handleSmartVpnFatalNetworkError(reason)
+        }
+        playerManager.onExternalAudioLoadFailed = { failedAudio, reason ->
+            _uiState.update { state ->
+                val updatedSession = state.activeSession?.let { s ->
+                    s.copy(externalAudios = s.externalAudios.filterNot { it.id == failedAudio.id })
+                }
+                state.copy(
+                    activeSession = updatedSession,
+                    isLoadingExternalAudio = false,
+                    externalAudioError = "Could not load \"${failedAudio.label}\": $reason",
+                    toastMessage = "External audio failed (${failedAudio.label}) → Reverted to original audio"
+                )
+            }
         }
         MediaPlaybackService.onNotificationTogglePlayPause = {
             playerManager.togglePlayPause()
@@ -1061,8 +1082,31 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun playJsonPlaylistItem(item: JsonPlaylistItem) {
+        if (item.isCollection) {
+            _jsonPlaylistState.update {
+                it.copy(
+                    selectedSeriesForSheet = null,
+                    selectedCollectionForSheet = item
+                )
+            }
+            val firstMovieUrl = item.orderedCollectionMovies().firstOrNull()?.url
+            StreamingNetworkEngine.prewarmOrigin(firstMovieUrl, playerManager.okHttpClient)
+            // Trigger lazy per-movie IMDb lookup if any film inside this collection is still missing metadata
+            if (item.collectionMovies.any {
+                    it.imageUrl.isNullOrBlank() || it.imdbRating.isNullOrBlank() || it.imdbId.isNullOrBlank()
+                } && !_jsonPlaylistState.value.isEnrichingImdb
+            ) {
+                startJsonImdbEnrichment(listOf(item))
+            }
+            return
+        }
         if (item.isSeries) {
-            _jsonPlaylistState.update { it.copy(selectedSeriesForSheet = item) }
+            _jsonPlaylistState.update {
+                it.copy(
+                    selectedSeriesForSheet = item,
+                    selectedCollectionForSheet = null
+                )
+            }
             val firstEpUrl = item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url
             StreamingNetworkEngine.prewarmOrigin(firstEpUrl, playerManager.okHttpClient)
             return
@@ -1072,7 +1116,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 it.copy(
                     activeItemId = item.id,
                     activeEpisodeId = null,
-                    selectedSeriesForSheet = null
+                    selectedSeriesForSheet = null,
+                    selectedCollectionForSheet = null
                 )
             }
             val subs = mutableListOf<ExternalSubtitle>()
@@ -1087,6 +1132,11 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                     }
                 )
             }
+            val audioBundle = PlaylistAudioResolver.resolve(
+                specs = item.externalAudios,
+                okHttpClient = playerManager.okHttpClient,
+                headers = item.headers
+            )
             val effectiveFormat = if (item.format == StreamFormat.AUTO) {
                 MediaFormatDetector.detectFormat(item.url)
             } else {
@@ -1098,6 +1148,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 format = effectiveFormat,
                 isLocalFile = item.url.startsWith("content://") || item.url.startsWith("file://"),
                 initialSubtitles = subs,
+                initialExternalAudios = audioBundle.tracks,
+                autoSelectAudioId = audioBundle.autoSelectAudioId,
+                initialAudioDelayMs = audioBundle.initialDelayMs,
                 mirrors = item.mirrors,
                 headers = item.headers,
                 posterUrl = item.imageUrl,
@@ -1110,13 +1163,124 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         _jsonPlaylistState.update { it.copy(selectedSeriesForSheet = null) }
     }
 
+    fun dismissCollectionSheet() {
+        _jsonPlaylistState.update { it.copy(selectedCollectionForSheet = null) }
+    }
+
+    fun playCollectionMovie(collection: JsonPlaylistItem, movie: CollectionMovie) {
+        viewModelScope.launch {
+            _jsonPlaylistState.update {
+                it.copy(
+                    activeItemId = collection.id,
+                    activeEpisodeId = movie.id,
+                    selectedSeriesForSheet = null,
+                    selectedCollectionForSheet = null
+                )
+            }
+            val subs = mutableListOf<ExternalSubtitle>()
+            _uiState.value.stagedSubtitle?.let { subs.add(it) }
+            if (!movie.subtitleUrl.isNullOrBlank()) {
+                val remoteSub = subtitleHelper.buildFromRemoteUrl(movie.subtitleUrl)
+                subs.add(
+                    if (!movie.subtitleLabel.isNullOrBlank()) {
+                        remoteSub.copy(label = movie.subtitleLabel)
+                    } else {
+                        remoteSub
+                    }
+                )
+            }
+            val audioBundle = PlaylistAudioResolver.resolve(
+                specs = movie.externalAudios,
+                okHttpClient = playerManager.okHttpClient,
+                headers = movie.headers
+            )
+            val effectiveFormat = if (movie.format == StreamFormat.AUTO) {
+                MediaFormatDetector.detectFormat(movie.url)
+            } else {
+                movie.format
+            }
+            val displayTitle = if (!movie.releaseYear.isNullOrBlank() && !movie.title.contains(movie.releaseYear)) {
+                "${movie.title} (${movie.releaseYear})"
+            } else {
+                movie.title
+            }
+            startPlayback(
+                title = displayTitle,
+                sourceUri = movie.url,
+                format = effectiveFormat,
+                isLocalFile = movie.url.startsWith("content://") || movie.url.startsWith("file://"),
+                initialSubtitles = subs,
+                initialExternalAudios = audioBundle.tracks,
+                autoSelectAudioId = audioBundle.autoSelectAudioId,
+                initialAudioDelayMs = audioBundle.initialDelayMs,
+                mirrors = movie.mirrors,
+                headers = movie.headers,
+                seriesItemId = collection.id,
+                seriesTitle = collection.title,
+                seasonNumber = null,
+                episodeNumber = movie.order,
+                episodeId = movie.id,
+                episodeCodeLabel = null,
+                posterUrl = movie.imageUrl ?: collection.imageUrl,
+                playlistId = _jsonPlaylistState.value.selectedPlaylistId
+            )
+            val nextMovie = collection.findNextCollectionMovie(movie.id)
+            if (nextMovie != null) {
+                StreamingNetworkEngine.prewarmOrigin(nextMovie.url, playerManager.okHttpClient)
+            }
+        }
+    }
+
+    fun downloadCollectionMovie(collection: JsonPlaylistItem, movie: CollectionMovie) {
+        val displayTitle = if (!movie.releaseYear.isNullOrBlank() && !movie.title.contains(movie.releaseYear)) {
+            "${movie.title} (${movie.releaseYear})"
+        } else {
+            movie.title
+        }
+        viewModelScope.launch {
+            val externalCandidates = if (movie.externalAudios.isNotEmpty()) {
+                val bundle = PlaylistAudioResolver.resolve(
+                    specs = movie.externalAudios,
+                    okHttpClient = playerManager.okHttpClient,
+                    headers = movie.headers
+                )
+                bundle.tracks.map { track ->
+                    val matchingSpec = movie.externalAudios.firstOrNull {
+                        it.url.trim().equals(track.url.trim(), ignoreCase = true)
+                    }
+                    DownloadExternalAudioCandidate(
+                        id = track.id,
+                        url = track.url,
+                        label = track.label,
+                        language = matchingSpec?.language,
+                        formatBadge = track.formatBadge,
+                        isHls = track.isHls,
+                        delayMs = matchingSpec?.delayMs ?: 0L,
+                        isCurrentlyActive = track.id == bundle.autoSelectAudioId
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            startOfflineDownload(
+                title = displayTitle,
+                url = movie.url,
+                format = movie.format,
+                posterUrl = movie.imageUrl ?: collection.imageUrl,
+                headers = movie.headers,
+                externalAudios = externalCandidates
+            )
+        }
+    }
+
     fun playSeriesEpisode(series: JsonPlaylistItem, episode: SeriesEpisode) {
         viewModelScope.launch {
             _jsonPlaylistState.update {
                 it.copy(
                     activeItemId = series.id,
                     activeEpisodeId = episode.id,
-                    selectedSeriesForSheet = null
+                    selectedSeriesForSheet = null,
+                    selectedCollectionForSheet = null
                 )
             }
             val subs = mutableListOf<ExternalSubtitle>()
@@ -1131,6 +1295,11 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                     }
                 )
             }
+            val audioBundle = PlaylistAudioResolver.resolve(
+                specs = episode.externalAudios,
+                okHttpClient = playerManager.okHttpClient,
+                headers = episode.headers
+            )
             val effectiveFormat = if (episode.format == StreamFormat.AUTO) {
                 MediaFormatDetector.detectFormat(episode.url)
             } else {
@@ -1142,6 +1311,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 format = effectiveFormat,
                 isLocalFile = episode.url.startsWith("content://") || episode.url.startsWith("file://"),
                 initialSubtitles = subs,
+                initialExternalAudios = audioBundle.tracks,
+                autoSelectAudioId = audioBundle.autoSelectAudioId,
+                initialAudioDelayMs = audioBundle.initialDelayMs,
                 mirrors = episode.mirrors,
                 headers = episode.headers,
                 seriesItemId = series.id,
@@ -1162,10 +1334,10 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun prewarmFirstItemOrigin(items: List<JsonPlaylistItem>) {
         val firstUrl = items.firstNotNullOfOrNull { item ->
-            if (item.isSeries) {
-                item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url
-            } else {
-                item.url.takeIf { it.isNotBlank() }
+            when {
+                item.isCollection -> item.orderedCollectionMovies().firstOrNull()?.url
+                item.isSeries -> item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url
+                else -> item.url.takeIf { it.isNotBlank() }
             }
         }
         StreamingNetworkEngine.prewarmOrigin(firstUrl, playerManager.okHttpClient)
@@ -1178,8 +1350,22 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private fun playNextEpisodeIfAvailable(autoTriggered: Boolean) {
         val session = _uiState.value.activeSession ?: return
         val seriesId = session.seriesItemId ?: return
-        val series = _jsonPlaylistState.value.allItems.firstOrNull { it.id == seriesId } ?: return
-        val nextEp = series.findNextEpisode(session.episodeId) ?: return
+        val container = _jsonPlaylistState.value.allItems.firstOrNull { it.id == seriesId } ?: return
+        if (container.isCollection) {
+            val nextMovie = container.findNextCollectionMovie(session.episodeId) ?: return
+            _uiState.update {
+                it.copy(
+                    toastMessage = if (autoTriggered) {
+                        "Up Next: ${nextMovie.title}"
+                    } else {
+                        "Playing ${nextMovie.title}"
+                    }
+                )
+            }
+            playCollectionMovie(container, nextMovie)
+            return
+        }
+        val nextEp = container.findNextEpisode(session.episodeId) ?: return
         _uiState.update {
             it.copy(
                 toastMessage = if (autoTriggered) {
@@ -1189,7 +1375,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 }
             )
         }
-        playSeriesEpisode(series, nextEp)
+        playSeriesEpisode(container, nextEp)
     }
 
     fun switchToNextCdnMirror() {
@@ -1851,8 +2037,21 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     private fun startJsonImdbEnrichment(initialItems: List<JsonPlaylistItem>) {
         jsonEnrichJob?.cancel()
         jsonEnrichJob = viewModelScope.launch {
-            val needsEnrichment = initialItems.filter {
-                it.imageUrl.isNullOrBlank() || it.imdbRating.isNullOrBlank() || it.imdbId.isNullOrBlank()
+            val needsEnrichment = initialItems.filter { item ->
+                if (item.isCollection) {
+                    item.imageUrl.isNullOrBlank() ||
+                        item.imdbRating.isNullOrBlank() ||
+                        item.collectionMovies.any { m ->
+                            m.imageUrl.isNullOrBlank() ||
+                                m.imdbRating.isNullOrBlank() ||
+                                m.imdbId.isNullOrBlank() ||
+                                m.releaseYear.isNullOrBlank()
+                        }
+                } else {
+                    item.imageUrl.isNullOrBlank() ||
+                        item.imdbRating.isNullOrBlank() ||
+                        item.imdbId.isNullOrBlank()
+                }
             }
             if (needsEnrichment.isEmpty()) return@launch
 
@@ -1862,27 +2061,52 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 val updatedMap = coroutineScope {
                     needsEnrichment.map { item ->
                         async {
-                            semaphore.withPermit {
-                                val info = imdbClient.lookup(
-                                    imdbId = item.imdbId,
-                                    titleQuery = item.title,
-                                    releaseYear = item.releaseYear
-                                )
-                                if (info != null) {
-                                    item.id to item.copy(
-                                        imageUrl = item.imageUrl ?: info.posterUrl,
-                                        imdbId = item.imdbId ?: info.imdbId,
-                                        imdbRating = item.imdbRating ?: info.rating,
-                                        releaseYear = item.releaseYear ?: info.year,
-                                        description = item.description ?: info.plot ?: info.cast,
-                                        groupTitle = if (item.groupTitle == "Movies" && !info.genres.isNullOrBlank()) {
-                                            info.genres
-                                        } else {
-                                            item.groupTitle
-                                        }
+                            if (item.isCollection) {
+                                val enrichedCollection = ImdbMetadataClient.enrichCollectionItem(
+                                    collection = item,
+                                    concurrency = 2
+                                ) { imdbId, titleQuery, releaseYear ->
+                                    imdbClient.lookup(
+                                        imdbId = imdbId,
+                                        titleQuery = titleQuery,
+                                        releaseYear = releaseYear
                                     )
+                                }
+                                // Push incremental collection updates live so an already-open CollectionDetailSheet refreshes immediately
+                                if (enrichedCollection != item) {
+                                    _jsonPlaylistState.update { state ->
+                                        MultiJsonPlaylistReducer.applyImdbUpdates(
+                                            state,
+                                            mapOf(item.id to enrichedCollection)
+                                        )
+                                    }
+                                    item.id to enrichedCollection
                                 } else {
                                     null
+                                }
+                            } else {
+                                semaphore.withPermit {
+                                    val info = imdbClient.lookup(
+                                        imdbId = item.imdbId,
+                                        titleQuery = item.title,
+                                        releaseYear = item.releaseYear
+                                    )
+                                    if (info != null) {
+                                        item.id to item.copy(
+                                            imageUrl = item.imageUrl ?: info.posterUrl,
+                                            imdbId = item.imdbId ?: info.imdbId,
+                                            imdbRating = item.imdbRating ?: info.rating,
+                                            releaseYear = item.releaseYear ?: info.year,
+                                            description = item.description ?: info.plot ?: info.cast,
+                                            groupTitle = if (item.groupTitle == "Movies" && !info.genres.isNullOrBlank()) {
+                                                info.genres
+                                            } else {
+                                                item.groupTitle
+                                            }
+                                        )
+                                    } else {
+                                        null
+                                    }
                                 }
                             }
                         }
@@ -1954,16 +2178,68 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 0L
             }
 
-            // Re-attach mirrors & headers if this item still exists in an active JSON playlist
+            // Re-attach mirrors, headers & playlist external audio URLs if this item still exists in an active JSON playlist
             val matchingPlaylistItem = _jsonPlaylistState.value.allItems.firstOrNull { candidate ->
                 (item.seriesId != null && candidate.id == item.seriesId) ||
-                    candidate.url == item.sourceUri
+                    candidate.url == item.sourceUri ||
+                    candidate.collectionMovies.any { it.url == item.sourceUri || (item.episodeId != null && it.id == item.episodeId) } ||
+                    candidate.seasons.any { s -> s.episodes.any { it.url == item.sourceUri || (item.episodeId != null && it.id == item.episodeId) } }
             }
-            val matchingEpisode = if (matchingPlaylistItem != null && item.episodeId != null) {
-                matchingPlaylistItem.seasons.flatMap { it.episodes }.firstOrNull { it.id == item.episodeId }
+            val matchingEpisode = if (matchingPlaylistItem != null) {
+                matchingPlaylistItem.seasons.flatMap { it.episodes }.firstOrNull {
+                    (item.episodeId != null && it.id == item.episodeId) || it.url == item.sourceUri
+                }
             } else {
                 null
             }
+            val matchingCollectionMovie = if (matchingPlaylistItem != null && matchingEpisode == null) {
+                matchingPlaylistItem.collectionMovies.firstOrNull {
+                    (item.episodeId != null && it.id == item.episodeId) || it.url == item.sourceUri
+                }
+            } else {
+                null
+            }
+            val resolvedHeaders = matchingEpisode?.headers
+                ?: matchingCollectionMovie?.headers
+                ?: matchingPlaylistItem?.headers.orEmpty()
+            val localSidecar = if (item.isLocalFile && item.sourceUri.startsWith("file://", ignoreCase = true)) {
+                val localPath = runCatching { Uri.parse(item.sourceUri).path }.getOrNull().orEmpty()
+                OfflineDownloadManager.readOfflineSidecarAudio(localPath)?.let { sidecar ->
+                    val mediaParent = File(localPath).parentFile
+                    val audioFile = if (mediaParent != null) File(mediaParent, sidecar.relativePath) else null
+                    if (audioFile != null && audioFile.exists()) {
+                        sidecar to ExternalAudioTrack(
+                            id = sidecar.id,
+                            url = Uri.fromFile(audioFile).toString(),
+                            label = sidecar.label,
+                            formatBadge = sidecar.formatBadge,
+                            isHls = sidecar.isHls,
+                            isDash = false
+                        )
+                    } else {
+                        null
+                    }
+                }
+            } else {
+                null
+            }
+
+            val resolvedAudioSpecs = matchingEpisode?.externalAudios
+                ?: matchingCollectionMovie?.externalAudios
+                ?: matchingPlaylistItem?.externalAudios.orEmpty()
+            val audioBundle = if (localSidecar == null) {
+                PlaylistAudioResolver.resolve(
+                    specs = resolvedAudioSpecs,
+                    okHttpClient = playerManager.okHttpClient,
+                    headers = resolvedHeaders
+                )
+            } else {
+                null
+            }
+            val effectiveExternalAudios = localSidecar?.let { listOf(it.second) }
+                ?: audioBundle?.tracks.orEmpty()
+            val effectiveAutoAudioId = localSidecar?.second?.id ?: audioBundle?.autoSelectAudioId
+            val effectiveInitialDelay = localSidecar?.first?.delayMs ?: audioBundle?.initialDelayMs
 
             startPlayback(
                 title = item.title,
@@ -1971,16 +2247,21 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 format = format,
                 isLocalFile = item.isLocalFile,
                 initialSubtitles = subs,
+                initialExternalAudios = effectiveExternalAudios,
+                autoSelectAudioId = effectiveAutoAudioId,
+                initialAudioDelayMs = effectiveInitialDelay,
                 resumePositionMs = resumeMs,
-                mirrors = matchingEpisode?.mirrors ?: matchingPlaylistItem?.mirrors.orEmpty(),
-                headers = matchingEpisode?.headers ?: matchingPlaylistItem?.headers.orEmpty(),
+                mirrors = matchingEpisode?.mirrors
+                    ?: matchingCollectionMovie?.mirrors
+                    ?: matchingPlaylistItem?.mirrors.orEmpty(),
+                headers = resolvedHeaders,
                 seriesItemId = item.seriesId,
                 seriesTitle = item.seriesTitle,
                 seasonNumber = item.seasonNumber,
                 episodeNumber = item.episodeNumber,
                 episodeId = item.episodeId,
                 episodeCodeLabel = ContinueWatchingHelper.formatEpisodeCode(item.seasonNumber, item.episodeNumber),
-                posterUrl = item.posterUrl ?: matchingPlaylistItem?.imageUrl,
+                posterUrl = item.posterUrl ?: matchingCollectionMovie?.imageUrl ?: matchingPlaylistItem?.imageUrl,
                 playlistId = item.playlistId
             )
         }
@@ -2017,6 +2298,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         format: StreamFormat,
         isLocalFile: Boolean,
         initialSubtitles: List<ExternalSubtitle>,
+        initialExternalAudios: List<ExternalAudioTrack> = emptyList(),
+        autoSelectAudioId: String? = null,
+        initialAudioDelayMs: Long? = null,
         resumePositionMs: Long? = null,
         mirrors: List<String> = emptyList(),
         headers: Map<String, String> = emptyMap(),
@@ -2064,7 +2348,13 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val restoredSubOffset = AudioDelayMath.clampDelayMs(existingRecord?.subtitleOffsetMs ?: 0L)
-        val restoredAudioDelay = AudioDelayMath.clampDelayMs(existingRecord?.audioDelayMs ?: 0L)
+        val savedAudioDelay = existingRecord?.audioDelayMs ?: 0L
+        val effectiveInitialAudioDelay = if (savedAudioDelay != 0L) {
+            savedAudioDelay
+        } else {
+            initialAudioDelayMs ?: 0L
+        }
+        val restoredAudioDelay = AudioDelayMath.clampDelayMs(effectiveInitialAudioDelay)
         playerManager.setAudioDelayMs(restoredAudioDelay, realignPlayback = false)
 
         val session = ActiveMediaSession(
@@ -2073,6 +2363,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             format = format,
             isLocalFile = isLocalFile,
             externalSubtitles = mergedSubs,
+            externalAudios = initialExternalAudios,
             subtitleOffsetMs = restoredSubOffset,
             mirrors = mirrors,
             headers = headers,
@@ -2089,7 +2380,25 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             playlistId = playlistId ?: existingRecord?.playlistId
         )
 
-        _uiState.update { it.copy(activeSession = session) }
+        val autoLoadedAudioToast = if (initialExternalAudios.isNotEmpty()) {
+            val activeLabel = initialExternalAudios.firstOrNull { it.id == autoSelectAudioId }?.label
+                ?: initialExternalAudios.first().label
+            val sourceTag = if (isLocalFile) "offline" else "playlist"
+            if (initialExternalAudios.size == 1) {
+                "Loaded $sourceTag audio: $activeLabel"
+            } else {
+                "Loaded ${initialExternalAudios.size} $sourceTag audio tracks · $activeLabel"
+            }
+        } else {
+            null
+        }
+        _uiState.update {
+            it.copy(
+                activeSession = session,
+                externalAudioError = null,
+                toastMessage = autoLoadedAudioToast ?: it.toastMessage
+            )
+        }
         clearAbLoop(silent = true)
         dismissUpNextCountdown(rememberDismissal = false)
         dismissedUpNextEpisodeId = null
@@ -2108,7 +2417,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             autoPlay = true,
             autoSelectSubtitleId = mergedSubs.lastOrNull()?.id,
             mirrors = mirrors,
-            headers = headers
+            headers = headers,
+            externalAudios = initialExternalAudios,
+            autoSelectAudioId = autoSelectAudioId
         )
 
         historyRepo.recordPlayback(
@@ -2199,10 +2510,107 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             autoPlay = true,
             autoSelectSubtitleId = newSub.id,
             mirrors = updatedSession.mirrors,
-            headers = updatedSession.headers
+            headers = updatedSession.headers,
+            externalAudios = updatedSession.externalAudios
         )
 
         historyRepo.saveAttachedSubtitle(updatedSession.sourceUri, newSub)
+    }
+
+    fun loadExternalAudioUrlIntoPlayer(url: String, customLabel: String? = null) {
+        val currentSession = _uiState.value.activeSession
+        if (currentSession == null) {
+            _uiState.update { it.copy(toastMessage = "Start a video before attaching an external audio URL") }
+            return
+        }
+        val trimmed = url.trim()
+        if (!ExternalAudioUrlInspector.isValidAudioUrl(trimmed)) {
+            _uiState.update {
+                it.copy(
+                    externalAudioError = "Enter a valid http:// or https:// audio or .m3u8 URL",
+                    toastMessage = "Enter a valid http:// or https:// audio URL"
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingExternalAudio = true, externalAudioError = null) }
+            val newAudio = ExternalAudioUrlInspector.inspectAndBuild(
+                url = trimmed,
+                customLabel = customLabel,
+                okHttpClient = playerManager.okHttpClient,
+                headers = currentSession.headers
+            )
+            val latestSession = _uiState.value.activeSession ?: run {
+                _uiState.update { it.copy(isLoadingExternalAudio = false) }
+                return@launch
+            }
+            val resumePos = playerManager.player.currentPosition.coerceAtLeast(0L)
+            val wasPlaying = playerManager.player.playWhenReady || playbackState.value.isPlaying
+            val updatedAudios = latestSession.externalAudios
+                .filterNot { it.url.equals(newAudio.url, ignoreCase = true) } + newAudio
+            val updatedSession = latestSession.copy(externalAudios = updatedAudios)
+            _uiState.update {
+                it.copy(
+                    activeSession = updatedSession,
+                    isLoadingExternalAudio = false,
+                    externalAudioError = null,
+                    toastMessage = "Attached audio: ${newAudio.label} [${newAudio.formatBadge}]"
+                )
+            }
+            val resolvedPairs = updatedSession.externalSubtitles.map { sub ->
+                sub to subtitleHelper.resolvePlayableSubtitleUri(sub, updatedSession.subtitleOffsetMs)
+            }
+            playerManager.loadMedia(
+                mediaUri = updatedSession.sourceUri,
+                format = updatedSession.format,
+                externalSubtitles = resolvedPairs,
+                startPositionMs = resumePos,
+                autoPlay = wasPlaying,
+                autoSelectSubtitleId = updatedSession.externalSubtitles.lastOrNull()?.id,
+                mirrors = updatedSession.mirrors,
+                headers = updatedSession.headers,
+                externalAudios = updatedAudios,
+                autoSelectAudioId = newAudio.id
+            )
+        }
+    }
+
+    fun removeExternalAudioFromPlayer(audioId: String) {
+        val currentSession = _uiState.value.activeSession ?: return
+        val removed = currentSession.externalAudios.firstOrNull { it.id == audioId } ?: return
+        viewModelScope.launch {
+            val resumePos = playerManager.player.currentPosition.coerceAtLeast(0L)
+            val wasPlaying = playerManager.player.playWhenReady || playbackState.value.isPlaying
+            val remaining = currentSession.externalAudios.filterNot { it.id == audioId }
+            val updatedSession = currentSession.copy(externalAudios = remaining)
+            _uiState.update {
+                it.copy(
+                    activeSession = updatedSession,
+                    externalAudioError = null,
+                    toastMessage = "Removed external audio: ${removed.label}"
+                )
+            }
+            val resolvedPairs = updatedSession.externalSubtitles.map { sub ->
+                sub to subtitleHelper.resolvePlayableSubtitleUri(sub, updatedSession.subtitleOffsetMs)
+            }
+            playerManager.loadMedia(
+                mediaUri = updatedSession.sourceUri,
+                format = updatedSession.format,
+                externalSubtitles = resolvedPairs,
+                startPositionMs = resumePos,
+                autoPlay = wasPlaying,
+                autoSelectSubtitleId = updatedSession.externalSubtitles.lastOrNull()?.id,
+                mirrors = updatedSession.mirrors,
+                headers = updatedSession.headers,
+                externalAudios = remaining,
+                autoSelectAudioId = null
+            )
+        }
+    }
+
+    fun clearExternalAudioError() {
+        _uiState.update { it.copy(externalAudioError = null) }
     }
 
     fun adjustSubtitleOffset(deltaMs: Long) {
@@ -2242,7 +2650,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 autoPlay = wasPlaying,
                 autoSelectSubtitleId = updatedSession.externalSubtitles.lastOrNull()?.id,
                 mirrors = updatedSession.mirrors,
-                headers = updatedSession.headers
+                headers = updatedSession.headers,
+                externalAudios = updatedSession.externalAudios
             )
             historyRepo.saveSyncOffsets(
                 sourceUri = updatedSession.sourceUri,
@@ -2337,7 +2746,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 autoPlay = true,
                 autoSelectSubtitleId = updated.externalSubtitles.lastOrNull()?.id,
                 mirrors = updated.mirrors,
-                headers = updated.headers
+                headers = updated.headers,
+                externalAudios = updated.externalAudios
             )
         }
     }
@@ -2423,6 +2833,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 format = session.format,
                 isLocalFile = session.isLocalFile,
                 initialSubtitles = session.externalSubtitles,
+                initialExternalAudios = session.externalAudios,
+                autoSelectAudioId = session.externalAudios.lastOrNull()?.id,
                 resumePositionMs = resumeMs,
                 mirrors = session.mirrors,
                 headers = session.headers,
@@ -2779,16 +3191,21 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun toggleFavoriteJsonItem(item: JsonPlaylistItem) {
-        val uri = if (item.isSeries) {
-            item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url.orEmpty()
-        } else {
-            item.url
+        val uri = when {
+            item.isCollection -> item.orderedCollectionMovies().firstOrNull()?.url.orEmpty()
+            item.isSeries -> item.seasons.firstOrNull()?.episodes?.firstOrNull()?.url.orEmpty()
+            else -> item.url
+        }
+        val itemType = when {
+            item.isCollection -> "COLLECTION"
+            item.isSeries -> "SERIES"
+            else -> "MOVIE"
         }
         toggleFavorite(
             mediaKey = item.id,
             title = item.title,
             sourceUri = uri,
-            itemType = if (item.isSeries) "SERIES" else "MOVIE",
+            itemType = itemType,
             format = item.format,
             posterUrl = item.imageUrl,
             imdbId = item.imdbId,
@@ -2838,7 +3255,7 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
 
     fun playFavoriteItem(fav: FavoriteItemEntity) {
         val matchingJson = _jsonPlaylistState.value.allItems.firstOrNull {
-            it.id == fav.mediaKey || (!it.isSeries && it.url == fav.sourceUri)
+            it.id == fav.mediaKey || (!it.isSeries && !it.isCollection && it.url == fav.sourceUri)
         }
         if (matchingJson != null) {
             playJsonPlaylistItem(matchingJson)
@@ -3057,13 +3474,34 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
         val durationMs = runCatching { playerManager.player.duration.takeIf { it > 0L } ?: 0L }.getOrDefault(0L)
+        val pState = playerManager.state.value
+        val activeExternalAudioId = pState.audioTracks
+            .firstOrNull { it.isExternal && it.isSelected }
+            ?.externalAudioId
+        val activeDelayMs = pState.audioDelayMs
+        val externalCandidates = session.externalAudios.map { ext ->
+            val matchedTrack = pState.audioTracks.firstOrNull { it.externalAudioId == ext.id }
+            val isSelected = ext.id == activeExternalAudioId ||
+                (activeExternalAudioId == null && pState.isExternalAudioActive && session.externalAudios.size == 1)
+            DownloadExternalAudioCandidate(
+                id = ext.id,
+                url = ext.url,
+                label = ext.label,
+                language = matchedTrack?.language,
+                formatBadge = ext.formatBadge,
+                isHls = ext.isHls,
+                delayMs = if (isSelected) activeDelayMs else 0L,
+                isCurrentlyActive = isSelected
+            )
+        }
         requestDownloadWithOptionalQualityCheck(
             title = session.title,
             url = session.sourceUri,
             format = session.format,
             posterUrl = session.posterUrl,
             headers = session.headers,
-            durationMs = durationMs
+            durationMs = durationMs,
+            externalAudios = externalCandidates
         )
     }
 
@@ -3072,7 +3510,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         url: String,
         format: StreamFormat = StreamFormat.AUTO,
         posterUrl: String? = null,
-        headers: Map<String, String> = emptyMap()
+        headers: Map<String, String> = emptyMap(),
+        externalAudios: List<DownloadExternalAudioCandidate> = emptyList()
     ) {
         val existing = offlineDownloads.value.firstOrNull {
             it.sourceUrl.equals(url.trim(), ignoreCase = true)
@@ -3090,7 +3529,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             format = format,
             posterUrl = posterUrl,
             headers = headers,
-            durationMs = 0L
+            durationMs = 0L,
+            externalAudios = externalAudios
         )
     }
 
@@ -3100,7 +3540,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         format: StreamFormat,
         posterUrl: String?,
         headers: Map<String, String>,
-        durationMs: Long
+        durationMs: Long,
+        externalAudios: List<DownloadExternalAudioCandidate> = emptyList()
     ) {
         val trimmedUrl = url.trim()
         val pathLower = trimmedUrl.substringBefore('?').substringBefore('#').lowercase()
@@ -3112,6 +3553,8 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             pathLower.endsWith(".m4v") ||
             pathLower.endsWith(".ts") ||
             pathLower.endsWith(".mp3") ||
+            pathLower.endsWith(".ac3") ||
+            pathLower.endsWith(".eac3") ||
             pathLower.endsWith(".flac") ||
             pathLower.endsWith(".m4a") ||
             pathLower.endsWith(".ogg") ||
@@ -3121,11 +3564,13 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         val pState = playerManager.state.value
         val activeHasMultipleTracks = activeSessionMatches &&
             (pState.videoTracks.size >= 2 || pState.audioTracks.size >= 2)
+        val hasLoadedExternalAudio = externalAudios.isNotEmpty()
         val isHlsCandidate = format == StreamFormat.HLS ||
             format == StreamFormat.M3U8 ||
             trimmedUrl.contains(".m3u8", ignoreCase = true) ||
             (format == StreamFormat.AUTO && !isKnownProgressiveExt) ||
-            activeHasMultipleTracks
+            activeHasMultipleTracks ||
+            hasLoadedExternalAudio
 
         if (!isHlsCandidate) {
             offlineDownloadManager.enqueueDownload(title, trimmedUrl, format, posterUrl, headers)
@@ -3145,10 +3590,12 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
             options = emptyList()
         )
         qualityProbeJob = viewModelScope.launch {
-            val options = offlineDownloadManager.inspectHlsQualities(
+            val options = offlineDownloadManager.inspectDownloadOptions(
                 sourceUrl = trimmedUrl,
+                format = format,
                 headers = headers,
-                durationMs = durationMs
+                durationMs = durationMs,
+                externalAudios = externalAudios
             )
             // Only proceed if user hasn't dismissed the sheet while probing
             if (!_downloadQualityPickerState.value.isOpen) return@launch
@@ -3240,6 +3687,26 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
         } else {
             StreamFormat.entries.firstOrNull { it.name == entity.formatName } ?: StreamFormat.AUTO
         }
+        val sidecar = OfflineDownloadManager.readOfflineSidecarAudio(localFile.absolutePath)
+        val offlineExternalAudios = if (sidecar != null && localFile.parentFile != null) {
+            val audioFile = File(localFile.parentFile, sidecar.relativePath)
+            if (audioFile.exists()) {
+                listOf(
+                    ExternalAudioTrack(
+                        id = sidecar.id,
+                        url = Uri.fromFile(audioFile).toString(),
+                        label = sidecar.label,
+                        formatBadge = sidecar.formatBadge,
+                        isHls = sidecar.isHls,
+                        isDash = false
+                    )
+                )
+            } else {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
         viewModelScope.launch {
             startPlayback(
                 title = entity.title,
@@ -3247,6 +3714,9 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 format = fmt,
                 isLocalFile = true,
                 initialSubtitles = emptyList(),
+                initialExternalAudios = offlineExternalAudios,
+                autoSelectAudioId = offlineExternalAudios.firstOrNull()?.id,
+                initialAudioDelayMs = sidecar?.delayMs,
                 posterUrl = entity.posterUrl
             )
         }
@@ -3506,6 +3976,10 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                     onFormatSelected(StreamFormat.M3U)
                     launchFromUrlInput()
                 }
+                RemotePushAction.LOAD_AUDIO -> {
+                    _webRemoteState.update { it.copy(lastReceivedAction = "External Audio URL pushed") }
+                    loadExternalAudioUrlIntoPlayer(payload)
+                }
                 RemotePushAction.LOAD_SUBTITLE -> {
                     _webRemoteState.update { it.copy(lastReceivedAction = "Subtitle URL pushed") }
                     if (_uiState.value.activeSession != null) {
@@ -3528,7 +4002,11 @@ class CineStreamViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
         }
-        return "Sent to CineStream: ${cmd.action.label}"
+        return if (cmd.action == RemotePushAction.LOAD_AUDIO && _uiState.value.activeSession == null) {
+            "Start playing a video on TV first, then send the audio URL."
+        } else {
+            "Sent to CineStream: ${cmd.action.label}"
+        }
     }
 
     private fun exportDeviceSyncSnapshotJsonBlocking(): String {

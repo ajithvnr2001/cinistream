@@ -20,6 +20,41 @@ data class ExternalSubtitle(
     val isLocalFile: Boolean = false
 )
 
+data class ExternalAudioTrack(
+    val id: String,
+    val url: String,
+    val label: String,
+    val formatBadge: String = "HLS",
+    val isHls: Boolean = true,
+    val isDash: Boolean = false
+) {
+    companion object {
+        const val TRACK_ID_PREFIX = "ext_audio_"
+
+        fun taggedTrackId(audioId: String, groupIndex: Int, trackIndex: Int): String =
+            "$TRACK_ID_PREFIX$audioId:$groupIndex:$trackIndex"
+
+        fun extractAudioId(trackId: String?): String? {
+            if (trackId.isNullOrBlank() || !trackId.startsWith(TRACK_ID_PREFIX)) return null
+            val remainder = trackId.removePrefix(TRACK_ID_PREFIX)
+            return remainder.substringBefore(':').takeIf { it.isNotBlank() }
+        }
+    }
+}
+
+/**
+ * External audio track specification authored inside a JSON playlist item (movie, collection film,
+ * or series episode). Auto-loaded and merged when playback starts.
+ */
+data class PlaylistAudioSpec(
+    val url: String,
+    val label: String? = null,
+    val language: String? = null,
+    val isDefault: Boolean? = null,
+    val delayMs: Long? = null
+)
+
+
 data class M3uEntry(
     val id: String,
     val title: String,
@@ -32,7 +67,8 @@ data class M3uEntry(
 
 enum class MediaContentType {
     MOVIE,
-    SERIES
+    SERIES,
+    COLLECTION
 }
 
 data class SeriesEpisode(
@@ -48,7 +84,8 @@ data class SeriesEpisode(
     val durationLabel: String? = null,
     val imageUrl: String? = null,
     val subtitleUrl: String? = null,
-    val subtitleLabel: String? = null
+    val subtitleLabel: String? = null,
+    val externalAudios: List<PlaylistAudioSpec> = emptyList()
 ) {
     val codeLabel: String get() = "S${seasonNumber} E${episodeNumber}"
 }
@@ -57,6 +94,29 @@ data class SeriesSeason(
     val seasonNumber: Int,
     val title: String,
     val episodes: List<SeriesEpisode>
+)
+
+/**
+ * Individual film inside a Movie Collection / Franchise (e.g. Resident Evil, Final Destination, Evil Dead).
+ * Each film carries its own IMDb ID, poster, rating, release year, mirrors, and headers—never TV S/E codes.
+ */
+data class CollectionMovie(
+    val id: String,
+    val order: Int,
+    val title: String,
+    val url: String,
+    val mirrors: List<String> = emptyList(),
+    val headers: Map<String, String> = emptyMap(),
+    val format: StreamFormat = StreamFormat.AUTO,
+    val imageUrl: String? = null,
+    val imdbId: String? = null,
+    val imdbRating: String? = null,
+    val releaseYear: String? = null,
+    val durationLabel: String? = null,
+    val description: String? = null,
+    val subtitleUrl: String? = null,
+    val subtitleLabel: String? = null,
+    val externalAudios: List<PlaylistAudioSpec> = emptyList()
 )
 
 data class JsonPlaylistItem(
@@ -75,25 +135,53 @@ data class JsonPlaylistItem(
     val contentType: MediaContentType = MediaContentType.MOVIE,
     val mirrors: List<String> = emptyList(),
     val headers: Map<String, String> = emptyMap(),
-    val seasons: List<SeriesSeason> = emptyList()
+    val seasons: List<SeriesSeason> = emptyList(),
+    val collectionMovies: List<CollectionMovie> = emptyList(),
+    val externalAudios: List<PlaylistAudioSpec> = emptyList()
 ) {
     val isSeries: Boolean
         get() = contentType == MediaContentType.SERIES && seasons.isNotEmpty()
 
+    val isCollection: Boolean
+        get() = contentType == MediaContentType.COLLECTION && collectionMovies.isNotEmpty()
+
     val totalEpisodes: Int
         get() = seasons.sumOf { it.episodes.size }
 
+    val totalCollectionMovies: Int
+        get() = collectionMovies.size
+
     val seriesBadgeLabel: String?
-        get() = if (isSeries) "SERIES · ${seasons.size}S" else null
+        get() = when {
+            isSeries -> "SERIES · ${seasons.size}S"
+            isCollection -> {
+                val count = collectionMovies.size
+                if (count == 1) "COLLECTION · 1 FILM" else "COLLECTION · $count FILMS"
+            }
+            else -> null
+        }
 
     fun allEpisodesOrdered(): List<SeriesEpisode> =
         seasons.sortedBy { it.seasonNumber }
             .flatMap { season -> season.episodes.sortedBy { it.episodeNumber } }
 
+    fun orderedCollectionMovies(): List<CollectionMovie> =
+        collectionMovies.sortedWith(
+            compareBy<CollectionMovie> { it.order }
+                .thenBy { it.releaseYear?.toIntOrNull() ?: Int.MAX_VALUE }
+        )
+
     fun findNextEpisode(currentEpisodeId: String?): SeriesEpisode? {
         if (currentEpisodeId.isNullOrBlank()) return null
         val ordered = allEpisodesOrdered()
         val idx = ordered.indexOfFirst { it.id == currentEpisodeId }
+        return if (idx in 0 until ordered.lastIndex) ordered[idx + 1] else null
+    }
+
+    fun findNextCollectionMovie(currentMovieId: String?): CollectionMovie? {
+        if (currentMovieId.isNullOrBlank()) return null
+        val ordered = orderedCollectionMovies()
+        val idx = ordered.indexOfFirst { it.id == currentMovieId }
         return if (idx in 0 until ordered.lastIndex) ordered[idx + 1] else null
     }
 }
@@ -106,7 +194,8 @@ data class TrackOption(
     val detail: String,
     val language: String?,
     val isSelected: Boolean,
-    val isExternal: Boolean = false
+    val isExternal: Boolean = false,
+    val externalAudioId: String? = null
 )
 
 enum class SubtitleTextSize(val label: String, val sp: Float) {

@@ -498,7 +498,7 @@ class MultiAccountWebDavTest {
 
     @Test
     fun buildConfig_matchesVersion35() {
-        assertEquals(35, BuildConfig.VERSION_CODE)
-        assertEquals("1.35", BuildConfig.VERSION_NAME)
+        assertEquals(39, BuildConfig.VERSION_CODE)
+        assertEquals("1.39", BuildConfig.VERSION_NAME)
     }
 }

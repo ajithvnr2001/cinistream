@@ -83,11 +83,12 @@ object GlobalSearchEngine {
             if (matches) {
                 val dedupeKey = "json:${item.id}"
                 if (seen.add(dedupeKey)) {
+                    val badge = if (item.isCollection) "${item.totalCollectionMovies} Films" else null
                     results.add(
                         GlobalSearchResult(
                             id = "json_${item.id}",
                             title = item.title,
-                            subtitle = listOfNotNull(item.releaseYear, item.imdbRating?.let { "IMDb $it" }, item.groupTitle)
+                            subtitle = listOfNotNull(badge, item.releaseYear, item.imdbRating?.let { "IMDb $it" }, item.groupTitle)
                                 .joinToString(" · "),
                             category = GlobalSearchCategory.CATALOG,
                             format = item.format,
@@ -96,6 +97,50 @@ object GlobalSearchEngine {
                             jsonItem = item
                         )
                     )
+                }
+            }
+            if (item.isCollection) {
+                for (movie in item.orderedCollectionMovies()) {
+                    val movieMatches = movie.title.lowercase().contains(q) ||
+                        (movie.imdbId?.lowercase()?.contains(q) == true) ||
+                        (movie.releaseYear?.contains(q) == true)
+                    if (movieMatches) {
+                        val movieKey = "col_movie:${item.id}:${movie.id}"
+                        if (seen.add(movieKey)) {
+                            results.add(
+                                GlobalSearchResult(
+                                    id = "col_${item.id}_${movie.id}",
+                                    title = movie.title,
+                                    subtitle = listOfNotNull(
+                                        item.title,
+                                        movie.releaseYear,
+                                        movie.imdbRating?.let { "IMDb $it" }
+                                    ).joinToString(" · "),
+                                    category = GlobalSearchCategory.CATALOG,
+                                    format = movie.format,
+                                    posterUrl = movie.imageUrl ?: item.imageUrl,
+                                    sourceUri = movie.url,
+                                    jsonItem = JsonPlaylistItem(
+                                        id = movie.id,
+                                        title = movie.title,
+                                        url = movie.url,
+                                        groupTitle = item.groupTitle,
+                                        format = movie.format,
+                                        imageUrl = movie.imageUrl ?: item.imageUrl,
+                                        imdbId = movie.imdbId,
+                                        imdbRating = movie.imdbRating,
+                                        releaseYear = movie.releaseYear,
+                                        description = movie.description,
+                                        subtitleUrl = movie.subtitleUrl,
+                                        subtitleLabel = movie.subtitleLabel,
+                                        mirrors = movie.mirrors,
+                                        headers = movie.headers,
+                                        externalAudios = movie.externalAudios
+                                    )
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }

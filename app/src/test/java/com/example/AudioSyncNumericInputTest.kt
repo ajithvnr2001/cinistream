@@ -59,9 +59,12 @@ class AudioSyncNumericInputTest {
         assertEquals(1_250L, AudioDelayMath.parseDelayInputMs("1.25s", SyncTimeUnit.MILLISECONDS))
         assertEquals(-400L, AudioDelayMath.parseDelayInputMs("-400ms", SyncTimeUnit.SECONDS))
 
-        // Clamped cleanly to -10s..+10s
-        assertEquals(10_000L, AudioDelayMath.parseDelayInputMs("25", SyncTimeUnit.SECONDS))
-        assertEquals(-10_000L, AudioDelayMath.parseDelayInputMs("-15000", SyncTimeUnit.MILLISECONDS))
+        // Supports unbounded custom expansion beyond 10s (up to +/-60 min)
+        assertEquals(25_000L, AudioDelayMath.parseDelayInputMs("25", SyncTimeUnit.SECONDS))
+        assertEquals(-15_000L, AudioDelayMath.parseDelayInputMs("-15000", SyncTimeUnit.MILLISECONDS))
+        assertEquals(300_000L, AudioDelayMath.parseDelayInputMs("5m", SyncTimeUnit.SECONDS))
+        assertEquals(-150_000L, AudioDelayMath.parseDelayInputMs("-2.5min", SyncTimeUnit.MILLISECONDS))
+        assertEquals(AudioDelayMath.MAX_DELAY_MS, AudioDelayMath.parseDelayInputMs("120m", SyncTimeUnit.SECONDS))
 
         // Rejects blank & invalid text
         assertNull(AudioDelayMath.parseDelayInputMs("", SyncTimeUnit.MILLISECONDS))
@@ -212,9 +215,9 @@ class AudioSyncNumericInputTest {
     }
 
     @Test
-    fun buildConfig_matchesVersion35() {
-        assertEquals(35, BuildConfig.VERSION_CODE)
-        assertEquals("1.35", BuildConfig.VERSION_NAME)
+    fun buildConfig_matchesVersion39() {
+        assertEquals(39, BuildConfig.VERSION_CODE)
+        assertEquals("1.39", BuildConfig.VERSION_NAME)
     }
 
     private fun createStubAudioSink(positionUsProvider: () -> Long): AudioSink =
